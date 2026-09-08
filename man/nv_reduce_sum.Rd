@@ -25,8 +25,7 @@ How to handle \code{NaN} values in floating-point inputs. If \code{FALSE}
 \value{
 \code{\link{arrayish}}\cr
 Has the same data type as the input, except for a boolean input, which is
-accumulated at \code{i32}: \code{TRUE} counts as one, rather than being folded with
-a logical or/and.
+accumulated at the default integer data type (see \code{\link[=default_dtypes]{default_dtypes()}}).
 When \code{drop = TRUE}, the reduced axes are removed.
 When \code{drop = FALSE}, the reduced axes are set to 1.
 }

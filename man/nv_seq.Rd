@@ -13,9 +13,9 @@ nv_seq_like(like, start, end, dtype = NULL, device = NULL)
 \item{start, end}{(\code{integer(1)})\cr
 Start and end values, which must satisfy \code{start <= end}.}
 
-\item{dtype}{(\code{character(1)})\cr
-Data type. Default \code{"i32"}.
-For \code{nv_seq_like()}, \code{NULL} uses \code{dtype(like)}.}
+\item{dtype}{(\code{NULL} | \code{character(1)} | \code{\link[tengen:DataType]{DataType}})\cr
+Data type. \code{NULL} (default) uses the backend's default integer data type
+(see \code{\link[=default_dtypes]{default_dtypes()}}). For \code{nv_seq_like()}, \code{NULL} uses \code{dtype(like)}.}
 
 \item{device}{(\code{NULL} | \code{character(1)} | \link[=nv_device]{device})\cr
 The device the data lives on, given either as:

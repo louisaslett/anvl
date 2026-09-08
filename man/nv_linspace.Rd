@@ -18,8 +18,9 @@ which case the values decrease.}
 Number of values to generate. Must be at least 1; for \code{steps = 1} the
 result is \code{start}.}
 
-\item{dtype}{(\code{character(1)})\cr
-Floating-point data type. Default \code{"f32"}.
+\item{dtype}{(\code{NULL} | \code{character(1)} | \code{\link[tengen:DataType]{DataType}})\cr
+Floating-point data type. \code{NULL} (default) uses the backend's default
+float data type (see \code{\link[=default_dtypes]{default_dtypes()}}).
 For \code{nv_linspace_like()}, \code{NULL} uses \code{dtype(like)}, which must then be a
 floating-point data type.}
 

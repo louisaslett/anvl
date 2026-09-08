@@ -1395,9 +1395,9 @@ nv_iota <- prim_iota
 #' default to those of `like`.
 #' @param start,end (`integer(1)`)\cr
 #'   Start and end values, which must satisfy `start <= end`.
-#' @param dtype (`character(1)`)\cr
-#'   Data type. Default `"i32"`.
-#'   For `nv_seq_like()`, `NULL` uses `dtype(like)`.
+#' @param dtype (`NULL` | `character(1)` | [`DataType`])\cr
+#'   Data type. `NULL` (default) uses the backend's default integer data type
+#'   (see [`default_dtypes()`]). For `nv_seq_like()`, `NULL` uses `dtype(like)`.
 #' @param like ([`AnvlArray`])\cr
 #'   Existing array whose attributes are used as defaults
 #'   (only for `nv_seq_like()`).
@@ -1413,7 +1413,7 @@ nv_iota <- prim_iota
 #' @export
 #' @jit static 1:4
 nv_seq <- function(start, end, dtype = NULL, device = NULL) {
-  dtype <- dtype %||% "i32"
+  dtype <- dtype %||% default_int()
   assert_int(start)
   assert_int(end)
   assert(start <= end)
@@ -1444,8 +1444,9 @@ nv_seq <- function(start, end, dtype = NULL, device = NULL) {
 #' @param steps (`integer(1)`)\cr
 #'   Number of values to generate. Must be at least 1; for `steps = 1` the
 #'   result is `start`.
-#' @param dtype (`character(1)`)\cr
-#'   Floating-point data type. Default `"f32"`.
+#' @param dtype (`NULL` | `character(1)` | [`DataType`])\cr
+#'   Floating-point data type. `NULL` (default) uses the backend's default
+#'   float data type (see [`default_dtypes()`]).
 #'   For `nv_linspace_like()`, `NULL` uses `dtype(like)`, which must then be a
 #'   floating-point data type.
 #' @param like ([`AnvlArray`])\cr
@@ -1466,7 +1467,7 @@ nv_linspace <- function(start, end, steps, dtype = NULL, device = NULL) {
   assert_number(end)
   assert_int(steps, lower = 1L)
   dtype <- assert_float_dtype(
-    dtype %||% "f32",
+    dtype %||% default_float(),
     arg = "dtype",
     hint = "Convert the result instead, e.g. {.code nv_convert(x, \"i32\")}."
   )
@@ -1920,10 +1921,11 @@ nv_qr <- prim_qr
 #'   * `L` -- unit lower-triangular factor of shape `(m, k)`, where
 #'     `(m, n) = shape(x)` and `k = min(m, n)`.
 #'   * `U` -- upper-triangular factor of shape `(k, n)`.
-#'   * `pivots` -- length `k`, dtype `i32`. LAPACK-style sequential
-#'     1-based row swaps as returned by `getrf`.
-#'   * `permutation` -- length `m`, dtype `i32`. A 1-based permutation
-#'     vector representing \eqn{P}.
+#'   * `pivots` -- length `k`, of the default integer data type (see
+#'     [`default_dtypes()`]). LAPACK-style sequential 1-based row swaps as
+#'     returned by `getrf`.
+#'   * `permutation` -- length `m`, of the default integer data type. A
+#'     1-based permutation vector representing \eqn{P}.
 #' @seealso [prim_lu()]
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- nv_matrix(c(4, 3, 6, 3), nrow = 2, dtype = "f64")
@@ -2030,7 +2032,9 @@ nv_diag <- function(x) {
 #' @param like ([`arrayish`])\cr
 #'   Existing array whose attributes are used as defaults
 #'   (only for `nv_eye_like()`).
-#' @template param_dtype
+#' @param dtype (`NULL` | `character(1)` | [`DataType`])\cr
+#'   Data type. `NULL` (default) uses the backend's default float data type
+#'   (see [`default_dtypes()`]).
 #' @template param_device
 #' @return [`arrayish`]\cr
 #'   An `n x n` identity matrix.
@@ -2041,7 +2045,8 @@ nv_diag <- function(x) {
 #' nv_eye_like(x, 3L)
 #' @export
 #' @jit static 1:3
-nv_eye <- function(n, dtype = "f32", device = NULL) {
+nv_eye <- function(n, dtype = NULL, device = NULL) {
+  dtype <- dtype %||% default_float()
   nv_diag(nv_fill(1, n, dtype = dtype, device = device))
 }
 
@@ -2056,7 +2061,7 @@ nv_eye <- function(n, dtype = "f32", device = NULL) {
 }
 
 .count_bool <- function(x) {
-  if (is_dtype_bool(peek_dtype(x))) nv_convert(x, "i32") else x
+  if (is_dtype_bool(peek_dtype(x))) nv_convert(x, default_int()) else x
 }
 
 #' @title Sum Reduction
@@ -2510,7 +2515,7 @@ nv_is_infinite <- function(x) {
 #' @jit static 2:5
 nv_var <- function(x, axes = NULL, drop = TRUE, correction = 1L, nan_rm = FALSE) {
   x <- as_anvl_array(x)
-  assert_int(correction)
+  correction <- assert_int(correction, coerce = TRUE)
   axes <- .resolve_reduce_axes(x, axes)
   mean_bc <- nv_broadcast_to(
     nv_mean(x, axes, drop = FALSE, nan_rm = nan_rm),
@@ -2519,7 +2524,13 @@ nv_var <- function(x, axes = NULL, drop = TRUE, correction = 1L, nan_rm = FALSE)
   diff <- x - mean_bc
   ssum <- nv_reduce_sum(diff * diff, axes, drop, nan_rm = nan_rm)
   if (nan_rm && is_dtype_float(peek_dtype(x))) {
-    count <- nv_reduce_sum(nv_convert(!nv_is_nan(x), "i32"), axes, drop)
+    # Counted at `ssum`'s data type, not at an integer one: the divisor then
+    # stays there, because `0` and `correction` are R values meeting a float
+    # array of their own or a narrower category and so yield to it. Counting
+    # into an integer instead would make the R double `0` cross categories and
+    # pull the result to the default float, so `nan_rm` alone would change the
+    # data type -- which is why the `nan_rm = FALSE` branch below is right.
+    count <- nv_reduce_sum(nv_convert(!nv_is_nan(x), dtype(ssum)), axes, drop)
     # When count <= correction the divisor clamps to 0 and ssum is 0
     # (single non-NaN point has zero deviation, all-NaN slice contributes
     # nothing), so 0/0 = NaN propagates naturally — no explicit mask needed.
@@ -3000,8 +3011,9 @@ nv_sort <- function(x, axis = NULL, decreasing = FALSE, stable = FALSE) {
 #' @param stable (`logical(1)`)\cr
 #'   If `TRUE`, the sort is stable: indices for equal values keep their
 #'   original relative order. Default `FALSE`.
-#' @return [`arrayish`] of dtype `i32`\cr
-#'   Same shape as `x`. For a size-0 axis, the output is an empty `i32`
+#' @return [`arrayish`] of the default integer data type (see
+#'   [`default_dtypes()`])\cr
+#'   Same shape as `x`. For a size-0 axis, the output is an empty
 #'   array of the same shape (a valid empty permutation).
 #'   `as_array(x)[as_array(nv_argsort(x))]` reproduces the sorted
 #'   array (for 1-D inputs).
@@ -3018,7 +3030,7 @@ nv_argsort <- function(x, axis = NULL, decreasing = FALSE, stable = FALSE) {
     cli_abort("Cannot argsort a 0-dimensional array")
   }
   axis <- axis %||% naxes(x)
-  idx <- nv_iota_like(x, axis = axis, dtype = "i32")
+  idx <- nv_iota_like(x, axis = axis, dtype = default_int())
   prim_sort(list(x, idx), axis = axis, descending = decreasing, is_stable = stable)[[2L]]
 }
 
@@ -3036,7 +3048,8 @@ nv_argsort <- function(x, axis = NULL, decreasing = FALSE, stable = FALSE) {
 #' @param with_indices (`logical(1)`)\cr
 #'   If `FALSE` (default), returns just the top-`k` values. If `TRUE`,
 #'   returns `list(values = ..., indices = ...)` where `indices` is the
-#'   1-based position of each top-`k` value along `axis` (dtype `i32`).
+#'   1-based position of each top-`k` value along `axis`, of the default
+#'   integer data type (see [`default_dtypes()`]).
 #' @return [`arrayish`] (when `with_indices = FALSE`) or named list of two
 #'   arrays (when `with_indices = TRUE`). Output shape matches `x` with
 #'   `axis` resized to `k`; values are sorted decreasing along `axis`.
@@ -3161,7 +3174,10 @@ nv_quantile <- function(x, probs, axis = NULL, interpolation = "linear", nan_rm 
     nan_mask <- nv_is_nan(x)
     to_sort <- if (nan_rm) nv_ifelse(nan_mask, Inf, x) else x
     n_valid_kd <- if (nan_rm) {
-      prim_reduce_sum(nv_convert(!nan_mask, "i32"), axes = axis, drop = FALSE)
+      # At `dtype(x)`, so both branches agree and the `- 1` below yields to it
+      # rather than crossing categories out of an integer count and committing
+      # `h` -- and with it `lo_f`, `frac` and `out` -- at the default float.
+      prim_reduce_sum(nv_convert(!nan_mask, dtype(x)), axes = axis, drop = FALSE)
     } else {
       nv_broadcast_to(nv_array_like(x, shp[axis], shape = integer()), shp_kd)
     }
@@ -3266,7 +3282,8 @@ nv_median <- function(x, axis = NULL, interpolation = "linear", nan_rm = FALSE) 
 #'   If `TRUE` (default) the reduced axis is removed; if `FALSE` it
 #'   is kept with size 1.
 #' @template param_nan_rm
-#' @return [`arrayish`] of dtype `i32`\cr
+#' @return [`arrayish`] of the default integer data type (see
+#'   [`default_dtypes()`])\cr
 #'   Same shape as `x` with `axis` removed (or set to 1 if `drop = FALSE`).
 #' @section NaN handling:
 #' With `nan_rm = FALSE` (default), if any entry along the reduced axis is
@@ -3304,7 +3321,8 @@ nv_argmax <- function(x, axis = NULL, drop = TRUE, nan_rm = FALSE) {
 #'   If `TRUE` (default) the reduced axis is removed; if `FALSE` it
 #'   is kept with size 1.
 #' @template param_nan_rm
-#' @return [`arrayish`] of dtype `i32`\cr
+#' @return [`arrayish`] of the default integer data type (see
+#'   [`default_dtypes()`])\cr
 #'   Same shape as `x` with `axis` removed (or set to 1 if `drop = FALSE`).
 #' @inheritSection nv_argmax NaN handling
 #' @seealso [nv_argmax()], [nv_reduce_min()].

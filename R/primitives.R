@@ -848,7 +848,7 @@ infer_cum_extreme <- function(x, axis) {
       shape = Shape(shape(x))
     ),
     AbstractArray(
-      dtype = "i32",
+      dtype = default_int(),
       shape = Shape(shape(x))
     )
   )
@@ -1079,8 +1079,8 @@ prim_reduce <- new_primitive(
   static = c("axes", "drop", "reductor")
 )
 
-# Shared shape inference for prim_argmax / prim_argmin: x -> i32
-# with `axis` dropped (or kept as size 1).
+# Shared shape inference for prim_argmax / prim_argmin: x -> the default
+# integer data type with `axis` dropped (or kept as size 1).
 infer_fn_arg_extreme <- function(x, axis, drop) {
   shp <- shape(x)
   if (axis > length(shp)) {
@@ -1106,7 +1106,7 @@ infer_fn_arg_extreme <- function(x, axis, drop) {
     new_shape[axis] <- 1L
   }
   list(AbstractArray(
-    dtype = "i32",
+    dtype = default_int(),
     shape = Shape(new_shape)
   ))
 }
@@ -1122,7 +1122,8 @@ infer_fn_arg_extreme <- function(x, axis, drop) {
 #' @param drop (`logical(1)`)\cr
 #'   If `TRUE` (default) the reduced axis is removed; if `FALSE` it is
 #'   kept with size 1.
-#' @return [`arrayish`] of dtype `i32`\cr
+#' @return [`arrayish`] of the default integer data type (see
+#'   [`default_dtypes()`])\cr
 #'   Same shape as `x` with `axis` removed (or set to 1 if
 #'   `drop = FALSE`).
 #' @templateVar primitive_id argmax
@@ -1155,7 +1156,8 @@ prim_argmax <- new_primitive(
 #' are broken by returning the smallest index.
 #' @template param_prim_x_any
 #' @inheritParams prim_argmax
-#' @return [`arrayish`] of dtype `i32`\cr
+#' @return [`arrayish`] of the default integer data type (see
+#'   [`default_dtypes()`])\cr
 #'   Same shape as `x` with `axis` removed (or set to 1 if
 #'   `drop = FALSE`).
 #' @templateVar primitive_id argmin
@@ -2715,7 +2717,7 @@ prim_sort <- new_primitive(
     )
   },
   # No promotion: a key and its payloads are meant to differ in data type
-  # (nv_argsort() sorts an f32 key alongside an i32 index).
+  # (nv_argsort() sorts a float key alongside an integer index).
   static = c("axis", "descending", "is_stable")
 )
 
@@ -2733,9 +2735,9 @@ prim_sort <- new_primitive(
 #'   `1 <= k <= shape(x)[naxes(x)]`.
 #' @return `list` of two [`arrayish`] values:\cr
 #'   The top-`k` values (same dtype as `x`) and their indices along
-#'   the last axis (dtype `i32`, matching JAX). Both have the same
-#'   shape as `x` with the last axis replaced by `k`. Ties are
-#'   broken by lower index first.
+#'   the last axis, of the default integer data type (see
+#'   [`default_dtypes()`]). Both have the same shape as `x` with the
+#'   last axis replaced by `k`. Ties are broken by lower index first.
 #' @templateVar primitive_id top_k
 #' @template section_rules
 #' @section StableHLO:
@@ -2758,7 +2760,13 @@ prim_top_k <- new_primitive(
         shape = integer()
       )
       vts <- stablehlo::infer_types_top_k(at2vt(x), k = k_const)
-      list(vt2at(vts[[1L]]), vt2at(vts[[2L]]))
+      # `hlo_top_k` fixes its indices at `i32`; the lowering converts them to
+      # the default integer, which is what the caller sees.
+      indices <- vt2at(vts[[2L]])
+      list(
+        vt2at(vts[[1L]]),
+        AbstractArray(dtype = default_int(), shape = Shape(shape(indices)))
+      )
     }
 
     graph_desc_add(
@@ -3426,11 +3434,12 @@ prim_qr <- new_primitive(
 #' @param x ([`arrayish`])\cr
 #'   Matrix of data type floating-point with exactly 2 axes.
 #' @return `list` of three [`arrayish`] values: `LU` `(m, n)` with the same
-#'   dtype as the input; `pivots` `(k,)` of dtype `i32` with
-#'   `k = min(m, n)` (1-based row swaps such that row `i` was exchanged
-#'   with row `pivots[i]` during elimination step `i`); and `permutation`
-#'   `(m,)` of dtype `i32`, a 1-based permutation vector for \eqn{P} such
-#'   that `(P %*% A)[i, ]` equals `A[permutation[i], ]`.
+#'   dtype as the input; `pivots` `(k,)` of the default integer data type
+#'   (see [`default_dtypes()`]) with `k = min(m, n)` (1-based row swaps such
+#'   that row `i` was exchanged with row `pivots[i]` during elimination step
+#'   `i`); and `permutation` `(m,)` of the same data type, a 1-based
+#'   permutation vector for \eqn{P} such that `(P %*% A)[i, ]` equals
+#'   `A[permutation[i], ]`.
 #' @templateVar primitive_id lu
 #' @template section_rules
 #' @section StableHLO:
@@ -3453,10 +3462,11 @@ prim_lu <- new_primitive(
       m <- s[1L]
       n <- s[2L]
       k <- min(m, n)
+      index_dt <- default_int()
       list(
         LU = AbstractArray(dtype = dt, shape = Shape(c(m, n))),
-        pivots = AbstractArray(dtype = "i32", shape = Shape(k)),
-        permutation = AbstractArray(dtype = "i32", shape = Shape(m))
+        pivots = AbstractArray(dtype = index_dt, shape = Shape(k)),
+        permutation = AbstractArray(dtype = index_dt, shape = Shape(m))
       )
     }
     graph_desc_add(
@@ -3574,21 +3584,19 @@ prim_eigh <- new_primitive(
 #' @title Primitive Convolution
 #' @description
 #' General N-D windowed convolution, lowering to StableHLO's
-#' `convolution` op. Axis numbers are given 1-based (anvl
-#' convention) and converted to StableHLO's 0-based layout internally.
-#' Most users want [nv_conv1d()] / [nv_conv2d()] / [nv_conv3d()] instead.
+#' `convolution` op.
 #' @param x ([`arrayish`])\cr Input, e.g. `[batch, channels, *spatial]`.
 #' @param kernel ([`arrayish`])\cr Kernel, e.g. `[out_ch, in_ch/groups, *spatial]`.
 #' @param input_batch_axis,input_feature_axis (`integer(1)`)\cr
-#'   1-based batch/feature axis of `x`.
-#' @param input_spatial_axes (`integer()`)\cr 1-based spatial axes of `x`.
+#'   batch/feature axis of `x`.
+#' @param input_spatial_axes (`integer()`)\cr spatial axes of `x`.
 #' @param kernel_input_feature_axis,kernel_output_feature_axis (`integer(1)`)\cr
-#'   1-based input/output feature axis of `kernel`.
-#' @param kernel_spatial_axes (`integer()`)\cr 1-based spatial axes of `kernel`.
+#'   input/output feature axis of `kernel`.
+#' @param kernel_spatial_axes (`integer()`)\cr spatial axes of `kernel`.
 #' @param output_batch_axis,output_feature_axis (`integer(1)`)\cr
-#'   1-based batch/feature axis of the output.
+#'   batch/feature axis of the output.
 #' @param output_spatial_axes (`integer()`)\cr
-#'   1-based spatial axes of the output.
+#'   spatial axes of the output.
 #' @param window_strides (`integer()`)\cr Stride per spatial axis.
 #' @param padding (`matrix`)\cr `[n_spatial, 2]` of `(low, high)` padding.
 #' @param x_dilation,kernel_dilation (`integer()`)\cr Input/kernel dilation.

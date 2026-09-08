@@ -41,9 +41,12 @@
 #'   `integer()`, `double()`, or `logical()` scalar, vector, or array.
 #' @param dtype (`NULL` | `character(1)` | [`DataType`])\cr
 #'   One of `r roxy_dtypes()` or a [`tengen::DataType`].
-#'   The default (`NULL`) uses the current backend's default dtype:
-#'   `f32` for numeric data on `"pjrt"`, `f64` for numeric data on `"quickr"`,
-#'   `i32` for integer data, and `bool` for logical data.
+#'   The default (`NULL`) uses the data type the R value commits to (see
+#'   [`default_dtypes()`]). This depends on the backend.
+#'   For the default `"pjrt"` backend, `double`s become `f32`, `integer`
+#'   `i32` and `logical`s `bool`.
+#'   You can change the defaults via the `anvl.default_dtypes` option, or for
+#'   a scope with [`local_default_dtypes()`] / [`with_default_dtypes()`].
 #' @template param_device
 #' @param shape (`NULL` | `integer()`)\cr
 #'   The output shape of the array.
@@ -164,13 +167,16 @@ nv_array <- function(
     }
   }
   if (currently_tracing() && is.null(device)) {
-    # A constant of the trace: it belongs to the backend being traced for.
+    # A constant of the trace: it belongs to the backend being traced for, and
+    # commits to the defaults the trace is pinned to.
+    dtype <- resolve_default_dtype(data, dtype)
     return(globals$backends[["plain"]]$new_data(data, dtype, shape, device))
   }
   backend <- active_backend()
   if (is_device(device)) {
     check_device_backend(device, backend)
   }
+  dtype <- resolve_default_dtype(data, dtype, current_default_dtypes())
   globals$backends[[backend]]$new_data(data, dtype, shape, device)
 }
 
@@ -790,8 +796,7 @@ ConcreteArray <- function(data) {
 #' @param shape ([`stablehlo::Shape`] | `integer()`)\cr
 #'   The shape of the array.
 #' @param dtype ([`tengen::DataType`])\cr
-#'   The data type. Defaults to the current backend's default floating dtype,
-#'   `i32` for integer, and `bool` for logical.
+#'   The data type. For the default, see [`default_dtypes()`]).
 #'
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- LiteralArray(1L, shape = integer())
