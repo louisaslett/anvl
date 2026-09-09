@@ -49,7 +49,8 @@ RNG state (\code{ui64[2]}).}
 \item{dtype}{(\code{NULL} | \code{character(1)} | \code{\link[tengen:DataType]{DataType}})\cr
 Data type of the sample, \code{"f32"} or \code{"f64"}. \code{NULL} (default) takes it from
 \code{mean} and \code{sd} where either is a real array, and falls back to the default
-float data type (\code{"f32"}) where both are bare R values, which have none.}
+float data type (see \code{\link[=default_dtypes]{default_dtypes()}}) where both are bare R values,
+which have none.}
 }
 \value{
 \code{nv_dnorm()} and \code{nv_pnorm()} return an \code{\link{arrayish}} with the same shape and
@@ -79,6 +80,9 @@ left tail when \code{log_p = TRUE} to maintain accuracy.
 Moshier (1989) (this is \code{ndtri} in the Cephes
 library as used by JAX) for \code{f64}, and uses a new lower degree Remez minimax
 rational approximation on the same intervals for \code{f32}.
+
+The thresholds and coefficients of \code{nv_pnorm()} and \code{nv_qnorm()} are written
+for \code{f32} and \code{f64}, so those two are the only data types they accept.
 }
 \section{Random generation}{
 

@@ -37,6 +37,7 @@ Imports:
     withr,
     xlamisc (>= 0.4.1)
 Suggests:
+    bit64,
     knitr,
     quarto,
     rmarkdown,
@@ -59,6 +60,7 @@ Collate:
     'api-distributions.R'
     'array.R'
     'device.R'
+    'default-dtypes.R'
     'backend.R'
     'jit.R'
     'promotion.R'

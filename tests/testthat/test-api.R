@@ -141,7 +141,7 @@ describe("nv_concatenate", {
     )
     expect_equal(
       nv_concatenate(nv_array(1:2, shape = c(2, 1)), nv_array(3:4, shape = c(2, 1)), axis = 2L),
-      nv_array(1:4, shape = c(2, 2), dtype = "i32")
+      nv_array(1:4, shape = c(2, 2), dtype = default_int())
     )
   })
   it("fails with incompatible shapes", {
@@ -494,6 +494,72 @@ describe("nv_reduce_sum / nv_reduce_prod / nv_mean nan_rm", {
   })
 })
 
+describe("boolean accumulation in nv_reduce_sum / nv_reduce_prod / nv_cumsum / nv_cumprod", {
+  v <- c(TRUE, FALSE, TRUE)
+  x <- nv_array(v)
+
+  it("counts a boolean array instead of folding it, like base R", {
+    expect_equal(as_array(nv_reduce_sum(x)), sum(v))
+    expect_equal(as_array(nv_reduce_prod(x)), prod(v))
+    expect_equal(as.numeric(nv_cumsum(x)), as.numeric(cumsum(v)))
+    expect_equal(as.numeric(nv_cumprod(x)), as.numeric(cumprod(v)))
+  })
+
+  it("accumulates a boolean array at the default integer", {
+    expect_equal(dtype(nv_reduce_sum(x)), default_int())
+    expect_equal(dtype(nv_reduce_prod(x)), default_int())
+    expect_equal(dtype(nv_cumsum(x)), default_int())
+    expect_equal(dtype(nv_cumprod(x)), default_int())
+    with_default_dtypes(c(int = "i64"), {
+      expect_equal(dtype(nv_reduce_sum(x)), as_dtype("i64"))
+      expect_equal(dtype(nv_cumsum(x)), as_dtype("i64"))
+    })
+  })
+
+  it("counts along a single axis", {
+    m <- matrix(c(TRUE, FALSE, TRUE, TRUE), nrow = 2)
+    expect_equal(as.numeric(nv_reduce_sum(nv_array(m), axes = 1L)), as.numeric(colSums(m)))
+    expect_equal(as.numeric(nv_reduce_sum(nv_array(m), axes = 2L)), as.numeric(rowSums(m)))
+  })
+
+  it("counts under jit as it does eagerly", {
+    expect_equal(as_array(jit(function(x) nv_reduce_sum(x))(x)), sum(v))
+    expect_equal(as.numeric(jit(function(x) nv_cumsum(x))(x)), as.numeric(cumsum(v)))
+  })
+
+  it("counts through the base R generics", {
+    expect_equal(as_array(sum(x)), sum(v))
+    expect_equal(as_array(prod(x)), prod(v))
+    expect_equal(as.numeric(cumsum(x)), as.numeric(cumsum(v)))
+    expect_equal(as.numeric(cumprod(x)), as.numeric(cumprod(v)))
+  })
+
+  it("averages a boolean array as a proportion", {
+    expect_equal(as.numeric(nv_mean(x)), mean(v), tolerance = 1e-6)
+    expect_equal(as.numeric(nv_var(x)), var(v), tolerance = 1e-6)
+  })
+
+  it("leaves the data type of a non-boolean input alone", {
+    for (dt in c("i32", "i64", "f32", "f64")) {
+      y <- nv_array(c(1, 2, 3), dtype = dt)
+      expect_equal(dtype(nv_reduce_sum(y)), as_dtype(dt))
+      expect_equal(dtype(nv_cumsum(y)), as_dtype(dt))
+    }
+  })
+
+  it("leaves the folding reductions boolean", {
+    expect_equal(dtype(nv_reduce_any(x)), as_dtype("bool"))
+    expect_equal(dtype(nv_reduce_all(x)), as_dtype("bool"))
+    expect_equal(dtype(nv_reduce_max(x)), as_dtype("bool"))
+    expect_equal(dtype(nv_cummax(x)), as_dtype("bool"))
+  })
+
+  it("is the nv_* layer's doing -- the primitives keep the StableHLO semantics", {
+    expect_equal(dtype(prim_reduce_sum(x, axes = 1L)), as_dtype("bool"))
+    expect_equal(dtype(prim_cumsum(x, axis = 1L)), as_dtype("bool"))
+  })
+})
+
 describe("nv_var / nv_sd nan_rm", {
   it("propagate NaN by default", {
     x <- nv_array(c(1, NaN, 3, 5))
@@ -529,6 +595,19 @@ describe("nv_var / nv_sd nan_rm", {
     # value is 0, well-defined.
     expect_equal(as.numeric(nv_var(nv_array(c(1, NaN)), axes = 1L, correction = 0L, nan_rm = TRUE)), 0)
   })
+  it("does not let nan_rm change the data type", {
+    # The valid-value count is built at the operand's data type, not at an
+    # integer one: counting into an integer makes the R double `0` in
+    # `nv_max(0, count - correction)` cross categories and commit the divisor
+    # at the default float, so `nan_rm` alone would widen the result.
+    x <- nv_array(c(1, 2, NaN, 4), dtype = "f32")
+    with_default_dtypes(c(float = "f64", int = "i64"), {
+      expect_equal(dtype(nv_var(x, nan_rm = TRUE)), dtype(nv_var(x)))
+      expect_equal(dtype(nv_var(x, nan_rm = TRUE)), as_dtype("f32"))
+      expect_equal(dtype(nv_sd(x, nan_rm = TRUE)), as_dtype("f32"))
+    })
+  })
+
   it("per-slice masking: an all-NaN slice in a matrix yields NaN, others valid", {
     m <- matrix(c(NaN, NaN, 1, 2, 3, 4), nrow = 2) # column 1 all-NaN
     out <- as.numeric(nv_var(nv_array(m), axes = 1L, nan_rm = TRUE))
@@ -833,27 +912,74 @@ describe("nv_unsqueeze", {
   })
 })
 
-describe("nv_seq with steps", {
+describe("nv_linspace", {
   it("creates evenly spaced values", {
     expect_equal(
-      nv_seq(0, 1, steps = 5L),
+      nv_linspace(0, 1, steps = 5L),
       nv_array(c(0, 0.25, 0.5, 0.75, 1)),
       tolerance = 1e-6
     )
   })
   it("handles single step", {
     expect_equal(
-      nv_seq(3, 7, steps = 1L),
+      nv_linspace(3, 7, steps = 1L),
       nv_array(3, shape = 1L),
       tolerance = 1e-6
     )
   })
   it("works with integer-like endpoints", {
     expect_equal(
-      nv_seq(0, 10, steps = 6L),
+      nv_linspace(0, 10, steps = 6L),
       nv_array(c(0, 2, 4, 6, 8, 10)),
       tolerance = 1e-6
     )
+  })
+  it("counts down when end is below start", {
+    expect_equal(
+      nv_linspace(1, 0, steps = 5L),
+      nv_array(c(1, 0.75, 0.5, 0.25, 0)),
+      tolerance = 1e-6
+    )
+  })
+  it("defaults to the default float dtype", {
+    expect_equal(dtype(nv_linspace(0, 1, steps = 3L)), default_float())
+    expect_equal(dtype(nv_linspace(0, 1, steps = 1L)), default_float())
+    with_default_dtypes(c(float = "f64"), {
+      expect_equal(dtype(nv_linspace(0, 1, steps = 3L)), as_dtype("f64"))
+    })
+  })
+  it("honours a float dtype", {
+    expect_equal(dtype(nv_linspace(0, 1, steps = 3L, dtype = "f64")), as_dtype("f64"))
+    expect_equal(dtype(nv_linspace(0, 1, steps = 1L, dtype = "f64")), as_dtype("f64"))
+  })
+  it("rejects an integer dtype", {
+    expect_error(nv_linspace(0, 1, steps = 5L, dtype = "i32"), "floating-point dtype")
+    expect_error(nv_linspace(0, 10, steps = 6L, dtype = "i32"), "floating-point dtype")
+    expect_error(nv_linspace(0, 1, steps = 1L, dtype = "i32"), "floating-point dtype")
+  })
+  it("requires steps to be a positive whole number", {
+    expect_error(nv_linspace(0, 1, steps = 0L), "steps")
+    expect_error(nv_linspace(0, 1, steps = 2.5), "steps")
+  })
+  it("works under jit", {
+    expect_equal(
+      jit(function() nv_linspace(0, 1, steps = 5L))(),
+      nv_array(c(0, 0.25, 0.5, 0.75, 1)),
+      tolerance = 1e-6
+    )
+  })
+})
+
+describe("nv_seq", {
+  it("creates consecutive integer values", {
+    expect_equal(nv_seq(3, 7), nv_array(3:7))
+  })
+  it("defaults to the default integer dtype", {
+    expect_equal(dtype(nv_seq(3, 7)), default_int())
+    with_default_dtypes(c(int = "i64"), expect_equal(dtype(nv_seq(3, 7)), as_dtype("i64")))
+  })
+  it("no longer takes steps", {
+    expect_error(nv_seq(0, 1, steps = 5L), "unused argument")
   })
 })
 
@@ -1027,7 +1153,8 @@ describe("nv_triu", {
 describe("nv_tril with quickr backend", {
   it("works when the input is quickr", {
     skip_if_no_quickr()
-    x <- nv_matrix(1, nrow = 3, ncol = 3, backend = "quickr")
+    local_backend("quickr")
+    x <- nv_matrix(1, nrow = 3, ncol = 3)
     result <- nv_tril(x)
     expected <- matrix(c(1, 1, 1, 0, 1, 1, 0, 0, 1), nrow = 3, ncol = 3)
     expect_equal(as_array(result), expected, tolerance = 1e-6)
@@ -1037,7 +1164,8 @@ describe("nv_tril with quickr backend", {
 describe("nv_triu with quickr backend", {
   it("works when the input is quickr", {
     skip_if_no_quickr()
-    x <- nv_matrix(1, nrow = 3, ncol = 3, backend = "quickr")
+    local_backend("quickr")
+    x <- nv_matrix(1, nrow = 3, ncol = 3)
     result <- nv_triu(x)
     expected <- matrix(c(1, 0, 0, 1, 1, 0, 1, 1, 1), nrow = 3, ncol = 3)
     expect_equal(as_array(result), expected, tolerance = 1e-6)
@@ -1169,6 +1297,27 @@ describe("nv_seq_like", {
   })
 })
 
+describe("nv_linspace_like", {
+  it("inherits dtype, device from like (length determined by steps)", {
+    like <- nv_array(c(0, 0, 0), dtype = "f64")
+    out <- nv_linspace_like(like, 0, 1, steps = 5L)
+    expect_equal(dtype(out), dtype(like))
+    expect_equal(as.character(device(out)), as.character(device(like)))
+    expect_equal(shape(out), 5L)
+    expect_equal(as.numeric(out), c(0, 0.25, 0.5, 0.75, 1))
+  })
+
+  it("allows overriding the inherited attributes", {
+    like <- nv_array(c(0, 0, 0), dtype = "f64")
+    expect_equal(dtype(nv_linspace_like(like, 0, 1, steps = 3L, dtype = "f32")), as_dtype("f32"))
+  })
+
+  it("rejects an integer like", {
+    like <- nv_array(c(0L, 0L, 0L), dtype = "i16")
+    expect_error(nv_linspace_like(like, 0, 1, steps = 5L), "floating-point dtype")
+  })
+})
+
 describe("nv_select", {
   it("selects a row of a matrix and drops the axis", {
     m <- nv_matrix(1:6, nrow = 2)
@@ -1255,18 +1404,18 @@ describe("nv_sort", {
 describe("nv_argsort", {
   it("returns indices that sort the array", {
     x <- nv_array(c(3, 1, 4, 1, 5))
-    perm <- as.vector(nv_argsort(x))
+    perm <- as.integer(nv_argsort(x))
     expect_equal(as.vector(x)[perm], c(1, 1, 3, 4, 5))
   })
 
   it("supports decreasing", {
     x <- nv_array(c(3, 1, 4, 1, 5))
-    perm <- as.vector(nv_argsort(x, decreasing = TRUE))
+    perm <- as.integer(nv_argsort(x, decreasing = TRUE))
     expect_equal(as.vector(x)[perm], c(5, 4, 3, 1, 1))
   })
 
   it("returns i32 dtype", {
-    expect_equal(as.character(dtype(nv_argsort(nv_array(c(1, 2))))), "i32")
+    expect_equal(dtype(nv_argsort(nv_array(c(1, 2)))), default_int())
   })
 
   it("accepts a negative dim", {
@@ -1322,6 +1471,21 @@ describe("nv_median / nv_quantile NaN handling", {
     out <- as.numeric(nv_quantile(nv_array(c(1, NaN, 3, 5)), array(c(0.25, 0.5, 0.75))))
     expect_true(all(is.nan(out)))
   })
+  it("does not let nan_rm change the data type", {
+    # Both branches of the valid-value count are built at `dtype(x)`, so the
+    # `- 1` in `(n_valid - 1) * probs` yields to it. An integer count there
+    # would cross categories and commit `h` -- and with it `lo_f`, `frac` and
+    # the result -- at the default float.
+    x <- nv_array(c(1, 2, NaN, 4), dtype = "f32")
+    with_default_dtypes(c(float = "f64", int = "i64"), {
+      expect_equal(dtype(nv_quantile(x, 0.5, nan_rm = TRUE)), dtype(nv_quantile(x, 0.5)))
+      expect_equal(dtype(nv_quantile(x, 0.5, nan_rm = TRUE)), as_dtype("f32"))
+      expect_equal(dtype(nv_median(x, nan_rm = TRUE)), as_dtype("f32"))
+      # Array `probs` takes the same path.
+      expect_equal(dtype(nv_quantile(x, array(c(0.25, 0.75)), nan_rm = TRUE)), as_dtype("f32"))
+    })
+  })
+
   it("nan_rm = TRUE matches base R quantile", {
     v <- c(1, NaN, 3, 5)
     x <- nv_array(v)
@@ -1539,7 +1703,7 @@ describe("nv_argmax / nv_argmin", {
 # Regression for r-xla/anvl#343: R literals must adopt the device of their
 # AnvlArray siblings rather than being placed on the default device.
 describe("literals adopt device of array siblings", {
-  dev1 <- nv_device("cpu:1", "pjrt")
+  dev1 <- nv_device("cpu:1")
 
   it("nv_ifelse with literal branches", {
     pred <- nv_array(c(TRUE, FALSE), device = dev1)
@@ -1648,7 +1812,9 @@ describe("nv_lu", {
     expect_equal(shape(out$permutation), 2L)
     L <- as_array(out$L)
     U <- as_array(out$U)
-    permutation <- as_array(out$permutation)
+    # `as.integer()`: the permutation follows the default integer data type, and
+    # an `i64` array materializes as a `bit64::integer64`, which cannot index.
+    permutation <- as.integer(as_array(out$permutation))
     # L is unit lower-triangular, U is upper-triangular.
     expect_equal(L[upper.tri(L)], rep(0, sum(upper.tri(L))))
     expect_equal(diag(L), c(1, 1))
@@ -1667,7 +1833,9 @@ describe("nv_lu", {
     expect_equal(shape(out$U), c(k, n))
     L <- as_array(out$L)
     U <- as_array(out$U)
-    permutation <- as_array(out$permutation)
+    # `as.integer()`: the permutation follows the default integer data type, and
+    # an `i64` array materializes as a `bit64::integer64`, which cannot index.
+    permutation <- as.integer(as_array(out$permutation))
     # L: unit diagonal on the first k rows, zeros above the diagonal.
     L_top <- L[seq_len(k), , drop = FALSE]
     expect_equal(L_top[upper.tri(L_top)], rep(0, sum(upper.tri(L_top))))
@@ -1686,7 +1854,9 @@ describe("nv_lu", {
     expect_equal(shape(out$U), c(k, n))
     L <- as_array(out$L)
     U <- as_array(out$U)
-    permutation <- as_array(out$permutation)
+    # `as.integer()`: the permutation follows the default integer data type, and
+    # an `i64` array materializes as a `bit64::integer64`, which cannot index.
+    permutation <- as.integer(as_array(out$permutation))
     expect_equal(diag(L), c(1, 1))
     expect_equal(L %*% U, A_mat[permutation, , drop = FALSE], tolerance = 1e-5)
   })
@@ -1837,4 +2007,52 @@ test_that("nv_mod and `%%` follow base R flooring semantics across sign combos",
     as.vector(nv_mod(1L, -3L)),
     1L %% -3L
   )
+})
+
+describe("the default integer", {
+  it("decides the data type of the indices an operation returns", {
+    x <- nv_array(c(3, 1, 4, 1, 5))
+    local_default_dtypes(c(int = "i64"))
+    i64 <- as_dtype("i64")
+    expect_equal(dtype(nv_argmax(x)), i64)
+    expect_equal(dtype(nv_argmin(x)), i64)
+    expect_equal(dtype(nv_argsort(x)), i64)
+    expect_equal(dtype(nv_cummax(x, with_indices = TRUE)$indices), i64)
+    expect_equal(dtype(nv_cummin(x, with_indices = TRUE)$indices), i64)
+    # `hlo_top_k` fixes its indices at i32, so these are converted.
+    expect_equal(dtype(nv_top_k(x, k = 2L, with_indices = TRUE)$indices), i64)
+    # And in a trace, where the program is keyed on the defaults.
+    expect_equal(dtype(jit(function(x) nv_argmax(x))(x)), i64)
+    expect_equal(dtype(jit(function(x) nv_argsort(x))(x)), i64)
+    expect_equal(dtype(jit(function(x) nv_cummin(x, with_indices = TRUE)$indices)(x)), i64)
+    expect_equal(dtype(jit(function(x) nv_top_k(x, k = 2L, with_indices = TRUE)$indices)(x)), i64)
+  })
+
+  it("does not change the indices themselves", {
+    x <- nv_array(c(3, 1, 4, 1, 5))
+    at_i32 <- list(
+      argmax = as_array(nv_argmax(x)),
+      argsort = as_array(nv_argsort(x)),
+      cummax = as_array(nv_cummax(x, with_indices = TRUE)$indices),
+      top_k = as_array(nv_top_k(x, k = 2L, with_indices = TRUE)$indices)
+    )
+    local_default_dtypes(c(int = "i64"))
+    expect_equal(as_array(nv_argmax(x)), at_i32$argmax)
+    expect_equal(as_array(nv_argsort(x)), at_i32$argsort)
+    expect_equal(as_array(nv_cummax(x, with_indices = TRUE)$indices), at_i32$cummax)
+    expect_equal(as_array(nv_top_k(x, k = 2L, with_indices = TRUE)$indices), at_i32$top_k)
+  })
+
+  it("decides the data type of an LU decomposition's pivots", {
+    # LAPACK's getrf writes 32-bit pivots, so `pivots` and `permutation` are
+    # converted after the custom call rather than produced at the default.
+    a <- nv_matrix(c(4, 3, 6, 3, 2, 8, 1, 5, 7), nrow = 3, dtype = "f64")
+    at_i32 <- lapply(nv_lu(a)[c("pivots", "permutation")], as_array)
+    local_default_dtypes(c(int = "i64"))
+    factored <- nv_lu(a)
+    expect_equal(dtype(factored$pivots), as_dtype("i64"))
+    expect_equal(dtype(factored$permutation), as_dtype("i64"))
+    expect_equal(as_array(factored$pivots), at_i32$pivots)
+    expect_equal(as_array(factored$permutation), at_i32$permutation)
+  })
 })

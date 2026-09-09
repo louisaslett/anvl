@@ -7,6 +7,54 @@
   With it, also the promotion behavior of various primitives and API
   functions was improved.
 * `jit_eval()` was removed as it is no longer needed.
+* `nv_reduce_sum()`, `nv_reduce_prod()`, `nv_cumsum()` and `nv_cumprod()` now
+  accumulate a boolean array at the default integer data type instead of returning a boolean.
+* `as.vector()` on an `AnvlArray` now only accepts `mode = "any"` (the
+  default) and errors for any other `mode`.
+* The `steps` argument of `nv_seq()` / `nv_seq_like()` was removed.
+* `default_backend()` is now called `active_backend()`.
+* There is now exactly one backend used at a time and it is configured via the
+  `anvl.backend` option.
+* A `Shape` is now represented as an integer vector.
+
+## Features
+
+* The default data types for floating point numbers and integers can now be
+  configured via the `anvl.default_dtypes` field.
+  You can configure this for a specific scope via `local_default_dtypes()`
+  and `with_default_dtypes()`.
+  To convert a function to one running at a specified precision, use
+  `with_dtypes()`.
+* New `nv_linspace()` and `nv_linspace_like()`, replacing `nv_seq()` with
+  a provided `steps` argument.
+* `as.vector` now and returns `bit64::integer64`
+  for integer types that don't fit into R's 32 bit integers.
+  With this chane the `device_arg` parameter was removed from `jit()` as it is no longer needed.
+
+## Bug fixes
+
+* `as.vector()` now works correctly for `AnvlArray`s that are converted
+  to `bit64::integer64`. It used to drop that class along with the shape,
+  exposing the raw 64-bit pattern as a double.
+* The gradient of a conversion into a non-float data type is now zero instead
+  of one. `prim_convert()` / `nv_convert()` passed the cotangent through
+  whatever the data types were, so `nv_convert(nv_convert(x, "i32"), "f64")`
+  reported a gradient of 1 where `nv_floor()` -- the same function on the
+  reals -- correctly reported 0. Conversions between floats still pass the
+  gradient through.
+* `prim_scatter()` now checks that `update_computation` returns one value of
+  `x`'s data type, as `prim_reduce()` already did for its `reductor`. A
+  combiner returning something else made type inference declare a data type
+  the call could not produce, and failed in the backend.
+* `prim_reduce()`'s `reductor` no longer has to name its arguments `lhs` and
+  `rhs`. They were passed by name, so `function(a, b)` failed with
+  `unused arguments (lhs = ..., rhs = ...)`; they are now matched positionally,
+  as `prim_scatter()` already matched its `update_computation`.
+* `prim_reduce_any()` / `prim_reduce_all()` (and `nv_reduce_any()` /
+  `nv_reduce_all()`) now reject a non-boolean input when the call is traced.
+  Type inference declared a `bool` output whatever the input was, so an
+  integer operand reached the lowering and failed with `Data types of inputs
+  and init_values must match`.
 
 ## Features
 

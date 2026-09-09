@@ -80,7 +80,10 @@ test_that("nv_array from nv_array", {
 })
 
 test_that("format", {
-  expect_equal(format(nv_array(1:4, shape = c(4, 1))), "AnvlArray(dtype=i32, shape=4x1)")
+  expect_equal(
+    format(nv_array(1:4, shape = c(4, 1), dtype = "i32")),
+    "AnvlArray(dtype=i32, shape=4x1)"
+  )
 })
 
 test_that("nv_array(byrow = TRUE) fills row-major from a flat vector", {
@@ -241,8 +244,8 @@ test_that("to_abstract", {
 
   # pure -- an R value contributes the dtype it would commit to
   x <- nv_scalar(1)
-  expect_equal(to_abstract(x, pure = TRUE), AbstractArray("f32", c()))
-  expect_equal(to_abstract(1L, pure = TRUE), AbstractArray("i32", c()))
+  expect_equal(to_abstract(x, pure = TRUE), AbstractArray(default_float(), c()))
+  expect_equal(to_abstract(1L, pure = TRUE), AbstractArray(default_int(), c()))
   expect_error(to_abstract(list(1, 2)), "is not an array-like object")
 })
 
@@ -326,31 +329,22 @@ test_that("platform returns 'cpu' for plain backend", {
   expect_equal(platform(x), "cpu")
 })
 
-test_that("nv_array respects backend argument", {
+test_that("nv_array builds on the active backend", {
   skip_if_no_quickr()
-  local_backend("quickr")
-  x <- nv_array(1, backend = "pjrt")
-  expect_equal(backend(x), "pjrt")
+  expect_equal(backend(nv_array(1)), "pjrt")
+  expect_equal(with_backend("quickr", backend(nv_array(1))), "quickr")
 })
 
-test_that("nv_array infers backend from device object", {
+test_that("nv_array rejects a device of another backend", {
   skip_if_no_quickr()
   local_backend("quickr")
-  x <- nv_array(1, device = pjrt::pjrt_device("cpu"))
-  expect_equal(backend(x), "pjrt")
-  expect_equal(device(x), nv_device("cpu", "pjrt"))
-})
-
-test_that("nv_array errors when backend specified inside jit", {
-  expect_error(
-    jit(function() nv_array(1, backend = "pjrt"))(),
-    "must not be specified"
-  )
+  expect_error(nv_array(1, device = pjrt::pjrt_device("cpu")), "active backend")
+  expect_error(nv_empty("f64", 2L, device = pjrt::pjrt_device("cpu")), "active backend")
 })
 
 test_that("default floating dtype is f32 for pjrt", {
-  expect_equal(dtype(nv_array(1.0)), as_dtype("f32"))
-  expect_equal(dtype(nv_scalar(1.0)), as_dtype("f32"))
+  expect_equal(dtype(nv_array(1.0)), default_float())
+  expect_equal(dtype(nv_scalar(1.0)), default_float())
 })
 
 test_that("default floating dtype is f64 for quickr", {
@@ -395,8 +389,8 @@ describe("as_anvl_array", {
     out <- as_anvl_array(1L)
     expect_s3_class(out, "AnvlArray")
     expect_equal(shape(out), integer())
-    expect_equal(dtype(out), as_dtype("i32"))
-    expect_equal(dtype(as_anvl_array(1)), as_dtype("f32"))
+    expect_equal(dtype(out), default_int())
+    expect_equal(dtype(as_anvl_array(1)), default_float())
     expect_equal(dtype(as_anvl_array(TRUE)), as_dtype("bool"))
   })
 
@@ -404,11 +398,11 @@ describe("as_anvl_array", {
     out <- as_anvl_array(array(1:6, c(2, 3)))
     expect_s3_class(out, "AnvlArray")
     expect_equal(shape(out), c(2L, 3L))
-    expect_equal(dtype(out), as_dtype("i32"))
+    expect_equal(dtype(out), default_int())
   })
 
   it("places R literals on the requested device", {
-    dev <- nv_device("cpu:1", "pjrt")
+    dev <- nv_device("cpu:1")
     expect_equal(device(as_anvl_array(1L, device = dev)), dev)
   })
 
@@ -426,12 +420,12 @@ describe("as_anvl_array", {
     expect_equal(seen$dtype, dtype(as_anvl_array(1)))
     expect_equal(seen$shape, shape(as_anvl_array(1)))
     # ... including a value that was already a traced R value.
-    expect_equal(dtype(jit(function(x) as_anvl_array(x))(1L)), as_dtype("i32"))
+    expect_equal(dtype(jit(function(x) as_anvl_array(x))(1L)), default_int())
   })
 
   it("errors if an AnvlArray is on a different device than requested", {
-    dev0 <- nv_device("cpu:0", "pjrt")
-    dev1 <- nv_device("cpu:1", "pjrt")
+    dev0 <- nv_device("cpu:0")
+    dev1 <- nv_device("cpu:1")
     x <- nv_array(1:3, device = dev0)
     expect_error(
       as_anvl_array(x, device = dev1),
@@ -461,6 +455,8 @@ describe("as_anvl_array", {
   })
 
   it("converting at the default is what a promote rule avoids", {
+    # This only happens when the default float is narrower than an R double.
+    local_registered_default_dtypes()
     # `as_anvl_array()` has nothing to decide the dtype from, so an R value takes
     # its default and the digits below it are gone -- identically in both modes,
     # which is the contract. `as_anvl_arrays(.promote = )` decides and converts in
@@ -477,7 +473,7 @@ describe("as_anvl_array", {
 
 describe("as_anvl_arrays", {
   it("places R literals on the first concrete input's device", {
-    dev <- nv_device("cpu:1", "pjrt")
+    dev <- nv_device("cpu:1")
     x <- nv_array(1:3, device = dev)
     out <- as_anvl_arrays(x, 1L)
     expect_equal(device(out[[1L]]), dev)
@@ -496,7 +492,7 @@ describe("as_anvl_arrays", {
   it("converts R values at their default when no rule decides one", {
     out <- as_anvl_arrays(nv_array(1:3), 1L, 1.5, TRUE)
     expect_s3_class(out[[2L]], "AnvlArray")
-    expect_equal(lapply(out[-1L], dtype), lapply(c("i32", "f32", "bool"), as_dtype))
+    expect_equal(lapply(out[-1L], dtype), list(default_int(), default_float(), as_dtype("bool")))
   })
 
   it("keeps the names of the arguments", {
@@ -505,8 +501,8 @@ describe("as_anvl_arrays", {
   })
 
   it("errors when concrete inputs live on different devices", {
-    dev0 <- nv_device("cpu:0", "pjrt")
-    dev1 <- nv_device("cpu:1", "pjrt")
+    dev0 <- nv_device("cpu:0")
+    dev1 <- nv_device("cpu:1")
     x <- nv_array(1:3, device = dev0)
     y <- nv_array(1:3, device = dev1)
     expect_error(
@@ -517,10 +513,8 @@ describe("as_anvl_arrays", {
 
   it("errors when concrete inputs come from different backends", {
     skip_if_no_quickr()
-    dev_pjrt <- nv_device("cpu", "pjrt")
-    dev_quickr <- nv_device("cpu", "quickr")
-    x <- nv_array(1:3, device = dev_pjrt)
-    y <- nv_array(1:3, device = dev_quickr)
+    x <- nv_array(1:3)
+    y <- with_backend("quickr", nv_array(1:3))
     expect_error(
       as_anvl_arrays(x, y),
       "multiple backends"
@@ -555,17 +549,14 @@ describe("as_anvl_arrays", {
 
   it("leaves dtypes alone unless asked to promote", {
     out <- as_anvl_arrays(nv_array(1L), nv_array(1.5))
-    expect_identical(as.character(dtype(out[[1L]])), "i32")
-    expect_identical(as.character(dtype(out[[2L]])), "f32")
+    expect_equal(dtype(out[[1L]]), default_int())
+    expect_equal(dtype(out[[2L]]), default_float())
   })
-
-  # REVIEW: THe promotion tests should be in test-promotion.R
-  # One block for each promotion rule (promote_common, promote_rdata_common, etc.)
 
   it("realizes every input at the common dtype with promote_common()", {
     out <- as_anvl_arrays(nv_array(1L), nv_array(1.5), .promote = promote_common())
-    expect_identical(as.character(dtype(out[[1L]])), "f32")
-    expect_identical(as.character(dtype(out[[2L]])), "f32")
+    expect_equal(dtype(out[[1L]]), default_float())
+    expect_equal(dtype(out[[2L]]), default_float())
     expect_equal(as.numeric(out[[1L]]), 1)
     expect_equal(as.numeric(out[[2L]]), 1.5)
   })
@@ -588,7 +579,7 @@ describe("as_anvl_arrays", {
   })
 
   it("promotes R literals onto the aligned device", {
-    dev <- nv_device("cpu:1", "pjrt")
+    dev <- nv_device("cpu:1")
     x <- nv_array(c(1, 2), dtype = "f32", device = dev)
     out <- as_anvl_arrays(x, 2L, .promote = promote_common())
     expect_equal(device(out[[1L]]), dev)
@@ -597,8 +588,8 @@ describe("as_anvl_arrays", {
 
   it("realizes every input at one argument's dtype with a named anchor", {
     out <- as_anvl_arrays(x = nv_array(1L), y = nv_array(2L, dtype = "i8"), .promote = promote_like("x"))
-    expect_identical(as.character(dtype(out$x)), "i32")
-    expect_identical(as.character(dtype(out$y)), "i32")
+    expect_equal(dtype(out$x), default_int())
+    expect_equal(dtype(out$y), default_int())
   })
 
   it("refuses an input the anchor's dtype cannot hold, unless coerced", {
@@ -616,7 +607,7 @@ describe("as_anvl_arrays", {
       y = nv_array(1.5),
       .promote = promote_like("x", coerce = TRUE)
     )
-    expect_identical(as.character(dtype(out$y)), "i32")
+    expect_equal(dtype(out$y), default_int())
     expect_equal(as.integer(out$y), 1L)
     # ... and the same for an R value crossing its own category, which is the
     # other thing `coerce` allows.
@@ -628,8 +619,8 @@ describe("as_anvl_arrays", {
 
   it("accepts the anchor by position too", {
     out <- as_anvl_arrays(nv_array(1L), nv_array(1.5), .promote = promote_like(2))
-    expect_identical(as.character(dtype(out[[1L]])), "f32")
-    expect_identical(as.character(dtype(out[[2L]])), "f32")
+    expect_equal(dtype(out[[1L]]), default_float())
+    expect_equal(dtype(out[[2L]]), default_float())
     expect_identical(
       unname(lapply(as_anvl_arrays(x = nv_array(1L), y = nv_array(1.5), .promote = promote_like("y")), dtype)),
       lapply(as_anvl_arrays(nv_array(1L), nv_array(1.5), .promote = promote_like(2L)), dtype)
@@ -644,8 +635,8 @@ describe("as_anvl_arrays", {
 
   it("commits an R value anchor to its default dtype", {
     out <- as_anvl_arrays(x = 1L, y = nv_array(2L), .promote = promote_like("x"))
-    expect_identical(as.character(dtype(out$x)), "i32")
-    expect_identical(as.character(dtype(out$y)), "i32")
+    expect_equal(dtype(out$x), default_int())
+    expect_equal(dtype(out$y), default_int())
   })
 
   it("rejects an argument reference that names nothing", {
@@ -683,7 +674,7 @@ describe("as_anvl_arrays", {
     )
     expect_identical(unname(lapply(out, dtype)), lapply(by_position, dtype))
     # An excluded R value is still converted, and still lands on the shared device
-    dev <- nv_device("cpu:1", "pjrt")
+    dev <- nv_device("cpu:1")
     out <- as_anvl_arrays(
       pred = TRUE,
       a = nv_array(1L, device = dev),
@@ -726,7 +717,7 @@ describe("as_anvl_arrays", {
       args$x + args$y
     })
     out <- f(nv_array(1L), nv_array(2L, dtype = "i8"))
-    expect_equal(dtype(out), as_dtype("i32"))
+    expect_equal(dtype(out), default_int())
   })
 
   it("agrees with nv_promote_to_common(), which shares its implementation", {
@@ -744,7 +735,7 @@ describe("as_anvl_arrays", {
       args[[1L]] + args[[2L]]
     })
     out <- f(nv_array(1L), nv_array(1.5))
-    expect_identical(as.character(dtype(out)), "f32")
+    expect_equal(dtype(out), default_float())
     expect_equal(as.numeric(out), 2.5)
   })
 
@@ -759,8 +750,8 @@ describe("as_anvl_arrays", {
         promote_common(on = c("a", "b"))
       )
     )
-    expect_identical(as.character(dtype(out$x)), "f32")
-    expect_identical(as.character(dtype(out$y)), "f32")
+    expect_equal(dtype(out$x), default_float())
+    expect_equal(dtype(out$y), default_float())
     expect_identical(as.character(dtype(out$a)), "i8")
     expect_identical(as.character(dtype(out$b)), "i8")
 
@@ -782,7 +773,7 @@ describe("as_anvl_arrays", {
       .promote = promote_grouped(promote_common(on = c("x", "y")))
     )
     expect_identical(as.character(dtype(out$y)), "i8")
-    expect_identical(as.character(dtype(out$z)), "f32")
+    expect_equal(dtype(out$z), default_float())
 
     # A group of one is the plain case.
     expect_identical(
@@ -826,10 +817,10 @@ describe("as_anvl_arrays", {
     out <- as_anvl_arrays(promote = 1L, x = nv_array(1.5))
     expect_named(out, c("promote", "x"))
     expect_s3_class(out$promote, "AnvlArray")
-    expect_identical(as.character(dtype(out$promote)), "i32")
+    expect_equal(dtype(out$promote), default_int())
     # ... and it can even be the one a rule points at
     out <- as_anvl_arrays(promote = nv_array(1L), x = 2L, .promote = promote_like("promote"))
-    expect_identical(as.character(dtype(out$x)), "i32")
+    expect_equal(dtype(out$x), default_int())
   })
 
   it("rejects anything that is not a promotion rule", {
@@ -873,5 +864,225 @@ describe("arr", {
 
   it("errors when shape is not integerish", {
     expect_error(arr(1, 2, shape = "foo"))
+  })
+})
+
+describe("as.double", {
+  it("returns a bare double vector and discards shape", {
+    x <- nv_array(c(1, 2, 3, 4, 5, 6), dtype = "f32", shape = c(2L, 3L))
+    result <- as.double(x)
+    expect_type(result, "double")
+    expect_null(dim(result))
+    expect_equal(result, c(1, 2, 3, 4, 5, 6))
+  })
+
+  it("is equivalent to as.numeric", {
+    x <- nv_array(c(1.5, 2.5), dtype = "f64")
+    expect_identical(as.numeric(x), as.double(x))
+  })
+
+  it("works on a scalar", {
+    expect_identical(as.double(nv_scalar(3.5, dtype = "f64")), 3.5)
+  })
+
+  it("works on signed integer dtypes", {
+    x <- nv_array(1:4, dtype = "i32", shape = c(2L, 2L))
+    result <- as.double(x)
+    expect_type(result, "double")
+    expect_null(dim(result))
+    expect_equal(result, c(1, 2, 3, 4))
+  })
+
+  it("works on unsigned integer dtypes", {
+    expect_identical(as.double(nv_array(c(1L, 2L, 3L), dtype = "ui32")), c(1, 2, 3))
+  })
+
+  it("errors on bool dtype", {
+    expect_error(as.double(nv_array(TRUE, dtype = "bool")), "requires a float or integer dtype")
+  })
+})
+
+describe("as.integer", {
+  it("returns a bare integer vector and discards shape", {
+    x <- nv_array(1:4, dtype = "i32", shape = c(2L, 2L))
+    result <- as.integer(x)
+    expect_type(result, "integer")
+    expect_null(dim(result))
+    expect_equal(result, 1:4)
+  })
+
+  it("works on unsigned integer dtypes", {
+    x <- nv_array(c(1L, 2L, 3L), dtype = "ui32")
+    expect_identical(as.integer(x), c(1L, 2L, 3L))
+  })
+
+  it("works on a scalar", {
+    expect_identical(as.integer(nv_scalar(7L, dtype = "i32")), 7L)
+  })
+
+  it("errors on non-integer dtype", {
+    expect_error(as.integer(nv_array(1.5, dtype = "f32")), "requires a .* integer dtype")
+    expect_error(as.integer(nv_array(TRUE, dtype = "bool")), "requires a .* integer dtype")
+  })
+})
+
+describe("bit64::as.integer64()", {
+  it("round-trips every integer dtype", {
+    for (dt in c("i8", "i16", "i32", "i64", "ui8", "ui16", "ui32", "ui64")) {
+      out <- bit64::as.integer64(nv_array(1:3, dtype = dt))
+      expect_s3_class(out, "integer64")
+      expect_equal(out, bit64::as.integer64(1:3), info = dt)
+    }
+  })
+
+  it("keeps values that neither an R integer nor a double can hold", {
+    # 2^62 + 1 needs all 63 bits: as.integer() overflows to NA and a double
+    # rounds it down to 2^62.
+    x <- bit64::as.integer64(2^62) + 1L
+    expect_identical(bit64::as.integer64(nv_array(x, dtype = "i64")), x)
+
+    # 4e9 is a perfectly ordinary `ui32`, but past where R's signed `integer`
+    # stops.
+    big_ui32 <- nv_convert(nv_array(4e9, dtype = "f64"), "ui32")
+    expect_identical(bit64::as.integer64(big_ui32), bit64::as.integer64(4e9))
+  })
+
+  it("wraps a ui64 value that R's signed integer64 cannot hold", {
+    # `bit64::integer64` is signed, so the top half of `ui64` has nowhere to
+    # go: exactly 2^63 lands on NA and anything above it comes back negative.
+    u <- nv_convert(nv_array(c(2^63, 2^63 + 2^11), dtype = "f64"), "ui64")
+    expect_identical(
+      bit64::as.integer64(u),
+      c(bit64::NA_integer64_, bit64::as.integer64(-2^63 + 2^11))
+    )
+  })
+
+  it("reports the wrap when asked to check", {
+    u <- nv_convert(nv_array(2^63, dtype = "f64"), "ui64")
+    expect_error(bit64::as.integer64(u, check = TRUE), "wrapped")
+  })
+
+  it("works on a scalar", {
+    expect_identical(
+      bit64::as.integer64(nv_scalar(7L, dtype = "i64")),
+      bit64::as.integer64(7L)
+    )
+  })
+
+  it("discards the shape", {
+    expect_null(dim(bit64::as.integer64(nv_array(1:4, shape = c(2, 2), dtype = "i64"))))
+    expect_null(dim(bit64::as.integer64(nv_array(1:4, shape = c(2, 2), dtype = "i32"))))
+  })
+
+  it("errors for a non-integer dtype", {
+    expect_error(bit64::as.integer64(nv_array(1.5)), "integer dtype")
+    expect_error(bit64::as.integer64(nv_array(TRUE)), "integer dtype")
+  })
+})
+
+describe("as.logical", {
+  it("returns a bare logical vector and discards shape", {
+    x <- nv_array(c(TRUE, FALSE, TRUE, FALSE), dtype = "bool", shape = c(2L, 2L))
+    result <- as.logical(x)
+    expect_type(result, "logical")
+    expect_null(dim(result))
+    expect_equal(result, c(TRUE, FALSE, TRUE, FALSE))
+  })
+
+  it("errors on non-bool dtype", {
+    expect_error(as.logical(nv_array(1L, dtype = "i32")), "requires a .*bool.* dtype")
+    expect_error(as.logical(nv_array(1.5, dtype = "f32")), "requires a .*bool.* dtype")
+  })
+})
+
+describe("as.vector()", {
+  it("keeps the values of a dtype R has no native type for", {
+    # `as_array()` hands those back as a `bit64::integer64`, whose class
+    # `as.vector()` must not strip: the storage is a double holding the raw
+    # 64-bit pattern, so dropping it turns 1 into 4.9e-324.
+    for (dt in c("i64", "ui64", "ui32")) {
+      x <- nv_array(1:3, dtype = dt)
+      expect_s3_class(as.vector(x), "integer64")
+      expect_equal(as.vector(x), bit64::as.integer64(1:3), info = dt)
+    }
+  })
+
+  it("keeps a value that neither an R integer nor a double can hold", {
+    # 3e9 does not fit an R integer and 2^60 is past where a double still
+    # counts in ones.
+    big <- nv_convert(nv_array(c(3e9, 2^60), dtype = "f64"), "i64")
+    expect_equal(
+      as.vector(big),
+      bit64::as.integer64(c("3000000000", "1152921504606846976"))
+    )
+  })
+
+  it("is unchanged for the dtypes that map onto an R type", {
+    expect_identical(as.vector(nv_array(1:3, dtype = "i32")), 1:3)
+    expect_identical(as.vector(nv_array(c(1.5, 2.5), dtype = "f64")), c(1.5, 2.5))
+    expect_identical(as.vector(nv_array(c(TRUE, FALSE), dtype = "bool")), c(TRUE, FALSE))
+  })
+
+  it("discards the shape", {
+    expect_null(dim(as.vector(nv_array(1:4, shape = c(2, 2), dtype = "i64"))))
+    expect_null(dim(as.vector(nv_array(1:4, shape = c(2, 2), dtype = "i32"))))
+  })
+
+  it("works on a scalar", {
+    expect_identical(as.vector(nv_scalar(7L, dtype = "i64")), bit64::as.integer64(7L))
+    expect_identical(as.vector(nv_scalar(7L, dtype = "i32")), 7L)
+  })
+
+  it("errors for any mode other than the default", {
+    x <- nv_array(1:3, dtype = "i64")
+    expect_error(as.vector(x, mode = "double"), "only supports")
+    expect_error(as.vector(x, mode = "list"), "only supports")
+    # Rejected for the ordinary dtypes too, so the rule does not depend on
+    # which dtype happens to be in hand.
+    expect_error(as.vector(nv_array(1:3, dtype = "i32"), mode = "double"), "only supports")
+  })
+})
+
+describe("the default float", {
+  it("decides what an R double is built at eagerly", {
+    local_default_dtypes(c(float = "f64"))
+    expect_equal(dtype(nv_array(1.5)), as_dtype("f64"))
+    expect_equal(dtype(nv_scalar(1.5)), as_dtype("f64"))
+    expect_equal(dtype(nv_array(matrix(c(1.5, 2.5, 3.5, 4.5), 2))), as_dtype("f64"))
+    expect_equal(dtype(nv_fill(0, 3)), as_dtype("f64"))
+    expect_equal(dtype(nv_linspace(0, 1, steps = 3L)), as_dtype("f64"))
+    expect_equal(dtype(nv_eye(2)), as_dtype("f64"))
+    state <- nv_rng_state(1L)
+    expect_equal(dtype(nv_rnorm(3, state)[[2L]]), as_dtype("f64"))
+    expect_equal(dtype(nv_runif(3, state)[[2L]]), as_dtype("f64"))
+    expect_equal(peek_dtype(1.5), as_dtype("f64"))
+    expect_error(dtype(1.5), "f64")
+    # An explicit dtype still wins, and the other categories are untouched.
+    expect_equal(dtype(nv_array(1.5, dtype = "f32")), as_dtype("f32"))
+    expect_equal(dtype(nv_array(1L)), default_int())
+    expect_equal(dtype(nv_array(TRUE)), as_dtype("bool"))
+  })
+
+  it("leaves data that is not an R value alone", {
+    local_default_dtypes(c(float = "f64", int = "i64"))
+    # A buffer already has its dtype; nv_minval() builds one from raw bytes.
+    expect_equal(dtype(nv_scalar(pjrt::pjrt_scalar(1L, dtype = "i32"))), as_dtype("i32"))
+    expect_equal(as.integer(nv_reduce_max(nv_array(1:3, dtype = "i32"))), 3L)
+    expect_equal(as.integer(jit(function(x) nv_reduce_min(x))(nv_array(1:3, dtype = "i32"))), 1L)
+  })
+})
+
+describe("the default integer", {
+  it("decides what an R integer is built at eagerly", {
+    local_default_dtypes(c(int = "i64"))
+    expect_equal(dtype(nv_array(1L)), as_dtype("i64"))
+    expect_equal(dtype(nv_scalar(1L)), as_dtype("i64"))
+    expect_equal(dtype(nv_seq(1, 3)), as_dtype("i64"))
+    expect_equal(dtype(nv_fill(0L, 3)), as_dtype("i64"))
+    state <- nv_rng_state(1L)
+    expect_equal(dtype(nv_rbinom(3, state)[[2L]]), as_dtype("i64"))
+    expect_equal(dtype(nv_sample_int(3, state, 6L)[[2L]]), as_dtype("i64"))
+    expect_equal(peek_dtype(1L), as_dtype("i64"))
+    expect_equal(dtype(nv_array(1.5)), default_float())
   })
 })

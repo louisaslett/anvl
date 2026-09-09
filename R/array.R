@@ -41,21 +41,18 @@
 #'   `integer()`, `double()`, or `logical()` scalar, vector, or array.
 #' @param dtype (`NULL` | `character(1)` | [`DataType`])\cr
 #'   One of `r roxy_dtypes()` or a [`tengen::DataType`].
-#'   The default (`NULL`) uses the current backend's default dtype:
-#'   `f32` for numeric data on `"pjrt"`, `f64` for numeric data on `"quickr"`,
-#'   `i32` for integer data, and `bool` for logical data.
+#'   The default (`NULL`) uses the data type the R value commits to (see
+#'   [`default_dtypes()`]). This depends on the backend.
+#'   For the default `"pjrt"` backend, `double`s become `f32`, `integer`
+#'   `i32` and `logical`s `bool`.
+#'   You can change the defaults via the `anvl.default_dtypes` option, or for
+#'   a scope with [`local_default_dtypes()`] / [`with_default_dtypes()`].
 #' @template param_device
 #' @param shape (`NULL` | `integer()`)\cr
 #'   The output shape of the array.
 #'   The default (`NULL`) is to infer it from the data if possible.
 #'   Note that [`nv_array`] interprets length 1 vectors as having shape `(1)`.
 #'   To create a "scalar" with no axes (shape `()`), use [`nv_scalar`] or explicitly specify `shape = c()`.
-#' @param backend (`NULL` | `character(1)`)\cr
-#'   Backend the array belongs to (`"pjrt"` or `"quickr"`).
-#'   The default (`NULL`) is inferred from `device` when `device` is a
-#'   backend-specific device object, and otherwise falls back to
-#'   [`default_backend()`].
-#'   Must not be specified inside [`jit()`].
 #' @param byrow (`logical(1)`)\cr
 #'   When constructing from an R object and the result has at least two
 #'   axes, fill the array in row-major order rather than the
@@ -113,7 +110,6 @@ nv_array <- function(
   dtype = NULL,
   device = NULL,
   shape = NULL,
-  backend = NULL,
   byrow = FALSE,
   check = FALSE
 ) {
@@ -130,7 +126,7 @@ nv_array <- function(
     if (byrow) {
       cli_abort("{.arg byrow} only applies when constructing an {.cls AnvlArray} from an R object.")
     }
-    if (!is.null(device) && !eq_device(device(data), nv_device(device, backend))) {
+    if (!is.null(device) && !eq_device(device(data), nv_device(device))) {
       cli_abort("Cannot change device of existing AnvlArray from {.val {device(data)}} to {.val {device}}")
     }
     if (!is.null(shape) && !identical(shape(data), as.integer(shape))) {
@@ -171,16 +167,16 @@ nv_array <- function(
     }
   }
   if (currently_tracing() && is.null(device)) {
-    # The functions we jit should be backend-agnostic
-    if (!is.null(backend)) {
-      cli_abort("{.arg backend} must not be specified when calling {.fn nv_array} inside {.fn jit}.")
-    }
+    # A constant of the trace: it belongs to the backend being traced for, and
+    # commits to the defaults the trace is pinned to.
+    dtype <- resolve_default_dtype(data, dtype)
     return(globals$backends[["plain"]]$new_data(data, dtype, shape, device))
   }
-  if (is.null(backend) && is_device(device)) {
-    backend <- backend(device)
+  backend <- active_backend()
+  if (is_device(device)) {
+    check_device_backend(device, backend)
   }
-  backend <- backend %||% default_backend()
+  dtype <- resolve_default_dtype(data, dtype, current_default_dtypes())
   globals$backends[[backend]]$new_data(data, dtype, shape, device)
 }
 
@@ -220,10 +216,10 @@ as_anvl_array <- function(x, device = NULL) {
     cli_abort("Expected arrayish input, but got {.cls {class(x)}}")
   }
   if (is_anvl_array(x)) {
-    if (!is.null(device) && !eq_device(device(x), nv_device(device, backend(x)))) {
+    if (!is.null(device) && !eq_device(device(x), backend_device(device, backend(x)))) {
       cli_abort(c(
         "Input is on an unexpected device.",
-        i = "Expected {.val {as.character(nv_device(device, backend(x)))}}.",
+        i = "Expected {.val {as.character(backend_device(device, backend(x)))}}.",
         i = "Got {.val {as.character(device(x))}}."
       ))
     }
@@ -354,13 +350,12 @@ unwrap_if_array <- function(x) {
 
 #' @rdname AnvlArray
 #' @export
-nv_scalar <- function(data, dtype = NULL, device = NULL, backend = NULL, check = FALSE) {
+nv_scalar <- function(data, dtype = NULL, device = NULL, check = FALSE) {
   nv_array(
     data,
     dtype = dtype,
     device = device,
     shape = integer(),
-    backend = backend,
     check = check
   )
 }
@@ -392,7 +387,6 @@ nv_matrix <- function(
   ncol = NULL,
   dtype = NULL,
   device = NULL,
-  backend = NULL,
   byrow = FALSE
 ) {
   assert_int(nrow, lower = 0L, null.ok = TRUE)
@@ -411,8 +405,7 @@ nv_matrix <- function(
       data,
       dtype = dtype,
       device = device,
-      shape = c(nrow, ncol),
-      backend = backend
+      shape = c(nrow, ncol)
     ))
   }
   if (is.null(nrow) && is.null(ncol)) {
@@ -431,19 +424,18 @@ nv_matrix <- function(
     dtype = dtype,
     device = device,
     shape = c(nrow, ncol),
-    backend = backend,
     byrow = byrow
   )
 }
 
 #' @rdname AnvlArray
 #' @export
-nv_empty <- function(dtype, shape, device = NULL, backend = NULL) {
+nv_empty <- function(dtype, shape, device = NULL) {
   shape <- as.integer(shape)
-  if (is.null(backend) && is_device(device)) {
-    backend <- backend(device)
+  backend <- active_backend()
+  if (is_device(device)) {
+    check_device_backend(device, backend)
   }
-  backend <- backend %||% default_backend()
   globals$backends[[backend]]$new_empty(
     dtype = dtype,
     shape = shape,
@@ -528,30 +520,43 @@ await.AnvlArray <- function(x, ...) {
 
 #' @title Coerce AnvlArray to an R Vector
 #' @description
-#' Convert an [`AnvlArray`] to a bare R vector.
-#' The array's shape is discarded; the result is always a flat vector.
+#' Convert an [`AnvlArray`] to a flat R vector, discarding the array's shape.
 #' Each method requires a compatible dtype:
 #' * `as.double()` / `as.numeric()`: float or (signed/unsigned) integer dtypes.
 #' * `as.integer()`: signed or unsigned integer dtypes.
+#' * [`bit64::as.integer64()`]: signed or unsigned integer dtypes. This is how
+#'   to read `i64`, `ui64` and `ui32` values that an R `integer` cannot hold.
+#'   It is lossless for `i64` and `ui32`, but [`bit64::integer64`] is itself
+#'   signed, so a `ui64` value `>= 2^63` wraps to a negative one (exactly
+#'   `2^63` becomes `NA`); pass `check = TRUE` to be told when that happens.
 #' * `as.logical()`: `bool`.
-#' * `as.vector()`: any dtype; the R type is chosen by the dtype, or
-#'   forced via `mode` (e.g. `"integer"`, `"double"`, `"logical"`, `"list"`).
+#' * `as.vector()`: any dtype; the R type is chosen by the dtype. For the
+#'   dtypes R has no native type for (`i64`, `ui64`, `ui32`) that is the
+#'   [`bit64::integer64`] [`as_array()`] returns, since a bare double could
+#'   not hold the values -- and it keeps its class, so `is.vector()` is
+#'   `FALSE` for it.
 #'
 #' Use [`as_array()`] to obtain an R array that preserves the shape, or
 #' [`nv_convert()`] to change the dtype of an [`AnvlArray`] before coercing.
+#' `as.vector()`'s signature is fixed by the generic, so it takes no `check`
+#' argument; call [`as_array()`] with `check = TRUE` to have the values
+#' validated.
 #' @param x ([`AnvlArray`])\cr
 #'   Array to coerce.
 #' @param mode (`character(1)`)\cr
-#'   For `as.vector()` only. See [base::as.vector()]. Defaults to `"any"`,
-#'   meaning the natural R type for the array's dtype.
+#'   Must be `"any"` (the default), meaning the natural R type for the array's
+#'   dtype. Only present because [base::as.vector()]'s signature requires it;
+#'   pick an R type with one of the other methods instead.
 #' @param check (`logical(1)`)\cr
 #'   Forwarded to [`as_array()`]; see there for details.
 #' @param ... Unused.
-#' @return An R vector of the corresponding type (`double`, `integer`, or `logical`).
+#' @return An R vector holding the array's values, of the type the method
+#'   names: `double`, `integer`, `logical`, or [`bit64::integer64`].
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- nv_array(c(1.5, 2.5, 3.5, 4.5), shape = c(2L, 2L))
 #' as.numeric(x)
 #' as.integer(nv_array(1:6, shape = c(2L, 3L)))
+#' bit64::as.integer64(nv_array(1:6, shape = c(2L, 3L), dtype = "i64"))
 #' as.logical(nv_array(c(TRUE, FALSE), dtype = "bool"))
 #' as.vector(x)
 #' @name as-AnvlArray
@@ -580,6 +585,21 @@ as.integer.AnvlArray <- function(x, check = FALSE, ...) {
 }
 
 #' @rdname as-AnvlArray
+#' @method as.integer64 AnvlArray
+#' @exportS3Method bit64::as.integer64
+as.integer64.AnvlArray <- function(x, check = FALSE, ...) {
+  dt <- dtype(x)
+  if (!(is_dtype_int(dt) || is_dtype_uint(dt))) {
+    cli_abort(
+      "{.fn bit64::as.integer64} requires a (signed or unsigned) integer dtype, but got {.val {as.character(dt)}}."
+    )
+  }
+  # bit64's own methods drop every attribute, the shape included, for each type
+  # `as_array()` can hand back (`integer`, `integer64`).
+  bit64::as.integer64(as_array(x, check = check))
+}
+
+#' @rdname as-AnvlArray
 #' @method as.logical AnvlArray
 #' @export
 as.logical.AnvlArray <- function(x, check = FALSE, ...) {
@@ -593,7 +613,19 @@ as.logical.AnvlArray <- function(x, check = FALSE, ...) {
 #' @method as.vector AnvlArray
 #' @export
 as.vector.AnvlArray <- function(x, mode = "any") {
-  as.vector(as_array(x), mode = mode)
+  if (!identical(mode, "any")) {
+    cli_abort(c(
+      "{.fn as.vector} on an {.cls AnvlArray} only supports {.code mode = \"any\"}, but got {.val {mode}}.",
+      i = "Use {.fn as.double}, {.fn as.integer}, {.fn bit64::as.integer64} or {.fn as.logical} to pick an R type, or apply the matching coercion to {.code as_array(x)} yourself (e.g. {.code as.character(as_array(x))})." # nolint
+    ))
+  }
+  out <- as_array(x)
+  # Drop only the shape. The wholesale attribute strip `as.vector()` normally
+  # does would also take the `bit64::integer64` class that the dtypes R has no
+  # native type for (`i64`, `ui64`, `ui32`) arrive with, revealing the raw
+  # 64-bit pattern as a double.
+  dim(out) <- NULL
+  out
 }
 
 #' @rdname platform
@@ -704,7 +736,7 @@ dtype.AbstractArray <- function(x, ...) {
 #' @method shape AbstractArray
 #' @export
 shape.AbstractArray <- function(x, ...) {
-  x$shape$dims
+  unclass(x$shape)
 }
 
 #' @title Concrete Array Class
@@ -764,8 +796,7 @@ ConcreteArray <- function(data) {
 #' @param shape ([`stablehlo::Shape`] | `integer()`)\cr
 #'   The shape of the array.
 #' @param dtype ([`tengen::DataType`])\cr
-#'   The data type. Defaults to the current backend's default floating dtype,
-#'   `i32` for integer, and `bool` for logical.
+#'   The data type. For the default, see [`default_dtypes()`]).
 #'
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- LiteralArray(1L, shape = integer())
@@ -840,8 +871,7 @@ LiteralArray <- function(data, shape, dtype = default_dtype(data)) {
 IotaArray <- function(shape, dtype, axis, start = 1L) {
   shape <- as_shape(shape)
   dtype <- as_dtype(dtype)
-  # stablehlo::Shape is a wrapper object; its rank is length(shape$dims), not length(shape)
-  assert_int(axis, lower = 1L, upper = length(shape$dims))
+  assert_int(axis, lower = 1L, upper = length(shape))
   assert_int(start)
   structure(
     list(shape = shape, dtype = dtype, axis = axis, start = start),
@@ -1030,10 +1060,10 @@ to_abstract <- function(x, pure = FALSE) {
 }
 
 as_shape <- function(x) {
-  if (test_integerish(x, any.missing = FALSE, lower = 0)) {
-    Shape(as.integer(x))
-  } else if (is_shape(x)) {
+  if (is_shape(x)) {
     x
+  } else if (test_integerish(x, any.missing = FALSE, lower = 0)) {
+    Shape(as.integer(x))
   } else if (is.null(x)) {
     Shape(integer())
   } else {
@@ -1048,15 +1078,16 @@ is_shape <- function(x) {
 
 #' @title Array-like Objects
 #' @description
-#' A `arrayish` value is any object that can be input to a primitive such as [`prim_add`].
+#' A `arrayish` value is anything that represents an [`AnvlArray`]
+#' or can be converted to one.
 #'
-#' During runtime of a JIT-compiled function, these are [`AnvlArray`] objects.
-#'
-#' The following types are arrayish (during tracing):
+#' Specifically, these values are `arrayish`:
 #' * [`AnvlArray`]: a concrete array holding data on a device.
-#' * [`GraphBox`]: a boxed abstract array representing a value in a graph.
-#' * Length-1 vectors: `numeric(1)` and `logical(1)`
-#' * R arrays of types: `numeric` and `logical`.
+#' * R objects:
+#'   * `numeric(1)` and `logical(1)` which represent scalars.
+#'   * `numeric` and `logical` R arrays.
+#' * [`GraphBox`]: this is how dynamic [`AnvlArray`]s are represented
+#'   during [`jit()`].
 #'
 #' Use [`is_arrayish()`] to check whether a value is arrayish.
 #'

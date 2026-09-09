@@ -317,7 +317,7 @@ test_that("prim_reshape", {
   x <- array(1:6, c(3, 2))
   expect_equal(
     f(nv_array(x), shape = 6),
-    nv_array(as.integer(c(1, 4, 2, 5, 3, 6)), "i32")
+    nv_array(as.integer(c(1, 4, 2, 5, 3, 6)), default_int())
   )
 })
 
@@ -634,7 +634,9 @@ describe("prim_lu", {
     expect_equal(shape(out$permutation), 2L)
     LU <- as_array(out$LU)
     pivots <- as_array(out$pivots)
-    permutation <- as_array(out$permutation)
+    # `as.integer()`: the permutation follows the default integer data type, and
+    # an `i64` array materializes as a `bit64::integer64`, which cannot index.
+    permutation <- as.integer(as_array(out$permutation))
     # Documented: pivots are 1-based, each in 1..m; permutation is a 1-based
     # permutation of 1..m such that (P %*% A)[i, ] == A[permutation[i], ].
     expect_true(all(pivots >= 1L & pivots <= nrow(LU)))
@@ -849,6 +851,9 @@ test_that("prim_print", {
 })
 
 test_that("prim_print shows the R type where a value has no data type yet", {
+  # The snapshot records the data type the footer names, so it is pinned to the
+  # registered pair rather than whatever the run configured.
+  local_registered_default_dtypes()
   # A print is not a use site that settles an R value: reporting the data type
   # this call commits it to would name one nothing else in the program has --
   # here `x` is uploaded at f64 for the addition. Rendering the value does need
@@ -966,7 +971,7 @@ describe("prim_top_k", {
     expect_length(out, 2L)
     expect_equal(as.vector(out[[1L]]), c(9, 6, 5))
     expect_equal(as.vector(out[[2L]]), c(6L, 8L, 5L))
-    expect_equal(as.character(dtype(out[[2L]])), "i32")
+    expect_equal(dtype(out[[2L]]), default_int())
   })
 
   it("operates per-row on a matrix", {
@@ -1016,7 +1021,7 @@ describe("prim_argmax", {
 
   it("returns dtype i32", {
     out <- prim_argmax(nv_array(c(1, 2, 3)), axis = 1L)
-    expect_equal(as.character(dtype(out)), "i32")
+    expect_equal(dtype(out), default_int())
   })
 
   it("works with integer input", {
@@ -1046,7 +1051,7 @@ describe("prim_argmax", {
     m <- nv_matrix(numeric(0), nrow = 0, ncol = 3)
     out <- prim_argmax(m, axis = 2L)
     expect_equal(shape(out), 0L)
-    expect_equal(as.character(dtype(out)), "i32")
+    expect_equal(dtype(out), default_int())
   })
 
   it("accepts a negative dim", {
@@ -1214,3 +1219,87 @@ test_that("nv_matmul exposes precision and defaults to highest", {
 if (nzchar(system.file(package = "torch"))) {
   source(system.file("extra-tests", "test-primitives-stablehlo-torch.R", package = "anvl"), local = TRUE)
 }
+
+describe("prim_scatter update_computation", {
+  scatter_with <- function(update_computation) {
+    prim_scatter(
+      nv_array(c(0, 0, 0), dtype = "f64"),
+      nv_array(matrix(c(1L, 3L), ncol = 1)),
+      nv_array(c(10, 30), dtype = "f64"),
+      update_window_axes = integer(0),
+      inserted_window_axes = 1L,
+      x_batching_axes = integer(0),
+      scatter_indices_batching_axes = integer(0),
+      scatter_axes_to_x_axes = 1L,
+      index_vector_axis = 2L,
+      update_computation = update_computation
+    )
+  }
+
+  it("scatters with the default and with a combiner", {
+    expect_equal(as.numeric(scatter_with(NULL)), c(10, 0, 30))
+    expect_equal(as.numeric(scatter_with(function(old, new) prim_add(old, new))), c(10, 0, 30))
+  })
+
+  it("rejects a combiner that returns another data type", {
+    # Type inference took the operand's data type for the result, so a
+    # combiner returning something else made the inferred type a lie.
+    expect_error(
+      scatter_with(function(old, new) prim_convert(new, "f32")),
+      "`update_computation` must return a value with the same data type as `x`"
+    )
+    expect_error(
+      scatter_with(function(old, new) prim_gt(new, old)),
+      "`update_computation` returns \"bool\""
+    )
+  })
+})
+
+describe("prim_reduce reductor", {
+  x <- nv_array(c(1, 2, 3, 4), dtype = "f64")
+
+  it("accepts a reductor whatever its arguments are named", {
+    # The two scalars are matched positionally, so `reductor` is not obliged
+    # to call them `lhs` and `rhs`.
+    expect_equal(
+      as.numeric(prim_reduce(x, init = nv_scalar(0, "f64"), axes = 1L, reductor = function(a, b) prim_add(a, b))),
+      10
+    )
+    expect_equal(
+      as.numeric(prim_reduce(x, init = nv_scalar(0, "f64"), axes = 1L, reductor = function(lhs, rhs) {
+        prim_add(lhs, rhs)
+      })),
+      10
+    )
+    expect_equal(as.numeric(prim_reduce(x, init = nv_scalar(0, "f64"), axes = 1L, reductor = prim_add)), 10)
+    expect_equal(as.numeric(prim_reduce(x, init = nv_scalar(1, "f64"), axes = 1L, reductor = prim_mul)), 24)
+  })
+
+  it("works the same under jit", {
+    f <- jit(function(x) {
+      prim_reduce(x, init = nv_scalar(0, "f64"), axes = 1L, reductor = function(a, b) prim_add(a, b))
+    })
+    expect_equal(as.numeric(f(x)), 10)
+  })
+})
+
+describe("prim_reduce_any / prim_reduce_all input data type", {
+  it("reduces a boolean array", {
+    b <- nv_array(c(TRUE, FALSE, TRUE))
+    expect_true(as_array(prim_reduce_any(b, 1L)))
+    expect_false(as_array(prim_reduce_all(b, 1L)))
+  })
+
+  it("rejects a non-boolean input at trace time", {
+    # The declared output is `bool` whatever the input is, so nothing used to
+    # stop a non-boolean operand before the lowering.
+    i <- nv_array(c(1L, 0L, 3L))
+    expect_error(prim_reduce_any(i, 1L), "`x` must have a boolean data type")
+    expect_error(prim_reduce_all(i, 1L), "`x` must have a boolean data type")
+    expect_error(nv_reduce_any(i), "`x` must have a boolean data type")
+    expect_error(
+      nv_reduce_any(nv_array(c(1, 0))),
+      paste0("Got \"", as.character(default_float()), "\"")
+    )
+  })
+})
