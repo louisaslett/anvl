@@ -482,13 +482,10 @@ nv_dunif <- jit(
     # Before the promotion, so a non-float operand is reported as `x` rather than
     # as a failure to bring `min` to its data type.
     assert_float_dtype(peek_dtype(x), arg = "x", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(x, min, max, .promote = promotion_like(1))
-    x <- args[[1L]]
-    min <- args[[2L]]
-    max <- args[[3L]]
-    op_dtype <- dtype(x)
-    min <- nv_convert(min, op_dtype)
-    max <- nv_convert(max, op_dtype)
+    args <- as_anvl_arrays(x = x, min = min, max = max, .promote = promotion_like("x"))
+    x <- args$x
+    min <- args$min
+    max <- args$max
 
     # Density constant on support, just need support indicator
     in_support <- (x >= min) & (x <= max)
@@ -516,13 +513,10 @@ nv_punif <- jit(
     assert_flag(log_p)
     # As in `nv_dunif()`: name the operand, not `min`.
     assert_float_dtype(peek_dtype(q), arg = "q", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(q, min, max, .promote = promotion_like(1))
-    q <- args[[1L]]
-    min <- args[[2L]]
-    max <- args[[3L]]
-    op_dtype <- dtype(q)
-    min <- nv_convert(min, op_dtype)
-    max <- nv_convert(max, op_dtype)
+    args <- as_anvl_arrays(q = q, min = min, max = max, .promote = promotion_like("q"))
+    q <- args$q
+    min <- args$min
+    max <- args$max
 
     width <- max - min
     # Resolve q against the endpoints before dividing, to match base R behaviour.
@@ -576,13 +570,10 @@ nv_qunif <- jit(
     assert_flag(log_p)
     # As in `nv_dunif()`: name the operand, not `min`.
     assert_float_dtype(peek_dtype(p), arg = "p", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(p, min, max, .promote = promotion_like(1))
-    p <- args[[1L]]
-    min <- args[[2L]]
-    max <- args[[3L]]
-    op_dtype <- dtype(p)
-    min <- nv_convert(min, op_dtype)
-    max <- nv_convert(max, op_dtype)
+    args <- as_anvl_arrays(p = p, min = min, max = max, .promote = promotion_like("p"))
+    p <- args$p
+    min <- args$min
+    max <- args$max
 
     # Out-of-range `p` is resolved to NaN by `valid`, but also need `p_safe` to
     # avoid poisoning gradients
