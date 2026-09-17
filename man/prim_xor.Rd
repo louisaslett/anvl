@@ -2,7 +2,7 @@
 % Please edit documentation in R/primitives.R
 \name{prim_xor}
 \alias{prim_xor}
-\title{Primitive Xor}
+\title{Primitive Bitwise Xor}
 \usage{
 prim_xor(lhs, rhs)
 }
@@ -16,7 +16,7 @@ Must have the same shape.}
 Has the same shape and data type as the inputs.
 }
 \description{
-Element-wise logical XOR.
+Element-wise bitwise XOR, which for a boolean array is the logical XOR.
 }
 \section{Implemented Rules}{
 

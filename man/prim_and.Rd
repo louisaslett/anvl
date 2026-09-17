@@ -2,7 +2,7 @@
 % Please edit documentation in R/primitives.R
 \name{prim_and}
 \alias{prim_and}
-\title{Primitive And}
+\title{Primitive Bitwise And}
 \usage{
 prim_and(lhs, rhs)
 }
@@ -16,7 +16,7 @@ Must have the same shape.}
 Has the same shape and data type as the inputs.
 }
 \description{
-Element-wise logical AND.
+Element-wise bitwise AND, which for a boolean array is the logical AND.
 }
 \section{Implemented Rules}{
 
@@ -40,5 +40,5 @@ prim_and(x, y)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
-\code{\link[=nv_and]{nv_and()}}, \code{&}
+\code{\link[=nv_and]{nv_and()}}
 }

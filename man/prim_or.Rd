@@ -2,7 +2,7 @@
 % Please edit documentation in R/primitives.R
 \name{prim_or}
 \alias{prim_or}
-\title{Primitive Or}
+\title{Primitive Bitwise Or}
 \usage{
 prim_or(lhs, rhs)
 }
@@ -16,7 +16,7 @@ Must have the same shape.}
 Has the same shape and data type as the inputs.
 }
 \description{
-Element-wise logical OR.
+Element-wise bitwise OR, which for a boolean array is the logical OR.
 }
 \section{Implemented Rules}{
 
@@ -40,5 +40,5 @@ prim_or(x, y)
 \dontshow{\}) # examplesIf}
 }
 \seealso{
-\code{\link[=nv_or]{nv_or()}}, \code{|}
+\code{\link[=nv_or]{nv_or()}}
 }
