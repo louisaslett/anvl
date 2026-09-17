@@ -479,6 +479,9 @@ NULL
 nv_dunif <- jit(
   function(x, min = 0, max = 1, log = FALSE) {
     assert_flag(log)
+    # Before the promotion, so a non-float operand is reported as `x` rather than
+    # as a failure to bring `min` to its data type.
+    assert_float_dtype(peek_dtype(x), arg = "x", hint = "Convert it with `nv_convert()`.")
     args <- as_anvl_arrays(x, min, max, .promote = promotion_like(1))
     x <- args[[1L]]
     min <- args[[2L]]
@@ -511,6 +514,8 @@ nv_punif <- jit(
   function(q, min = 0, max = 1, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
+    # As in `nv_dunif()`: name the operand, not `min`.
+    assert_float_dtype(peek_dtype(q), arg = "q", hint = "Convert it with `nv_convert()`.")
     args <- as_anvl_arrays(q, min, max, .promote = promotion_like(1))
     q <- args[[1L]]
     min <- args[[2L]]
@@ -569,6 +574,8 @@ nv_qunif <- jit(
   function(p, min = 0, max = 1, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
+    # As in `nv_dunif()`: name the operand, not `min`.
+    assert_float_dtype(peek_dtype(p), arg = "p", hint = "Convert it with `nv_convert()`.")
     args <- as_anvl_arrays(p, min, max, .promote = promotion_like(1))
     p <- args[[1L]]
     min <- args[[2L]]

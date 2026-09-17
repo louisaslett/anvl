@@ -846,6 +846,13 @@ describe("nv_qunif", {
     out <- nv_qunif(nv_array(c(0.25, 0.75), dtype = "f32"), min = 0L, max = 1L)
     expect_equal(dtype(out), as_dtype("f32"))
   })
+
+  it("names the operand when it is not a float", {
+    # Reported as a failure to bring `min` to the operand's data type before.
+    expect_error(nv_qunif(nv_array(1L)), "`p` must be a float data type")
+    expect_error(nv_punif(nv_array(1L)), "`q` must be a float data type")
+    expect_error(nv_dunif(nv_array(1L)), "`x` must be a float data type")
+  })
 })
 
 describe("eager/jit equivalence", {
