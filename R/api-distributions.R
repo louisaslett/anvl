@@ -3,6 +3,22 @@ NULL
 
 ## Probability distributions ---------------------------------------------------
 
+# The operand -- `x`/`q`/`p`, always the first argument -- governs the data type
+# the distribution is evaluated at; the parameters follow it. The float check
+# runs before the promotion, so a non-float operand is reported as itself rather
+# than as a failure to bring a parameter to its data type.
+promote_distribution_args <- function(...) {
+  args <- list(...)
+  stopifnot(!is.null(names(args)), all(nzchar(names(args))))
+  operand <- names(args)[[1L]]
+  assert_float_dtype(
+    peek_dtype(args[[1L]]),
+    arg = operand,
+    hint = "Convert it with `nv_convert()`."
+  )
+  do.call(as_anvl_arrays, c(args, list(.promote = promotion_like(operand))))
+}
+
 #' @title The Normal Distribution
 #' @name nv_normal
 #' @description
@@ -78,10 +94,7 @@ NULL
 nv_dnorm <- jit(
   function(x, mean = 0, sd = 1, log = FALSE) {
     assert_flag(log)
-    # Before the promotion, so a non-float operand is reported as `x` rather than
-    # as a failure to bring `mean` to its data type.
-    assert_float_dtype(peek_dtype(x), arg = "x", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(x = x, mean = mean, sd = sd, .promote = promotion_like("x"))
+    args <- promote_distribution_args(x = x, mean = mean, sd = sd)
     x <- args$x
     mean <- args$mean
     sd <- args$sd
@@ -103,9 +116,7 @@ nv_pnorm <- jit(
   function(q, mean = 0, sd = 1, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
-    # As in `nv_dnorm()`: name the operand, not `mean`.
-    assert_float_dtype(peek_dtype(q), arg = "q", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(q = q, mean = mean, sd = sd, .promote = promotion_like("q"))
+    args <- promote_distribution_args(q = q, mean = mean, sd = sd)
     q <- args$q
     mean <- args$mean
     sd <- args$sd
@@ -303,9 +314,7 @@ nv_qnorm <- jit(
   function(p, mean = 0, sd = 1, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
-    # As in `nv_dnorm()`: name the operand, not `mean`.
-    assert_float_dtype(peek_dtype(p), arg = "p", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(p = p, mean = mean, sd = sd, .promote = promotion_like("p"))
+    args <- promote_distribution_args(p = p, mean = mean, sd = sd)
     p <- args$p
     mean <- args$mean
     sd <- args$sd
@@ -479,10 +488,7 @@ NULL
 nv_dunif <- jit(
   function(x, min = 0, max = 1, log = FALSE) {
     assert_flag(log)
-    # Before the promotion, so a non-float operand is reported as `x` rather than
-    # as a failure to bring `min` to its data type.
-    assert_float_dtype(peek_dtype(x), arg = "x", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(x = x, min = min, max = max, .promote = promotion_like("x"))
+    args <- promote_distribution_args(x = x, min = min, max = max)
     x <- args$x
     min <- args$min
     max <- args$max
@@ -511,9 +517,7 @@ nv_punif <- jit(
   function(q, min = 0, max = 1, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
-    # As in `nv_dunif()`: name the operand, not `min`.
-    assert_float_dtype(peek_dtype(q), arg = "q", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(q = q, min = min, max = max, .promote = promotion_like("q"))
+    args <- promote_distribution_args(q = q, min = min, max = max)
     q <- args$q
     min <- args$min
     max <- args$max
@@ -568,9 +572,7 @@ nv_qunif <- jit(
   function(p, min = 0, max = 1, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
-    # As in `nv_dunif()`: name the operand, not `min`.
-    assert_float_dtype(peek_dtype(p), arg = "p", hint = "Convert it with `nv_convert()`.")
-    args <- as_anvl_arrays(p = p, min = min, max = max, .promote = promotion_like("p"))
+    args <- promote_distribution_args(p = p, min = min, max = max)
     p <- args$p
     min <- args$min
     max <- args$max
