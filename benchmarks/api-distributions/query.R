@@ -121,7 +121,11 @@ sw_hist <- function(cell_id, output = "value") {
 ## Where along the number line the behaviour changes: runs of binades that
 ## agree, differ, or produce no finite answer. Every other table has a helper;
 ## this one was reachable only through a report page.
-sw_bands <- function(cell_id = NULL, output = NULL) {
+## `merged = TRUE` gives the compact view the terminal shows: runs of binades
+## sharing a behaviour and an upper error bound. `merged = FALSE` gives what is
+## actually stored -- one row per binade, 256 per sign in f32 and 2048 in f64 --
+## which is the series a chart wants.
+sw_bands <- function(cell_id = NULL, output = NULL, merged = TRUE) {
   b <- store_read(sw_store(), "bands")
   if (is.null(b)) {
     return(NULL)
@@ -132,9 +136,47 @@ sw_bands <- function(cell_id = NULL, output = NULL) {
   if (!is.null(output)) {
     b <- b[b$output %in% output, , drop = FALSE]
   }
-  b <- b[order(b$special, b$x_from), , drop = FALSE]
+  if (!nrow(b)) {
+    return(b)
+  }
+  if (merged) {
+    ## merging is only meaningful within a single result
+    b <- do.call(
+      rbind,
+      lapply(
+        split(b, paste(b$cell_id, b$output)),
+        function(g) {
+          cbind(cell_id = g$cell_id[1L], output = g$output[1L], merge_bands(g))
+        }
+      )
+    )
+    rownames(b) <- NULL
+    return(b[c(
+      "cell_id",
+      "output",
+      "x_from",
+      "x_to",
+      "behaviour",
+      "m_worst",
+      "m_best",
+      "worst_rel_err",
+      "n_binades"
+    )])
+  }
+  b <- b[order(b$cell_id, b$output, b$special, b$sign, b$binade), , drop = FALSE]
   rownames(b) <- NULL
-  b[c("cell_id", "output", "x_from", "x_to", "behaviour", "n_identical", "n_differ", "n_nonfinite", "worst_rel_err")]
+  b[c(
+    "cell_id",
+    "output",
+    "sign",
+    "binade",
+    "x_from",
+    "x_to",
+    "behaviour",
+    "m_worst",
+    "m_best",
+    "worst_rel_err"
+  )]
 }
 
 sw_runs <- function() {
@@ -203,7 +245,7 @@ if (!interactive() && length(commandArgs(trailingOnly = TRUE))) {
     detail = sw_detail(kv$cell, kv$output, n = num(kv$n, 20)),
     ranges = sw_ranges(cell_id = kv$cell, class = kv$class),
     hist = sw_hist(kv$cell, kv$output %||% "value"),
-    bands = sw_bands(cell_id = kv$cell, output = kv$output),
+    bands = sw_bands(cell_id = kv$cell, output = kv$output, merged = !identical(kv$raw, "1")),
     runs = sw_runs(),
     sql = sw_sql(kv$q),
     stop(

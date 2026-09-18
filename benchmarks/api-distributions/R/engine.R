@@ -336,78 +336,67 @@ band_label <- function(n) {
   if (n[3L] == 0) "identical + differ" else "mixed, some non-finite"
 }
 
-decode_bands <- function(bands, dtype) {
+## The per-binade profile, unmerged: one row for every binade that was
+## sampled, carrying its behaviour, its error envelope and its worst error.
+##
+## Merging happens at *render* time, not here. The terminal wants a dozen rows
+## and a chart wants all 256 (f32) or 2048 (f64) per sign, and deriving the
+## compact view from the full one keeps them consistent; storing only the
+## merged form would make the chart impossible without re-running the sweep.
+binade_profile <- function(bands, dtype) {
   span <- bands$span()
   acc <- bands$get()
   nexp <- nrow(acc[[1L]]$n)
 
-  ## The highest exponent field is not an interval. It holds +-Inf (zero
-  ## mantissa) and every NaN (non-zero mantissa) side by side, so decoding its
-  ## upper edge yields NaN, and a min() over that poisons both ends of any band
-  ## it is merged into -- which silently turned every range in the first
-  ## version into "NaN .. NaN". It gets its own row, with no numeric range.
-  row <- function(sgn, ix, a, special) {
-    n <- colSums(a$n[ix, , drop = FALSE])
-    ends <- if (special) {
-      c(NA_real_, NA_real_)
-    } else {
-      lo <- (min(ix) - 1L) * span
-      hi <- max(ix) * span - 1
-      e <- if (dtype == "f32") {
-        sgn * f32_from_bits(as.integer(c(lo, hi)))
-      } else {
-        c(sgn * f64_from_words(as.integer(lo), 0L), sgn * f64_from_words(as.integer(hi), -1L))
-      }
-      c(min(e), max(e))
-    }
-    data.frame(
-      sign = sgn,
-      x_from = ends[1L],
-      x_to = ends[2L],
-      special = special,
-      behaviour = band_label(n),
-      n_identical = n[1L],
-      n_differ = n[2L],
-      n_nonfinite = n[3L],
-      ## the envelope over the whole merged range
-      m_worst = if (all(is.na(a$m_worst[ix]))) NA_real_ else min(a$m_worst[ix], na.rm = TRUE),
-      m_best = if (all(is.na(a$m_best[ix]))) NA_real_ else max(a$m_best[ix], na.rm = TRUE),
-      worst_rel_err = max(a$worst[ix]),
-      n_binades = length(ix)
-    )
-  }
-
-  out <- list()
-  for (k in seq_along(acc)) {
+  out <- lapply(seq_along(acc), function(k) {
     a <- acc[[k]]
     sgn <- if (k == 1L) 1 else -1
     lab <- vapply(seq_len(nexp), function(i) band_label(a$n[i, ]), "")
-
-    ## The finite binades, run-length encoded by behaviour *and* by the error
-    ## envelope. Merging on behaviour alone would report a single range whose
-    ## stated bound was true only of its worst binade; keying on the envelope
-    ## means a reported range is one across which the bound genuinely holds.
-    present <- setdiff(which(!is.na(lab)), nexp)
-    if (length(present)) {
-      ## Keyed on the *upper* bound only. Within one binade the finite errors
-      ## routinely span a dozen decades -- a few inputs round almost exactly
-      ## while most sit on the precision floor -- so "bounded below by
-      ## 10^-(m+1)" is essentially never true of a whole range, and keying on
-      ## it fragments the table on the half that carries no information.
-      ## m_worst, the largest error, is stable across long stretches and is the
-      ## bound worth stating; m_best is still reported, per merged range.
-      l <- paste(lab[present], a$m_worst[present])
-      brk <- c(TRUE, diff(present) != 1L | l[-1L] != l[-length(l)])
-      for (gi in unique(cumsum(brk))) {
-        out[[length(out) + 1L]] <- row(sgn, present[cumsum(brk) == gi], a, FALSE)
-      }
+    ix <- which(!is.na(lab))
+    if (!length(ix)) {
+      return(NULL)
     }
-    if (!is.na(lab[nexp])) out[[length(out) + 1L]] <- row(sgn, nexp, a, TRUE)
-  }
 
-  if (!length(out)) {
+    ## The highest exponent field is not an interval: it holds +-Inf (zero
+    ## mantissa) and every NaN (non-zero mantissa) side by side, so decoding
+    ## its upper edge yields NaN. It is flagged and given no numeric range.
+    special <- ix == nexp
+    lo <- (ix - 1L) * span
+    hi <- ix * span - 1
+    ends <- if (dtype == "f32") {
+      cbind(sgn * f32_from_bits(as.integer(lo)), sgn * f32_from_bits(as.integer(hi)))
+    } else {
+      cbind(
+        sgn * f64_from_words(as.integer(lo), 0L),
+        sgn * f64_from_words(as.integer(hi), -1L)
+      )
+    }
+    x_from <- pmin(ends[, 1L], ends[, 2L])
+    x_to <- pmax(ends[, 1L], ends[, 2L])
+    x_from[special] <- NA_real_
+    x_to[special] <- NA_real_
+
+    data.frame(
+      sign = sgn,
+      binade = ix - 1L,
+      x_from = x_from,
+      x_to = x_to,
+      special = special,
+      behaviour = lab[ix],
+      n_identical = a$n[ix, 1L],
+      n_differ = a$n[ix, 2L],
+      n_nonfinite = a$n[ix, 3L],
+      m_worst = a$m_worst[ix],
+      m_best = a$m_best[ix],
+      worst_rel_err = a$worst[ix]
+    )
+  })
+
+  out <- do.call(rbind, out)
+  if (is.null(out)) {
     return(data.frame(
       sign = numeric(0),
+      binade = integer(0),
       x_from = numeric(0),
       x_to = numeric(0),
       special = logical(0),
@@ -417,14 +406,10 @@ decode_bands <- function(bands, dtype) {
       n_nonfinite = numeric(0),
       m_worst = numeric(0),
       m_best = numeric(0),
-      worst_rel_err = numeric(0),
-      n_binades = integer(0)
+      worst_rel_err = numeric(0)
     ))
   }
-  o <- do.call(rbind, out)
-  ## ascending along the number line: negative finite, positive finite, then
-  ## the Inf/NaN rows at the end where they cannot be mistaken for an interval
-  o[order(o$special, o$x_from), , drop = FALSE]
+  out[order(out$special, out$sign, out$binade), , drop = FALSE]
 }
 
 ## -- 3d. error distribution: counts per decade of relative error --
@@ -523,7 +508,7 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
     list(
       detail = detail,
       hist = a$hist$get(),
-      bands = decode_bands(a$bands, dtype),
+      bands = binade_profile(a$bands, dtype),
       ranges = ranges,
       summary = data.frame(
         n_samples = plan$n_samples,

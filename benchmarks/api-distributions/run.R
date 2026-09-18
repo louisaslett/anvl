@@ -42,6 +42,7 @@ parse_args <- function(argv) {
     store = NULL,
     from = NULL,
     to = NULL,
+    out = NULL,
     dry_run = FALSE,
     shard = NA_integer_,
     shards = NA_integer_,
@@ -83,6 +84,10 @@ parse_args <- function(argv) {
       },
       to = {
         o$to <- val()
+        i <- i + 1L
+      },
+      out = {
+        o$out <- val()
         i <- i + 1L
       },
       from = {
@@ -997,6 +1002,178 @@ cmd_diff <- function(opt) {
   ))
 }
 
+## ---- publishing a snapshot --------------------------------------------------
+##
+## The store accumulates: every run appends, and queries pick the latest per
+## cell. A published artifact must instead be a single coherent snapshot --
+## one result per cell, output and platform -- with the provenance that
+## produced it, laid out so a browser can fetch only the part it needs.
+##
+## Layout, under --out -- one artifact per (anvl version, platform, backend):
+##
+##   manifest.json     what is here: schema version, platform, specs, depths,
+##                     row counts. Small, fetched first, and readable without a
+##                     Parquet reader so it can drive navigation on its own.
+##   runs.parquet      the environment fingerprint of every run included
+##   summary.parquet   the results table for every cell of every function --
+##                     a few hundred rows, enough to drive the whole index and
+##                     the cross-function overview
+##   detail.parquet    the worst inputs, per binade
+##   bands.parquet     the per-binade profile (unmerged; merged on render)
+##   hist.parquet      the error distribution
+##   ranges.parquet    the no-finite-error regions
+##
+## One file per *table*, covering every function -- not one per function. The
+## overview page summarises all functions at once, so splitting by function
+## would mean fetching every piece anyway, in more requests, and would make
+## switching platform a download of many files rather than one artifact.
+##
+## detail and bands are sorted by cell and their row groups aligned to cell
+## boundaries. Parquet can only skip whole row groups, and nanoparquet defaults
+## to one row group of ten million rows -- which would mean reading the entire
+## file to drill into any single cell. Aligned, a reader fetches the footer and
+## then just the groups it needs.
+
+## Minimal JSON writer, so the manifest costs no extra dependency. Only the
+## shapes used below are supported: named lists, atomic vectors, data frames.
+## Non-finite numerics become null -- JSON cannot represent them, which is
+## exactly why the measurements themselves travel as Parquet and never as JSON.
+to_json <- function(x, indent = 0L) {
+  pad <- strrep(" ", indent)
+  esc <- function(s) {
+    s <- gsub("\\", "\\\\", s, fixed = TRUE)
+    s <- gsub('"', '\\"', s, fixed = TRUE)
+    gsub("[[:cntrl:]]", "", s)
+  }
+  scalar <- function(v) {
+    if (is.na(v)) {
+      return("null")
+    }
+    if (is.logical(v)) {
+      return(if (v) "true" else "false")
+    }
+    if (is.numeric(v)) {
+      return(if (is.finite(v)) format(v, scientific = FALSE, trim = TRUE) else "null")
+    }
+    paste0('"', esc(as.character(v)), '"')
+  }
+  if (is.data.frame(x)) {
+    rows <- vapply(
+      seq_len(nrow(x)),
+      function(i) to_json(as.list(x[i, , drop = FALSE]), indent + 2L),
+      ""
+    )
+    return(paste0("[\n", paste0(strrep(" ", indent + 2L), rows, collapse = ",\n"), "\n", pad, "]"))
+  }
+  if (is.list(x)) {
+    if (!length(x)) {
+      return("{}")
+    }
+    kv <- vapply(
+      names(x),
+      function(n) paste0(pad, "  \"", esc(n), "\": ", to_json(x[[n]], indent + 2L)),
+      ""
+    )
+    return(paste0("{\n", paste(kv, collapse = ",\n"), "\n", pad, "}"))
+  }
+  ## A field that is conceptually a list stays an array even with one element,
+  ## so a reader never has to handle both shapes for the same key.
+  if (length(x) == 1L && !inherits(x, "json_array")) {
+    return(scalar(x))
+  }
+  paste0("[", paste(vapply(x, scalar, ""), collapse = ", "), "]")
+}
+
+json_array <- function(x) structure(x, class = c("json_array", class(x)))
+
+cmd_export <- function(opt) {
+  if (is.null(opt$out)) {
+    stop("export needs --out <dir>", call. = FALSE)
+  }
+  dir <- store_dir(opt$store)
+  all <- latest_results(dir)
+  if (is.null(all)) {
+    stop("store is empty; run a sweep first", call. = FALSE)
+  }
+  specs <- load_specs()
+  g <- apply_filter(build_grid(specs, opt$backends), opt$filter, extra = "output")
+  res <- deepest_per_cell(all[all$cell_id %in% g$cell_id, , drop = FALSE], names(DEPTHS))
+  res <- filter_results(res, opt$filter)
+  if (!nrow(res)) {
+    stop("no results to export for that filter", call. = FALSE)
+  }
+
+  out <- normalizePath(opt$out, mustWork = FALSE)
+  dir.create(out, recursive = TRUE, showWarnings = FALSE)
+
+  runs <- store_read(dir, "runs")
+  runs <- runs[runs$run_id %in% unique(res$run_id), , drop = FALSE]
+
+  ## Keyed on exactly the rows kept above, so a detail row from a superseded
+  ## run can never leak in beside a newer summary row.
+  keep <- paste(res$run_id, res$cell_id, res$output)
+  pick <- function(tbl) {
+    x <- store_read(dir, tbl)
+    if (is.null(x) || !nrow(x)) {
+      return(NULL)
+    }
+    x[paste(x$run_id, x$cell_id, x$output) %in% keep, , drop = FALSE]
+  }
+
+  ## Row groups aligned to cell boundaries: sort, then start a new group
+  ## wherever the cell changes, so a reader can fetch one cell's rows alone.
+  write_by_cell <- function(x, path) {
+    x <- x[order(x$cell_id, x$output), , drop = FALSE]
+    rownames(x) <- NULL
+    starts <- which(!duplicated(x$cell_id))
+    nanoparquet::write_parquet(x, path, row_groups = as.integer(starts))
+    nrow(x)
+  }
+
+  nanoparquet::write_parquet(runs, file.path(out, "runs.parquet"))
+  nanoparquet::write_parquet(res[order(res$cell_id, res$output), , drop = FALSE], file.path(out, "summary.parquet"))
+
+  counts <- c(runs = nrow(runs), summary = nrow(res))
+  for (tbl in c("detail", "bands", "hist", "ranges")) {
+    x <- pick(tbl)
+    if (is.null(x) || !nrow(x)) {
+      next
+    }
+    counts[tbl] <- write_by_cell(x, file.path(out, paste0(tbl, ".parquet")))
+  }
+
+  manifest <- list(
+    schema_version = SCHEMA_VERSION,
+    exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+    platforms = json_array(sort(unique(res$platform_key))),
+    devices = json_array(sort(unique(res$device))),
+    depths = json_array(sort(unique(res$depth))),
+    specs = json_array(sort(unique(res$spec))),
+    n_cells = length(unique(res$cell_id)),
+    n_results = nrow(res),
+    anvl_version = json_array(sort(unique(runs$anvl_version))),
+    anvl_sha = json_array(sort(unique(runs$anvl_sha))),
+    files = data.frame(table = names(counts), rows = as.integer(counts))
+  )
+  writeLines(to_json(manifest), file.path(out, "manifest.json"))
+
+  files <- list.files(out, recursive = TRUE, full.names = TRUE)
+  cat(sprintf(
+    "exported %d results across %d cell(s) to %s\n",
+    nrow(res),
+    length(unique(res$cell_id)),
+    out
+  ))
+  cat(sprintf(
+    "  platforms: %s | depth: %s | %.1f MB in %d file(s)\n",
+    paste(manifest$platforms, collapse = ", "),
+    paste(manifest$depths, collapse = ", "),
+    sum(file.size(files)) / 1024^2,
+    length(files)
+  ))
+  invisible(out)
+}
+
 cmd_merge <- function(opt) {
   if (is.null(opt$from)) {
     stop("merge needs --from <dir>", call. = FALSE)
@@ -1020,11 +1197,12 @@ main <- function() {
     report = cmd_report(a$opt),
     browse = cmd_browse(a$opt),
     diff = cmd_diff(a$opt),
+    export = cmd_export(a$opt),
     merge = cmd_merge(a$opt),
     stop(
       "unknown command '",
       a$cmd,
-      "'; expected list, run, report, browse, diff, status, selftest or merge",
+      "'; expected list, run, report, browse, diff, export, status, selftest or merge",
       call. = FALSE
     )
   )

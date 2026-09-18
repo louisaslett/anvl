@@ -14,7 +14,7 @@ candidate implementations live alongside it in `../nv_pnorm/` and `../nv_qnorm/`
 and are a different kind of artifact; nothing here touches them.
 
 ```
-run.R          list · run · report · browse · diff · status · selftest · merge
+run.R          list · run · report · browse · diff · export · status · selftest · merge
 query.R        reading the store, from R or the shell
 R/util.R       bit patterns, ulp spacing, number formatting
 R/engine.R     enumeration, scoring, reducers, region classification
@@ -287,6 +287,60 @@ Nothing measured entirely inside that band describes the function under test,
 so such intervals are classified `subnormal`. They are still recorded —
 `Rscript query.R ranges --class subnormal` lists every one — and the day the
 backend stops flushing, they become ordinary agreement.
+
+## `export` — publishing a snapshot
+
+The store accumulates: every run appends, and queries take the latest per cell.
+A published artifact must instead be one coherent snapshot — **one artifact per
+(anvl version, platform, backend)**, covering every function.
+
+```bash
+Rscript run.R export --out ../anvl-bench-darwin-arm64-cpu
+```
+
+```
+manifest.json     index: schema version, platform, specs, depths, row counts
+runs.parquet      the environment fingerprint of every run included
+summary.parquet   the results table for every cell of every function
+detail.parquet    the worst inputs, per binade
+bands.parquet     the per-binade profile (unmerged; merged on render)
+hist.parquet      the error distribution
+ranges.parquet    the no-finite-error regions
+```
+
+One file per **table**, not per function. The overview page summarises every
+function at once, so splitting by function would mean fetching all the pieces
+anyway in more requests, and would turn "look at another platform" into many
+downloads instead of one artifact.
+
+`manifest.json` is deliberately JSON and carries no measurements: it is the
+index, readable without a Parquet reader. The measurements stay in Parquet
+because JSON cannot represent `NaN`, `±Inf` or `-0`, which is most of what makes
+this data interesting.
+
+### Row groups are aligned to cells, so drilling in is cheap
+
+Parquet can only skip whole row groups, and nanoparquet writes **one** group of
+up to ten million rows by default — which would mean reading a whole 46 MB file
+to inspect a single cell. `export` sorts `detail` and `bands` by cell and starts
+a new row group at every cell boundary.
+
+Measured over HTTP, on the full grid at smoke depth (53.7 MB in 7 files):
+
+| operation | fetched | time |
+|---|---|---|
+| manifest + summary (the entire index and overview) | **31.9 kB** | 16 ms |
+| drill into one cell of a 46 MB `detail.parquet` | **0.56 MB — 1.2%** | 111 ms |
+| one column across all 1.28 M rows | 0.51 MB — 1.1% | 166 ms |
+
+Aligning row groups costs about 23% in total size — smaller groups compress less
+well — and buys roughly 80× less data transferred per drill-down.
+
+**Verified readable from a browser.** `hyparquet` (pure JS, ~10 kB, no WASM)
+reads nanoparquet's output bit-exactly: `+0`/`-0` distinguished, `NaN`, `±Inf`,
+min subnormal, max double, `NA`→null, SNAPPY decompressed, HTTP range requests
+via `asyncBufferFromUrl`. DuckDB-WASM was rejected: at ~30 MB it is larger than
+the data it would query.
 
 ## The store
 

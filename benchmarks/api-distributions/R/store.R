@@ -23,6 +23,11 @@
 
 TABLES <- c("runs", "results", "detail", "ranges", "hist", "bands")
 
+## Bumped whenever the shape of an exported artifact changes in a way a reader
+## must know about. It travels in the manifest so a website can refuse, or
+## adapt to, an artifact it does not understand rather than mis-rendering it.
+SCHEMA_VERSION <- 1L
+
 ## Where the store lives. Out of the package tree by default, so a result file
 ## can never be committed by accident and the package stays what upstream
 ## tracks: scripts, config and docs. NV_SWEEP_STORE overrides it, which is also

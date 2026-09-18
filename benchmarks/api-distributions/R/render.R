@@ -245,13 +245,57 @@ describe_cell <- function(spec, row) {
 ## The structural map: where along the number line the behaviour changes.
 ## Reported per binade and merged, so a long stretch that is bit-identical
 ## collapses to one line and the line where that stops is the finding.
+## Collapse the per-binade profile into runs that behave alike.
+##
+## Adjacent binades merge when they share a sign, a behaviour and an *upper*
+## error bound. The upper bound alone is the key because within one binade the
+## finite errors routinely span a dozen decades -- a few inputs round almost
+## exactly while most sit on the precision floor -- so a lower bound carries no
+## information and keying on it fragments the table threefold. m_best is still
+## reported for each merged run.
+##
+## This is a rendering step: the store keeps every binade, so a chart can use
+## the full series and this compact view is derived from the same numbers.
+merge_bands <- function(b) {
+  if (is.null(b) || !nrow(b)) {
+    return(b)
+  }
+  b <- b[order(b$special, b$sign, b$binade), , drop = FALSE]
+  key <- paste(b$sign, b$special, b$behaviour, b$m_worst)
+  contiguous <- c(TRUE, diff(b$binade) != 1L | key[-1L] != key[-length(key)] | b$special[-1L] | b$special[-nrow(b)])
+  grp <- cumsum(contiguous)
+
+  agg <- function(f, col) vapply(split(b[[col]], grp), f, numeric(1))
+  na_min <- function(v) if (all(is.na(v))) NA_real_ else min(v, na.rm = TRUE)
+  na_max <- function(v) if (all(is.na(v))) NA_real_ else max(v, na.rm = TRUE)
+
+  out <- data.frame(
+    sign = agg(function(v) v[1L], "sign"),
+    x_from = agg(na_min, "x_from"),
+    x_to = agg(na_max, "x_to"),
+    special = vapply(split(b$special, grp), function(v) v[1L], logical(1)),
+    behaviour = vapply(split(b$behaviour, grp), function(v) v[1L], ""),
+    n_identical = agg(sum, "n_identical"),
+    n_differ = agg(sum, "n_differ"),
+    n_nonfinite = agg(sum, "n_nonfinite"),
+    m_worst = agg(na_min, "m_worst"),
+    m_best = agg(na_max, "m_best"),
+    worst_rel_err = agg(max, "worst_rel_err"),
+    n_binades = as.integer(table(grp))
+  )
+  rownames(out) <- NULL
+  ## x_from is NA on the Inf/NaN rows, so sign breaks the tie and their order
+  ## does not drift between runs.
+  out[order(out$special, out$x_from, -out$sign), , drop = FALSE]
+}
+
 print_bands <- function(bands) {
   cat("\nBEHAVIOUR ACROSS THE NUMBER LINE\n")
   if (is.null(bands) || !nrow(bands)) {
     cat("  (not recorded \u2014 re-run the sweep to populate this)\n")
     return(invisible(NULL))
   }
-  b <- bands[order(bands$special, bands$x_from), , drop = FALSE]
+  b <- merge_bands(bands)
   cat(sprintf(
     "  %-28s %-22s %6s %6s %6s  %s\n",
     "range",
