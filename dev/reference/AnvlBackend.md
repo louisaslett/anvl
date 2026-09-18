@@ -1,0 +1,114 @@
+# Create a backend
+
+Create a backend
+
+## Usage
+
+``` r
+AnvlBackend(
+  new_data,
+  new_empty,
+  dtype,
+  shape,
+  as_array,
+  as_raw,
+  platform,
+  device,
+  new_device,
+  print_data,
+  jit,
+  await_data,
+  default_dtypes
+)
+```
+
+## Arguments
+
+- new_data:
+
+  (`function`)  
+  Constructs an AnvlArray from R data. This should be a
+  [`structure()`](https://rdrr.io/r/base/structure.html) with at least a
+  `$data` field that contains the actual underlying data (`PJRTBuffer`
+  for `"pjrt"` backend, [`array()`](https://rdrr.io/r/base/array.html)
+  for `"quickr"` backend). Receives `row_major` (`logical(1)`, default
+  `FALSE`), which gives the element order of raw byte payloads; backends
+  that do not support raw `data` should abort on it.
+
+- new_empty:
+
+  (`function`)  
+  Constructs an AnvlArray of the given `dtype` and `shape` with
+  unspecified contents. Called by
+  [`nv_empty()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md).
+
+- dtype:
+
+  (`function`)  
+  Extracts the dtype from an AnvlArray.
+
+- shape:
+
+  (`function`)  
+  Extracts the shape from an AnvlArray.
+
+- as_array:
+
+  (`function(x, check)`)  
+  Converts an AnvlArray to an R array. The `check` flag is forwarded
+  from
+  [`as_array()`](https://r-xla.github.io/anvl/dev/reference/as_array.md);
+  backends may use it to abort when materialization would lose
+  information (e.g. ui64 values wrapping through
+  [`bit64::integer64`](https://bit64.r-lib.org/reference/bit64-package.html)).
+  See
+  [`pjrt::as_array.PJRTBuffer()`](https://r-xla.github.io/pjrt/reference/as_array.PJRTBuffer.html).
+
+- as_raw:
+
+  (`function`)  
+  Converts an AnvlArray to raw bytes.
+
+- platform:
+
+  (`function`)  
+  Returns the platform name (e.g. `"cpu"`).
+
+- device:
+
+  (`function`)  
+  Returns the device object for an AnvlArray.
+
+- new_device:
+
+  (`function`)  
+  Constructs a backend-specific device object from a device type string
+  (e.g. `"cpu"`). Called by
+  [`nv_device()`](https://r-xla.github.io/anvl/dev/reference/nv_device.md).
+
+- print_data:
+
+  (`function`)  
+  Prints the array data with a footer.
+
+- jit:
+
+  (`function`)  
+  Creates a JIT-compiled function implementation.
+
+- await_data:
+
+  (`function`)  
+  Blocks until the array's underlying data is ready. Called by
+  [`await()`](https://r-xla.github.io/anvl/dev/reference/await.md) for
+  `AnvlArray`s; a no-op for backends without async execution.
+
+- default_dtypes:
+
+  (`NULL` \| `list(float, int)`)  
+  The default data types for this backend. Can be overwritten, see
+  [`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md).
+
+## Value
+
+An `AnvlBackend` object.

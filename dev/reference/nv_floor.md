@@ -1,0 +1,45 @@
+# Floor
+
+Element-wise floor (round toward negative infinity). You can also use
+[`floor()`](https://rdrr.io/r/base/Round.html).
+
+## Usage
+
+``` r
+nv_floor(x)
+```
+
+## Arguments
+
+- x:
+
+  ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+  Input array. An integer array is returned unchanged.
+
+## Value
+
+[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
+Has the same shape and data type as the input.
+
+## See also
+
+[`prim_floor()`](https://r-xla.github.io/anvl/dev/reference/prim_floor.md)
+for the underlying primitive.
+
+## Examples
+
+``` r
+x <- nv_array(c(1.2, 2.7, -1.5))
+floor(x)
+#> AnvlArray
+#>   1
+#>   2
+#>  -2
+#> [ CPUf32{3} ] 
+floor(nv_array(1:3)) # an integer array is already whole
+#> AnvlArray
+#>  1
+#>  2
+#>  3
+#> [ CPUi32{3} ] 
+```

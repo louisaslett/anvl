@@ -1,0 +1,51 @@
+# Conditional Branching
+
+Conditional execution of two branches. Unlike
+[`nv_ifelse()`](https://r-xla.github.io/anvl/dev/reference/nv_ifelse.md),
+which selects elements, this executes only one of the two branches
+depending on a scalar predicate.
+
+## Usage
+
+``` r
+nv_if(pred, true, false)
+```
+
+## Arguments
+
+- pred:
+
+  ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)
+  of boolean type, scalar)  
+  Predicate.
+
+- true:
+
+  (`function()`)  
+  Zero-argument function for the true branch.
+
+- false:
+
+  (`function()`)  
+  Zero-argument function for the false branch. Must return outputs with
+  the same shapes as the true branch.
+
+## Value
+
+Result of the executed branch.
+
+## See also
+
+[`prim_if()`](https://r-xla.github.io/anvl/dev/reference/prim_if.md) for
+the underlying primitive,
+[`nv_ifelse()`](https://r-xla.github.io/anvl/dev/reference/nv_ifelse.md)
+for element-wise selection.
+
+## Examples
+
+``` r
+nv_if(nv_scalar(TRUE), \() nv_scalar(1), \() nv_scalar(2))
+#> AnvlArray
+#>  1
+#> [ CPUf32{} ] 
+```

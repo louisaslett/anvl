@@ -1,0 +1,42 @@
+# Hyperbolic Sine
+
+Element-wise hyperbolic sine. You can also use
+[`sinh()`](https://rdrr.io/r/base/Hyperbolic.html).
+
+## Usage
+
+``` r
+nv_sinh(x)
+```
+
+## Arguments
+
+- x:
+
+  ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+  Input array. An integer array is converted to the default floating
+  point type (see
+  [`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)).
+
+## Value
+
+[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
+Has the same shape as the input, and its data type – or the default
+float data type if the input was an integer array.
+
+## See also
+
+[`prim_sinh()`](https://r-xla.github.io/anvl/dev/reference/prim_sinh.md)
+for the underlying primitive.
+
+## Examples
+
+``` r
+x <- nv_array(c(-1, 0, 1))
+sinh(x)
+#> AnvlArray
+#>  -1.1752
+#>   0.0000
+#>   1.1752
+#> [ CPUf32{3} ] 
+```

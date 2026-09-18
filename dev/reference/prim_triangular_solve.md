@@ -1,0 +1,94 @@
+# Primitive Triangular Solve
+
+Solves a system of linear equations with a triangular coefficient
+matrix. When `left_side` is `TRUE`, solves `op(a) %*% x = b` for `x`.
+When `left_side` is `FALSE`, solves `x %*% op(a) = b` for `x`. Axes
+before the last two are batch axes and must match between `a` and `b`
+(no broadcasting). Here `op` is `A` or `A^T` depending on `transpose_a`.
+
+## Usage
+
+``` r
+prim_triangular_solve(a, b, left_side, lower, unit_diagonal, transpose_a)
+```
+
+## Arguments
+
+- a:
+
+  ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+  Triangular coefficient matrix of data type floating-point with at
+  least 2 axes. The last two axes must be equal (square matrix); any
+  leading axes are batch axes.
+
+- b:
+
+  ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+  Right-hand side. Same data type and rank as `a` (rank \>= 2), with
+  matching leading batch axes. The size of `a`'s last two (square) axes
+  must equal `b`'s second-to-last axis when `left_side = TRUE`, or `b`'s
+  last axis when `left_side = FALSE`.
+
+- left_side:
+
+  (`logical(1)`)  
+  If `TRUE`, solve `op(a) %*% x = b`. If `FALSE`, solve
+  `x %*% op(a) = b`.
+
+- lower:
+
+  (`logical(1)`)  
+  If `TRUE`, `a` is lower triangular. If `FALSE`, `a` is upper
+  triangular.
+
+- unit_diagonal:
+
+  (`logical(1)`)  
+  If `TRUE`, assume diagonal elements of `a` are 1.
+
+- transpose_a:
+
+  (`logical(1)`)  
+  If `TRUE`, solve with `t(a)` in place of `a`. Defaults to `FALSE`.
+
+## Value
+
+[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
+Has the same shape and data type as `b`.
+
+## Implemented Rules
+
+- `stablehlo`
+
+- `reverse`
+
+## StableHLO
+
+Lowers to
+[`hlo_triangular_solve()`](https://r-xla.github.io/stablehlo/reference/hlo_triangular_solve.html).
+
+## References
+
+Giles M (2008). “An extended collection of matrix derivative results for
+forward and reverse mode automatic differentiation.” Oxford University
+Computing Laboratory.
+
+## See also
+
+[`nv_solve()`](https://r-xla.github.io/anvl/dev/reference/nv_solve.md)
+
+## Examples
+
+``` r
+# solve L %*% x = b where L is lower triangular
+L <- nv_matrix(c(2, 1, 0, 3), nrow = 2, dtype = "f32")
+b <- nv_matrix(c(4, 3), nrow = 2, dtype = "f32")
+prim_triangular_solve(L, b,
+  left_side = TRUE, lower = TRUE,
+  unit_diagonal = FALSE, transpose_a = FALSE
+)
+#> AnvlArray
+#>  2.0000
+#>  0.3333
+#> [ CPUf32{2,1} ] 
+```
