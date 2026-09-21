@@ -14,8 +14,10 @@
   default about a value R's type cannot hold. Write `check = "err"` where
   you wrote `check = TRUE`, and `check = FALSE` to materialize silently.
 * `nv_array()` and `nv_scalar()` no longer take a `check` argument, following
-  {pjrt}: what happens to an `NA` is fixed by the dtype it is built at. Call
-  `anyNA()` on the data yourself instead.
+  {pjrt}: what happens to an `NA` is fixed by the dtype it is built at, and the
+  input is always scanned for values the requested dtype cannot hold. Call
+  `anyNA()` on the data yourself if you want to hear about a missing value the
+  dtype accepts.
 * `common_dtype()` now errors for `ui64` and a signed integer instead of
   returning `i64`, which could not hold every `ui64` value. Convert one of them
   with `nv_convert()`.

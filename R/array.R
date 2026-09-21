@@ -1,7 +1,8 @@
 #' @title AnvlArray
 #' @description
 #' The main array object.
-#' Its type is determined by a data type and a shape.
+#' Its type is determined by a data type and a shape and lives on a device, which can
+#' be a CPU or a GPU.
 #'
 #' @section Terminology:
 #' An array's **axes** are the indices that identify its directions, numbered
@@ -66,6 +67,28 @@
 #'   default column-major order, mirroring [`base::matrix()`]'s `byrow`.
 #'   Only allowed when `data` is an R object — passing an existing
 #'   `AnvlArray` together with `byrow = TRUE` is an error.
+#'
+#' @section Missing values:
+#' XLA, the compiler that is used by the `"pjrt"` (the default) backend
+#' has no notion of a missing (`NA`) value.
+#' When creating a new `AnvlArray`, the input is therefore checked for the
+#' presence of such values.
+#' `NA`s are always rejected, except when:
+#' 1. Creating `float` arrays where we convert the `NA` to `NaN`.
+#' 2. When creating an `i32` from an R `integer()`.
+#'    There, we throw a warning, but the resulting `AnvlArray` gets the bit
+#'    representation of `NAinteger_`, which is `-INT_MIN`.
+#'    Disallowing this would prevent round-trips between the data types.
+#'
+#' See the "Gotchas" vignette for more information.
+#'
+#' @section Out of Range values:
+#' Because base R has fewer data types than {anvl}, creating `AnvlArray`s from R often involves
+#' type conversions.
+#' When such conversions are performed, {anvl} performs a scan of the inputs to ensure that the
+#' requested data type can actually hold the input data.
+#' For example, trying to create an unsigned integer from a negative R `integer()` fails.
+#'
 #' @return ([`AnvlArray`])
 #' @examplesIf pjrt::plugins_downloaded()
 #' # A 1-d array (vector) with shape (4). Default type for integers is `i32`
@@ -496,10 +519,23 @@ shape.AnvlArray <- function(x, ...) {
 #'   vignette.
 #' @export
 as_array.AnvlArray <- function(x, check = "warn", ...) {
-  if (!isFALSE(check)) {
-    assert_choice(check, c("warn", "err"))
-  }
+  assert_check_level(check)
   globals$backends[[x$backend]]$as_array(x, check = check)
+}
+
+# The backends that hand back an R object directly ignore `check`, so the
+# vocabulary is validated here rather than only where pjrt acts on it.
+assert_check_level <- function(check) {
+  if (isFALSE(check)) {
+    return(invisible(check))
+  }
+  if (is.character(check) && length(check) == 1L && check %in% c("warn", "err")) {
+    return(invisible(check))
+  }
+  cli_abort(c(
+    "{.arg check} must be {.val warn}, {.val err} or {.code FALSE}, not {.val {check}}.",
+    i = "{.code TRUE} is not accepted; pick {.val warn} or {.val err}."
+  ))
 }
 
 #' @method as.array AnvlArray
@@ -551,8 +587,8 @@ await.AnvlArray <- function(x, ...) {
 #' Use [`as_array()`] to obtain an R array that preserves the shape, or
 #' [`nv_convert()`] to change the dtype of an [`AnvlArray`] before coercing.
 #' `as.vector()`'s signature is fixed by the generic, so it takes no `check`
-#' argument; call [`as_array()`] with `check = "err"` to have the values
-#' validated.
+#' argument and always reports at the default level; call [`as_array()`]
+#' directly to pick another one.
 #' @param x ([`AnvlArray`])\cr
 #'   Array to coerce.
 #' @param mode (`character(1)`)\cr
