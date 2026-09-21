@@ -2612,7 +2612,7 @@ nv_cumprod <- jit(
 #' @templateVar cum_base_fn cummax
 #' @template param_nv_cum_axis
 #' @templateVar cum_extreme_name maximum
-#' @template param_nv_cum_with_indices
+#' @template param_nv_cum_indices
 #' @template return_nv_cum_extreme
 #' @templateVar cum_nv_name nv_cummax
 #' @template section_nv_cum_relation
@@ -2622,15 +2622,15 @@ nv_cumprod <- jit(
 #' x <- nv_matrix(c(3, 1, 4, 1, 5, 9), nrow = 2)
 #' nv_cummax(x)
 #' nv_cummax(x, axis = 1L)
-#' nv_cummax(x, axis = 1L, with_indices = TRUE)
+#' nv_cummax(x, axis = 1L, indices = TRUE)
 #' nv_cummax(nv_array(c(1, NaN, 3)))                # NaN propagates
 #' nv_cummax(nv_array(c(1, NaN, 3)), nan_rm = TRUE) # NaN skipped
 #' @export
 nv_cummax <- jit(
-  function(x, axis = NULL, with_indices = FALSE, nan_rm = FALSE) {
-    assert_flag(with_indices)
+  function(x, axis = NULL, indices = FALSE, nan_rm = FALSE) {
+    assert_flag(indices)
     assert_flag(nan_rm)
-    .nv_cum_extreme(x, axis, with_indices, nan_rm, -Inf, prim_cummax)
+    .nv_cum_extreme(x, axis, indices, nan_rm, -Inf, prim_cummax)
   },
   static = 2:4
 )
@@ -2642,7 +2642,7 @@ nv_cummax <- jit(
 #' @templateVar cum_base_fn cummin
 #' @template param_nv_cum_axis
 #' @templateVar cum_extreme_name minimum
-#' @template param_nv_cum_with_indices
+#' @template param_nv_cum_indices
 #' @template return_nv_cum_extreme
 #' @templateVar cum_nv_name nv_cummin
 #' @template section_nv_cum_relation
@@ -2652,15 +2652,15 @@ nv_cummax <- jit(
 #' x <- nv_matrix(c(3, 1, 4, 1, 5, 9), nrow = 2)
 #' nv_cummin(x)
 #' nv_cummin(x, axis = 1L)
-#' nv_cummin(x, axis = 1L, with_indices = TRUE)
+#' nv_cummin(x, axis = 1L, indices = TRUE)
 #' nv_cummin(nv_array(c(3, NaN, 1)))                # NaN propagates
 #' nv_cummin(nv_array(c(3, NaN, 1)), nan_rm = TRUE) # NaN skipped
 #' @export
 nv_cummin <- jit(
-  function(x, axis = NULL, with_indices = FALSE, nan_rm = FALSE) {
-    assert_flag(with_indices)
+  function(x, axis = NULL, indices = FALSE, nan_rm = FALSE) {
+    assert_flag(indices)
     assert_flag(nan_rm)
-    .nv_cum_extreme(x, axis, with_indices, nan_rm, Inf, prim_cummin)
+    .nv_cum_extreme(x, axis, indices, nan_rm, Inf, prim_cummin)
   },
   static = 2:4
 )
@@ -2668,7 +2668,7 @@ nv_cummin <- jit(
 # NaN propagation for the default `nan_rm = FALSE` path is now handled in
 # `prim_cummax` / `prim_cummin`'s lowering directly. Here we only need to
 # sanitize NaN → identity for `nan_rm = TRUE`.
-.nv_cum_extreme <- function(x, axis, with_indices, nan_rm, identity_val, prim_cum) {
+.nv_cum_extreme <- function(x, axis, indices, nan_rm, identity_val, prim_cum) {
   x <- as_anvl_array(x)
   if (is.null(axis)) {
     x <- nv_reshape(x, prod(shape(x)))
@@ -2678,7 +2678,7 @@ nv_cummin <- jit(
     x <- nv_ifelse(nv_is_nan(x), identity_val, x)
   }
   out <- prim_cum(x, axis = axis)
-  if (with_indices) out else out$values
+  if (indices) out else out$values
 }
 
 # Higher order primitives
@@ -3451,13 +3451,13 @@ nv_argsort <- jit(
 #'   Axis along which to take the top `k`. Negative values count from the
 #'   end, i.e. `-1` refers to the last axis. If `NULL` (default),
 #'   uses the last axis.
-#' @param with_indices (`logical(1)`)\cr
+#' @param indices (`logical(1)`)\cr
 #'   If `FALSE` (default), returns just the top-`k` values. If `TRUE`,
 #'   returns `list(values = ..., indices = ...)` where `indices` is the
 #'   1-based position of each top-`k` value along `axis`, of the default
 #'   integer data type (see [`default_dtypes()`]).
-#' @return [`arrayish`] (when `with_indices = FALSE`) or named list of two
-#'   arrays (when `with_indices = TRUE`). Output shape matches `x` with
+#' @return [`arrayish`] (when `indices = FALSE`) or named list of two
+#'   arrays (when `indices = TRUE`). Output shape matches `x` with
 #'   `axis` resized to `k`; values are sorted decreasing along `axis`.
 #' @section NaN handling:
 #' `NaN` ranks larger than any finite value (so it appears first in the
@@ -3467,14 +3467,14 @@ nv_argsort <- jit(
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- nv_array(c(3, 1, 4, 1, 5, 9, 2, 6))
 #' nv_top_k(x, k = 3L)
-#' nv_top_k(x, k = 3L, with_indices = TRUE)
+#' nv_top_k(x, k = 3L, indices = TRUE)
 #'
 #' m <- nv_matrix(c(3, 1, 5, 2, 4, 0), nrow = 2, byrow = TRUE)
 #' nv_top_k(m, k = 2L, axis = 2L)
 #' @export
 nv_top_k <- jit(
-  function(x, k, axis = NULL, with_indices = FALSE) {
-    assert_flag(with_indices)
+  function(x, k, axis = NULL, indices = FALSE) {
+    assert_flag(indices)
     x <- as_anvl_array(x)
     rank <- naxes(x)
     if (rank == 0L) {
@@ -3495,17 +3495,16 @@ nv_top_k <- jit(
     if (axis != rank) {
       perm <- seq_len(rank)
       perm[c(axis, rank)] <- c(rank, axis)
-      out <- prim_top_k(prim_transpose(x, permutation = perm), k = k, indices = with_indices)
+      out <- prim_top_k(prim_transpose(x, permutation = perm), k = k, indices = indices)
       values <- prim_transpose(out$values, permutation = perm)
-      if (with_indices) {
-        indices <- prim_transpose(out$indices, permutation = perm)
-        list(values = values, indices = indices)
+      if (indices) {
+        list(values = values, indices = prim_transpose(out$indices, permutation = perm))
       } else {
         values
       }
     } else {
-      out <- prim_top_k(x, k = k, indices = with_indices)
-      if (with_indices) out else out$values
+      out <- prim_top_k(x, k = k, indices = indices)
+      if (indices) out else out$values
     }
   },
   static = 2:4
@@ -3617,10 +3616,31 @@ nv_quantile <- jit(
     # NaNs rank to the front of the window instead of the back, but any slice
     # containing NaN has its output forced to NaN below, so the gathered values
     # never surface.
+    #
+    # The window is sized here in R doubles while the gather index is computed
+    # on device, so the two agree only if the device arithmetic matches R's. At
+    # `dtype(x)` it does not: `21 * (1/7)` is 3 exactly in a double and
+    # 3.0000002 in `f32`, so the index lands past the window, where the gather
+    # clamps and quietly returns a neighbouring order statistic. The index
+    # arithmetic therefore runs at `f64`, which is bit-for-bit what R does, and
+    # each window below is the device's own index expression evaluated at
+    # `n_valid = n_axis` -- the same operations on the same bits, rather than a
+    # second formula for the same quantity, whose own rounding could put the
+    # index outside the window at equal precision. The index is nondecreasing
+    # in `n_valid`, so `n_axis` gives the largest index any slice can reach and
+    # the window is exactly big enough. Only `frac` returns to `out_dtype`, so
+    # the result keeps its data type.
+    #
+    # TODO(metal): Metal has no `f64`, so a program that reaches here cannot run
+    # on it at all. Supporting Metal means making the two sides agree the other
+    # way round -- rounding the host-side window computation through the
+    # device's data type -- instead of widening the device to R's.
+    idx_dtype <- "f64"
+
     n_axis <- shp[axis]
     budget <- ceiling(n_axis / 2) + 1
     k_lo <- as.integer(ceiling((n_axis - 1) * max(probs)) + 1)
-    k_hi <- as.integer(ceiling((n_axis - 1) * (1 - min(probs))) + 1)
+    k_hi <- as.integer(n_axis - floor((n_axis - 1) * min(probs)))
     path <- if (n_axis > 0L && k_lo <= budget) {
       "low"
     } else if (n_axis > 0L && k_hi <= budget) {
@@ -3641,14 +3661,16 @@ nv_quantile <- jit(
     nan_fill <- if (path == "high") -Inf else Inf
     to_sort <- if (nan_rm) nv_ifelse(nan_mask, nan_fill, x) else x
     n_valid_kd <- if (nan_rm) {
-      # At `dtype(x)`, so both branches agree and the `- 1` below yields to it
-      # rather than crossing categories out of an integer count and
-      # materializing `h` -- and with it `lo_f`, `frac` and `out` -- at the
-      # default float.
-      prim_reduce_sum(nv_convert(!nan_mask, dtype(x)), axes = axis, drop = FALSE)
+      # At `idx_dtype`, the data type the index arithmetic below runs at; the
+      # `i32` count the other branch takes is converted to it as well.
+      prim_reduce_sum(nv_convert(!nan_mask, idx_dtype), axes = axis, drop = FALSE)
     } else {
       count_kd
     }
+    # All three paths index the same multiset, so the order statistic does not
+    # depend on which one ran -- except in the sign of a zero: `top_k` ranks
+    # `-0` below `+0`, as `chlo.top_k` does, where `prim_sort()` folds the two
+    # together. Nothing short of `1/x` tells those two results apart.
     sorted <- switch(
       path,
       "low" = -nv_top_k(-to_sort, k = k_lo, axis = axis),
@@ -3661,16 +3683,16 @@ nv_quantile <- jit(
     probs_shape <- replace(rep(1L, rank), axis, K)
     probs_b <- nv_broadcast_to(
       prim_reshape(
-        nv_array_like(sorted, probs, shape = K, dtype = out_dtype),
+        nv_array_like(sorted, probs, shape = K, dtype = idx_dtype),
         probs_shape
       ),
       shp_K
     )
-    n_valid_b <- nv_convert(nv_broadcast_to(n_valid_kd, shp_K), out_dtype)
+    n_valid_b <- nv_convert(nv_broadcast_to(n_valid_kd, shp_K), idx_dtype)
     h <- (n_valid_b - 1) * probs_b
     lo_f <- nv_floor(h)
     hi_f <- nv_ceiling(h)
-    frac <- h - lo_f
+    frac <- nv_convert(h - lo_f, out_dtype)
 
     # `sorted` is ascending, except the high window, which top_k returns in
     # descending order: ascending position j of the slice's n_valid values is
