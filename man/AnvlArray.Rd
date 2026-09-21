@@ -11,16 +11,9 @@
 \alias{nv_empty_like}
 \title{AnvlArray}
 \usage{
-nv_array(
-  data,
-  dtype = NULL,
-  device = NULL,
-  shape = NULL,
-  byrow = FALSE,
-  check = FALSE
-)
+nv_array(data, dtype = NULL, device = NULL, shape = NULL, byrow = FALSE)
 
-nv_scalar(data, dtype = NULL, device = NULL, check = FALSE)
+nv_scalar(data, dtype = NULL, device = NULL)
 
 nv_matrix(
   data,
@@ -85,13 +78,6 @@ axes, fill the array in row-major order rather than the
 default column-major order, mirroring \code{\link[base:matrix]{base::matrix()}}'s \code{byrow}.
 Only allowed when \code{data} is an R object — passing an existing
 \code{AnvlArray} together with \code{byrow = TRUE} is an error.}
-
-\item{check}{(\code{logical(1)})\cr
-If \code{TRUE}, error when \code{data} contains any \code{NA} values. XLA has no
-representation for missing values, so they are otherwise silently
-coerced to the closest available value of the target dtype (e.g. \code{NaN}
-for floats, the bit pattern \code{-2147483648} for \code{i32}, \code{TRUE} for
-\code{bool}). Defaults to \code{FALSE}. See the "Gotchas" vignette.}
 
 \item{nrow}{(\code{NULL} | \code{integer(1)})\cr
 Number of rows. Inferred from \code{ncol} and the data length if \code{NULL}.

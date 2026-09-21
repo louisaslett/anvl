@@ -66,12 +66,6 @@
 #'   default column-major order, mirroring [`base::matrix()`]'s `byrow`.
 #'   Only allowed when `data` is an R object — passing an existing
 #'   `AnvlArray` together with `byrow = TRUE` is an error.
-#' @param check (`logical(1)`)\cr
-#'   If `TRUE`, error when `data` contains any `NA` values. XLA has no
-#'   representation for missing values, so they are otherwise silently
-#'   coerced to the closest available value of the target dtype (e.g. `NaN`
-#'   for floats, the bit pattern `-2147483648` for `i32`, `TRUE` for
-#'   `bool`). Defaults to `FALSE`. See the "Gotchas" vignette.
 #' @return ([`AnvlArray`])
 #' @examplesIf pjrt::plugins_downloaded()
 #' # A 1-d array (vector) with shape (4). Default type for integers is `i32`
@@ -117,18 +111,9 @@ nv_array <- function(
   dtype = NULL,
   device = NULL,
   shape = NULL,
-  byrow = FALSE,
-  check = FALSE
+  byrow = FALSE
 ) {
   assert_flag(byrow)
-  assert_flag(check)
-  if (check && !is_anvl_array(data) && anyNA(data)) {
-    n_na <- sum(is.na(data))
-    cli_abort(c(
-      "Input {.arg data} contains {n_na} {.val NA} value{?s}, which {?has/have} no representation at the XLA level.",
-      i = "Replace or drop missing values before transferring, or set {.code check = FALSE} to skip this check."
-    ))
-  }
   if (is_anvl_array(data)) {
     if (byrow) {
       cli_abort("{.arg byrow} only applies when constructing an {.cls AnvlArray} from an R object.")
@@ -373,13 +358,12 @@ unwrap_if_array <- function(x) {
 
 #' @rdname AnvlArray
 #' @export
-nv_scalar <- function(data, dtype = NULL, device = NULL, check = FALSE) {
+nv_scalar <- function(data, dtype = NULL, device = NULL) {
   nv_array(
     data,
     dtype = dtype,
     device = device,
-    shape = integer(),
-    check = check
+    shape = integer()
   )
 }
 
