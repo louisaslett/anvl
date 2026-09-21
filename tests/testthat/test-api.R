@@ -2401,6 +2401,71 @@ describe("nv_mod", {
   })
 })
 
+describe("nv_scan", {
+  cumsum_body <- function(carry, x) {
+    s <- carry + x
+    list(carry = s, out = s)
+  }
+
+  # What `prim_scan()` does with the loop is tested in
+  # test-primitives-stablehlo.R; `nv_scan()` adds bare arrays in place of
+  # lists, `xs = NULL` and a trip count read off `xs`.
+  it("takes bare arrays and matches nv_cumsum", {
+    x <- c(1, 2, 3, 4)
+    res <- nv_scan(nv_scalar(0), cumsum_body, xs = nv_array(x))
+    expect_equal(as.numeric(res$out), as.numeric(nv_cumsum(nv_array(x))))
+    expect_equal(as.numeric(res$carry), sum(x))
+  })
+
+  it("runs fori-style with xs = NULL and an explicit length", {
+    res <- nv_scan(
+      init = nv_scalar(1L),
+      body = function(carry, x) {
+        expect_null(x)
+        list(carry = carry + 1L, out = carry * 2L)
+      },
+      length = 3L
+    )
+    expect_equal(as.numeric(res$out), c(2, 4, 6))
+    expect_equal(as.numeric(res$carry), 4)
+  })
+
+  it("treats an empty xs like xs = NULL", {
+    res <- nv_scan(
+      init = nv_scalar(1L),
+      body = function(carry, x) {
+        expect_null(x)
+        list(carry = carry + 1L, out = carry * 2L)
+      },
+      xs = list(),
+      length = 3L
+    )
+    expect_equal(as.numeric(res$out), c(2, 4, 6))
+    expect_equal(as.numeric(res$carry), 4)
+  })
+
+  it("reads the trip count off xs, and demands it when there is none", {
+    expect_error(nv_scan(nv_scalar(0), cumsum_body), "`length` is required")
+    expect_error(nv_scan(nv_scalar(0), cumsum_body, xs = list()), "`length` is required")
+    expect_error(
+      nv_scan(nv_scalar(0), cumsum_body, xs = nv_scalar(1)),
+      "at least one axis"
+    )
+  })
+
+  # `body`, `reverse`, `length` and every leaf of `xs` are `prim_scan()`'s
+  # contract; this only pins that its errors reach the caller through here.
+  it("leaves the rest of the contract to prim_scan", {
+    x <- nv_array(c(1, 2, 3, 4))
+    expect_error(nv_scan(nv_scalar(0), "not a function", xs = x), "must be a function")
+    expect_error(nv_scan(nv_scalar(0), cumsum_body, xs = x, reverse = NA), "May not be NA")
+    expect_error(nv_scan(nv_scalar(0), cumsum_body, length = -1L), "not >= 0")
+    expect_error(
+      nv_scan(nv_scalar(0), cumsum_body, xs = x, length = 9L),
+      "size 9 along axis 1, not 4"
+    )
+  })
+})
 describe("the default integer", {
   it("decides the data type of the indices an operation returns", {
     x <- nv_array(c(3, 1, 4, 1, 5))

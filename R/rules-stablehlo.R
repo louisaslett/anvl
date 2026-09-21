@@ -733,22 +733,37 @@ prim_scan[["stablehlo"]] <- function(..., body_graph, length, reverse, n_carry, 
   out_avals <- avals_body[-seq_len(n_carry)]
   n_out <- base::length(out_avals)
 
+  # Every step overwrites its own slice, so the buffers only need *some*
+  # value; stablehlo has no uninitialized tensor, and zeros are what JAX
+  # allocates too. `0L` takes the buffer's data type whatever it is.
   bufs0 <- lapply(out_avals, function(aval) {
-    dt <- as.character(aval$dtype)
-    zero <- switch(substr(dt, 1L, 1L), "b" = FALSE, "i" = , "u" = 0L, 0)
-    hlo_tensor(zero, dtype = dt, shape = as.integer(c(n, shape(aval))), func = outer)
+    hlo_tensor(
+      0L,
+      dtype = aval$dtype,
+      shape = as.integer(c(n, shape(aval))),
+      func = outer
+    )
   })
+  # A zero-step scan is the buffers as allocated and the carry untouched. We
+  # cannot emit the loop and let the condition stop it immediately: the body
+  # slices one step off `xs`, which does not type-check against an `xs` whose
+  # axis 1 is empty, and MLIR verifies a region it never runs.
+  if (n == 0L) {
+    return(c(carry0, bufs0))
+  }
+
   i0 <- hlo_scalar(0L, dtype = "i32", func = outer)
   state <- c(list(i0), carry0, bufs0, xs0)
 
   # Both regions declare the full state as their inputs, in state order.
+  # `region_input()` names them with auto value ids, which is what keeps one
+  # scan lowered inside another's body from redefining the outer region's.
   declare_state <- function() {
-    i <- region_input("i32")
-    rest <- lapply(state[-1L], function(value) {
-      tt <- value$value_type$type
-      region_input(as.character(tt$dtype), shape(tt))
+    vals <- lapply(state, function(s) {
+      vt <- s$value_type
+      region_input(as.character(vt$type$dtype), shape(vt))
     })
-    list(i = i, rest = rest)
+    list(i = vals[[1L]], rest = vals[-1L])
   }
 
   cond_func <- stablehlo::local_func("")

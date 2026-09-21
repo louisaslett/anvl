@@ -2737,6 +2737,21 @@ nv_while <- prim_while
 #' yields a scalar), and must return
 #' `list(carry = <same structure as init>, out = <arrays to stack>)`.
 #' The stacked `out` buffers gain a new leading axis of size `length`.
+#'
+#' The whole loop, written out in R:
+#'
+#' ```r
+#' carry <- init
+#' out <- <empty, `length` rows>
+#' steps <- if (reverse) rev(seq_len(length)) else seq_len(length)
+#' for (t in steps) {
+#'   step <- body(carry, xs[t, ...])  # `x` is NULL when `xs` is empty
+#'   carry <- step$carry
+#'   out[t, ...] <- step$out          # position t, not the loop's position
+#' }
+#' list(carry = carry, out = out)
+#' ```
+#'
 #' @param init ([`arrayish`] | `list()`)\cr
 #'   Initial carry: a single array or a (possibly nested) named list.
 #'   Every slot must keep a fixed shape and dtype across steps.
@@ -2744,13 +2759,15 @@ nv_while <- prim_while
 #'   Step function `function(carry, x)` returning
 #'   `list(carry = , out = )`. `out` may be a single array, a (nested)
 #'   list of arrays, or `NULL` (loop for the carry only). Its structure
-#'   must be identical at every step. `x` is `NULL` when `xs` is `NULL`.
+#'   must be identical at every step. `x` is `NULL` when `xs` is empty.
 #' @param xs ([`arrayish`] | `list()` | `NULL`)\cr
 #'   Per-step inputs, sliced along axis 1. All leaves must agree on
-#'   the size of axis 1.
+#'   the size of axis 1. `NULL` or a list with no leaves runs a counted
+#'   loop over `length` steps instead.
 #' @param length (`integer(1)` | `NULL`)\cr
-#'   Static trip count. Required when `xs` is `NULL`; otherwise inferred
-#'   from (and checked against) axis 1 of `xs`.
+#'   Static trip count. Required when `xs` is empty; otherwise inferred
+#'   from (and checked against) axis 1 of `xs`. A trip count of `0` runs
+#'   no step.
 #' @param reverse (`logical(1)`)\cr
 #'   If `TRUE`, steps run `t = length, ..., 1`; each step still reads
 #'   `xs` at position `t` and writes its output at position `t`, so a
@@ -2769,53 +2786,28 @@ nv_while <- prim_while
 #' )$out
 #' @export
 nv_scan <- function(init, body, xs = NULL, length = NULL, reverse = FALSE) {
-  force(init)
-  if (!is.function(body)) {
-    cli_abort("{.arg body} must be a function")
-  }
-  if (!is.logical(reverse) || base::length(reverse) != 1L || is.na(reverse)) {
-    cli_abort("{.arg reverse} must be TRUE or FALSE")
-  }
   init <- map_tree(init, as_anvl_array)
+  xs <- if (is.null(xs)) list() else map_tree(xs, as_anvl_array)
 
-  if (!is.null(xs)) {
-    xs <- map_tree(xs, as_anvl_array)
+  # The trip count is the one thing this layer settles: `prim_scan()` needs it
+  # stated, here it may be read off `xs` instead. The rest of the contract --
+  # `body`, `reverse`, `length` itself, every leaf of `xs` against the trip
+  # count -- is `prim_scan()`'s and is left to it.
+  if (is.null(length)) {
     xs_flat <- flatten(xs)
     if (!base::length(xs_flat)) {
-      cli_abort("{.arg xs} must contain at least one array")
+      cli_abort("{.arg length} is required when {.arg xs} is empty")
     }
-    lens <- vapply(
-      xs_flat,
-      function(x) {
-        s <- shape(x)
-        if (!base::length(s)) {
-          cli_abort("every leaf of {.arg xs} must have at least one axis")
-        }
-        as.integer(s[[1L]])
-      },
-      integer(1L)
-    )
-    n <- lens[[1L]]
-    if (!all(lens == n)) {
-      cli_abort("all leaves of {.arg xs} must agree on the size of axis 1")
+    # Reading axis 1 needs there to be one; the other leaves are checked
+    # against the count that comes out of this one.
+    s <- shape(xs_flat[[1L]])
+    if (!base::length(s)) {
+      cli_abort("every array in {.arg xs} must have at least one axis.")
     }
-    if (!is.null(length) && as.integer(length) != n) {
-      cli_abort(
-        "{.arg length} ({as.integer(length)}) disagrees with axis 1 of {.arg xs} ({n})"
-      )
-    }
-  } else {
-    if (is.null(length)) {
-      cli_abort("{.arg length} is required when {.arg xs} is NULL")
-    }
-    n <- as.integer(length)
-    if (is.na(n) || n < 1L) {
-      cli_abort("{.arg length} must be a positive integer")
-    }
-    xs <- list()
+    length <- as.integer(s[[1L]])
   }
 
-  prim_scan(init, xs, body, length = n, reverse = reverse)
+  prim_scan(init, xs, body, length = length, reverse = reverse)
 }
 
 ## Additional math functions ---------------------------------------------------
