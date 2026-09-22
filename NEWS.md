@@ -1,11 +1,14 @@
 # anvl (development version)
-  
+
 ## Breaking changes
 
 * The `@jit` roxygen tag was removed; wrap functions in `jit()` at the
   definition instead.
 * `nv_top_k()`, `nv_cummax()` and `nv_cummin()` take `indices` instead of
   `with_indices`, spelling it the way `prim_top_k()` does.
+* `nv_top_k()` takes `axes` instead of `axis`, ranking the elements of several
+  axes together, and `axes = NULL` (the default) now ranks over every axis
+  where it used to take the last one. Write `axes = -1` for the old default.
 * The type system of {anvl} was changed to avoid the problems reported in issue #373.
   Specifically, the ambiguity system was replaced with the `RData` system and a new system of rules for type promotions.
   With it, also the promotion behavior of various primitives and API
@@ -61,6 +64,25 @@
 
 ## Features
 
+* `nv_rng_state()` accepts a seed of any signed or unsigned integer data type,
+  bringing it to `i32`, where it took an `i32` only. The state stays `ui64[2]`
+  whatever the seed and the default integer data type are.
+* `nv_flatten()` accepts a scalar, returning a length-1 array, instead of
+  erroring.
+* `as_anvl_array()` gained a `.promote` argument, naming the data type the
+  input is brought to, as `as_anvl_arrays()` already had.
+* `nv_is_nan()`, `nv_is_finite()` and `nv_is_infinite()` accept any data type
+  and answer a constant (all `FALSE` / all `TRUE` / all `FALSE`) for one that
+  holds no NaN or infinity, instead of comparing -- or, for `nv_is_finite()`
+  and `nv_is_infinite()`, erroring.
+* The linear algebra functions (`nv_solve()`, `nv_triangular_solve()`,
+  `nv_chol()`, `nv_inv()`, `nv_det()`, `nv_determinant()`, `nv_lu()`,
+  `nv_qr()`, `nv_svd()`, `nv_eigh()`) accept integer input, computing at the
+  default float data type where the input is not a float already, instead of
+  erroring. The `prim_*` ones still take a float only.
+* `nv_sign()` accepts an unsigned integer array, returning `0` or `1` like
+  base R's `sign()` on a non-negative number; `prim_sign()` still takes a
+  signed input only.
 * `nv_reverse()` gained an `axes = NULL` default that reverses every axis,
   matching `rev()` and `numpy.flip()`, and returns `x` unchanged for an empty
   `axes` instead of erroring.
