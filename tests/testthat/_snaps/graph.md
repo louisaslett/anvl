@@ -10,9 +10,9 @@
     Code
       jit(prim_ceiling)(nv_array(1:4))
     Condition
-      Error in `prim_ceil()`:
-      ! `x` must have dtype float.
-      x Got i32.
+      Error in `prim_ceiling()`:
+      ! `x` must have a float data type.
+      x Got "i32".
 
 ---
 
@@ -20,18 +20,18 @@
       jit(prim_transpose, static = "perm")(nv_array(1:4, shape = c(2, 2)), perm = c(2,
         2))
     Condition
-      Error in `resolve_axes()`:
+      Error in `prim_transpose()`:
       ! `perm` must not contain duplicate axes.
-      x Got 2 and 2.
+      x Got c(2, 2).
 
-# error handling: stablehlo errors use anvl's terminology
+# error handling: type inference reports in anvl's terminology
 
     Code
       jit(prim_add)(nv_array(1:4), nv_array(1:6))
     Condition
       Error in `prim_add()`:
       ! `lhs` and `rhs` must have the same array type.
-      x Got array<4xi32> and array<6xi32>.
+      x Got i32[4] and i32[6].
 
 # can print GraphLiteral if it holds scalar array
 

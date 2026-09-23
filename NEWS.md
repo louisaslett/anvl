@@ -35,6 +35,8 @@
   mapping for the previous right-aligned behavior.
 * The `@jit` roxygen tag was removed; wrap functions in `jit()` at the
   definition instead.
+* A primitive is now named after the `prim_*()` function that exports it rather
+  than the StableHLO op it lowers to.
 * `nv_top_k()`, `nv_cummax()` and `nv_cummin()` take `indices` instead of
   `with_indices`, spelling it the way `prim_top_k()` does.
 * `nv_clamp()` and `prim_clamp()` take `(x, min, max)` instead of
@@ -144,6 +146,7 @@
   default.
 * The `tensor_to_gval` argument of `GraphDescriptor()` is now called
   `array_to_gval`.
+* `vt2at()` was removed.
 
 ## Features
 
@@ -172,6 +175,10 @@
 * `nv_sign()` accepts an unsigned integer array, returning `0` or `1` like
   base R's `sign()` on a non-negative number; `prim_sign()` still takes a
   signed input only.
+* Error messages of primitives should now be greatly improved and mention the right argument names.
+  This was achieved by porting the stablehlo inference functions to anvl's
+  terminology. A message about a parameter also reports the value it was
+  given, e.g. ``x` Got c(1, 2)`.
 * `aperm()` and `quantile()` now work on an `AnvlArray` / `AnvlBox`,
   forwarding to `nv_aperm()` and `nv_quantile()`.
 * New `nv_drop()`, another spelling of `nv_squeeze()`; with the default
@@ -246,6 +253,18 @@
 
 ## Bug fixes
 
+* Whatever a `prim_*()` refuses now reports that primitive as the call, rather
+  than the helper that checked the argument or the anonymous function `jit()`
+  wraps.
+* `prim_convolution()` (and so `nv_conv1d()` / `nv_conv2d()` / `nv_conv3d()`)
+  refuses a negative `padding` that takes away more than a spatial axis holds,
+  which made XLA's own inference abort the R process, and a zero-sized kernel
+  spatial axis. Negative padding that only empties an axis stays legal.
+* `prim_convolution()` and `prim_static_slice()` no longer overflow on a
+  padding, dilation or index that is large but inside the integer range, which
+  surfaced as R's `missing value where TRUE/FALSE needed`.
+* `prim_if()` refuses a `true` or `false` that is not a function, as
+  `prim_while()` already did for `cond` and `body`.
 * The `_like` constructors (`nv_scalar_like()`, `nv_array_like()`,
   `nv_fill_like()`, `nv_iota_like()`, `nv_empty_like()`) no longer allocate on
   the first CPU device when `like` is an array built inside a trace. The stray
