@@ -207,10 +207,10 @@ test_that("can pass abstract arrays to trace_fn", {
 
 test_that("error handling", {
   local_registered_default_dtypes()
-  expect_snapshot(error = TRUE, jit(prim_ceil)(nv_array(1:4)))
+  expect_snapshot(error = TRUE, jit(prim_ceiling)(nv_array(1:4)))
   expect_snapshot(
     error = TRUE,
-    jit(prim_transpose, static = "permutation")(nv_array(1:4, shape = c(2, 2)), permutation = c(2, 2))
+    jit(prim_transpose, static = "perm")(nv_array(1:4, shape = c(2, 2)), perm = c(2, 2))
   )
 })
 
@@ -225,15 +225,15 @@ test_that("error handling: stablehlo errors use anvl's terminology", {
   expect_false(grepl("tensor", conditionMessage(err), fixed = TRUE))
 
   # stablehlo's `operand` is anvl's `x`
-  err <- tryCatch(jit(prim_ceil)(nv_array(1:4)), error = identity)
+  err <- tryCatch(jit(prim_ceiling)(nv_array(1:4)), error = identity)
   expect_match(conditionMessage(err), "`x` must have dtype float", fixed = TRUE)
 
   # `ErrorStablehlo` conditions build their message lazily in a
   # `conditionMessage()` method; they keep their class and their 1-based indices.
-  # A too-short `permutation` passes anvl's own checks (every entry is a valid,
+  # A too-short `perm` passes anvl's own checks (every entry is a valid,
   # non-duplicated dimension) and is only rejected by stablehlo.
   err <- tryCatch(
-    jit(prim_transpose, static = "permutation")(nv_array(1:4, shape = c(2, 2)), permutation = 1L),
+    jit(prim_transpose, static = "perm")(nv_array(1:4, shape = c(2, 2)), perm = 1L),
     error = identity
   )
   expect_s3_class(err, "ErrorPermuteIndex")

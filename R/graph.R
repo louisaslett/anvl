@@ -425,7 +425,7 @@ maybe_box_input <- function(x, desc, mode) {
       gval <- GraphValue(aval = abstract_aval(x$gnode$aval))
       return(register_input(desc, gval))
     }
-    # is used internally by prim_scatter() to trace `update_computation()` with avals
+    # is used internally by prim_scatter() to trace `update_fn()` with avals
     if (is_abstract_array(x)) {
       gval <- GraphValue(aval = x)
       return(register_input(desc, gval))
