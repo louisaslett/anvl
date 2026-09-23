@@ -75,14 +75,10 @@ graph <- trace_fn(f, list(x = aten, y = aten, op = "mul"))
 graph
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: f32[]
-    ##     %x2: f32[]
-    ##   Body:
-    ##     %1: f32[] = mul(%x1, %x2)
-    ##   Outputs:
-    ##     %1: f32[]
+    ## <AnvlGraph> (%x1: f32[], %x2: f32[]) {
+    ##   %1: f32[] = mul(%x1, %x2)
+    ##   return %1
+    ## }
 
 The output of
 [`trace_fn()`](https://r-xla.github.io/anvl/dev/reference/trace_fn.md)
@@ -183,19 +179,12 @@ bwd_graph <- transform_gradient(graph, wrt = c("x", "y"))
 bwd_graph
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: f32[]
-    ##     %x2: f32[]
-    ##   Constants:
-    ##     %c1: f32[]
-    ##   Body:
-    ##     %1: f32[] = mul(%x1, %x2)
-    ##     %2: f32[] = mul(%c1, %x2)
-    ##     %3: f32[] = mul(%c1, %x1)
-    ##   Outputs:
-    ##     %2: f32[]
-    ##     %3: f32[]
+    ## <AnvlGraph> [%c1: f32[]] (%x1: f32[], %x2: f32[]) {
+    ##   %1: f32[] = mul(%x1, %x2)
+    ##   %2: f32[] = mul(%c1, %x2)
+    ##   %3: f32[] = mul(%c1, %x1)
+    ##   return (%2, %3)
+    ## }
 
 ### Lowering a Graph
 
@@ -460,20 +449,13 @@ h_graph <- trace_fn(h, list(x = x, y = y))
 h_graph
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: f32[]
-    ##     %x2: f32[]
-    ##   Constants:
-    ##     %c1: f32[]
-    ##   Body:
-    ##     %1: f32[] = add(%x1, %x2)
-    ##     %2: f32[] = mul(%1, %x1)
-    ##     %3: f32[] = mul(%c1, %x1)
-    ##     %4: f32[] = mul(%c1, %1)
-    ##   Outputs:
-    ##     %3: f32[]
-    ##     %4: f32[]
+    ## <AnvlGraph> [%c1: f32[]] (%x1: f32[], %x2: f32[]) {
+    ##   %1: f32[] = add(%x1, %x2)
+    ##   %2: f32[] = mul(%1, %x1)
+    ##   %3: f32[] = mul(%c1, %x1)
+    ##   %4: f32[] = mul(%c1, %1)
+    ##   return (%3, %4)
+    ## }
 
 Afterwards, this graph is lowered to StableHLO and subsequently
 compiled.
@@ -493,22 +475,22 @@ graph <- trace_fn(function(x) {
 graph
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: i32[]
-    ##   Constants:
-    ##     %c1: f32[1000000]
-    ##   Body:
-    ##     %1: f32[] = convert [dtype = f32] (%x1)
-    ##     %2: f32[1000000] = broadcast_in_axes [shape = 1000000, broadcast_axes = <any>] (%1)
-    ##     %3: f32[1000000] = add(%2, %c1)
-    ##     %4: f32[1000000] = broadcast_in_axes [shape = 1000000, broadcast_axes = <any>] (1:f32)
-    ##     %5: f32[1000000] = add(%3, %4)
-    ##   Outputs:
-    ##     %5: f32[1000000]
+    ## <AnvlGraph> [%c1: f32[1000000]] (%x1: i32[]) {
+    ##   %1: f32[] = convert [dtype = f32] (%x1)
+    ##   %2: f32[1000000] = broadcast_in_axes [
+    ##     shape = 1000000, broadcast_axes = integer(0)
+    ##   ] (%1)
+    ##   %3: f32[1000000] = add(%2, %c1)
+    ##   %4: f32[1000000] = broadcast_in_axes [
+    ##     shape = 1000000, broadcast_axes = integer(0)
+    ##   ] (1:f32)
+    ##   %5: f32[1000000] = add(%3, %4)
+    ##   return %5
+    ## }
 
 Here, `y` is a closed-over constant and it is included in the
-`$constants` field of the graph, just like the literal `1`.
+`$constants` field of the graph. The literal `1` is not: it is written
+straight into the body.
 
 ``` r
 
@@ -518,13 +500,15 @@ graph$constants
     ## [[1]]
     ## GraphValue(ConcreteArray(f32, (1000000)))
 
-When compiling such a program to StableHLO, constants are treated
-differently depending on their shape (we follow JAX’s approach here).
-That is, constants with 1 element are **inlined** into the program,
-whereas other constants are added as inputs to the StableHLO program.
-This is because inlining large constants into the executable is
-inefficient. However, if we didn’t inline small scalars, the compiler
-would be unable to do constant folding.
+When compiling such a program to StableHLO, an R literal is **inlined**
+into the program – there it is a `stablehlo.constant`, which the
+compiler can fold – while a captured `AnvlArray` becomes an input to the
+StableHLO program, whatever its size. This is because inlining an array
+into the executable would copy its data into the program text, which is
+wasteful for a large one and buys nothing for a small one: the value is
+already a buffer on the device. Note that if we ran
+[`trace_fn()`](https://r-xla.github.io/anvl/dev/reference/trace_fn.md)
+with `optimize = TRUE`, scalarish constants would also be inlined.
 
 ``` r
 
@@ -547,14 +531,6 @@ out[[1L]]
     ## %7 = stablehlo.add %4, %6 : tensor<1000000xf32>
     ## return %7 : tensor<1000000xf32>
     ## }
-
-``` r
-
-out[[2L]]
-```
-
-    ## [[1]]
-    ## GraphValue(ConcreteArray(f32, (1000000)))
 
 Also, before compiling, we remove unused constants. Captured constants
 can become unused when we apply code transformations like below, where
@@ -656,15 +632,10 @@ trace_fn(\(x) {
 }, list(nv_aval("integer", c())))
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: i64[] <- integer
-    ##   Constants:
-    ##     %c1: i64[]
-    ##   Body:
-    ##     %1: i64[] = add(%x1, %c1)
-    ##   Outputs:
-    ##     %1: i64[]
+    ## <AnvlGraph> [%c1: i64[]] (%x1: i64[] <- integer) {
+    ##   %1: i64[] = add(%x1, %c1)
+    ##   return %1
+    ## }
 
 Yielding stays within the value’s own category, so an R integer meeting
 an `f32` is an error rather than a promotion – crossing a category is
@@ -679,13 +650,10 @@ trace_fn(\(x) {
 }, list(nv_aval("double", c())))
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: f32[] <- double
-    ##   Body:
-    ##     %1: f32[] = exp(%x1)
-    ##   Outputs:
-    ##     %1: f32[]
+    ## <AnvlGraph> (%x1: f32[] <- double) {
+    ##   %1: f32[] = exp(%x1)
+    ##   return %1
+    ## }
 
 When the same `RData` input is used at several data types, it is
 supplied at the narrowest one that holds them all, and each use site
@@ -702,22 +670,14 @@ trace_fn(\(x) {
 }, list(nv_aval("integer", c())))
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: i64[] <- integer
-    ##   Constants:
-    ##     %c1: i8[]
-    ##     %c2: i16[]
-    ##     %c3: i64[]
-    ##   Body:
-    ##     %1: i32[] = convert [dtype = i32] (%x1)
-    ##     %2: i8[] = convert [dtype = i8] (%1)
-    ##     %3: i8[] = add(%2, %c1)
-    ##     %4: i16[] = convert [dtype = i16] (%1)
-    ##     %5: i16[] = add(%4, %c2)
-    ##     %6: i64[] = add(%x1, %c3)
-    ##   Outputs:
-    ##     %6: i64[]
+    ## <AnvlGraph> [%c1: i8[], %c2: i16[], %c3: i64[]] (%x1: i64[] <- integer) {
+    ##   %1: i8[] = convert [dtype = i8] (%x1)
+    ##   %2: i16[] = convert [dtype = i16] (%x1)
+    ##   %3: i8[] = add(%1, %c1)
+    ##   %4: i16[] = add(%2, %c2)
+    ##   %5: i64[] = add(%x1, %c3)
+    ##   return %5
+    ## }
 
 This design tries to balance correctness with hardware compatibility.
 Another approach would be to always represent R doubles as `f64`, which
@@ -727,7 +687,10 @@ is their natural representation. The problem with this approach is that:
 2.  some accelerators (such as Metal) do not support `f64` at all.
 
 Therefore, one of the underlying ideas is to only introduce `f64` values
-when someone actually requested this data type.
+when someone actually requested this data type – which is why `f32` is
+the default float on pjrt, and why that default is configurable
+([`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)):
+a program that wants double precision throughout can ask for it.
 
 ``` r
 
@@ -736,34 +699,26 @@ trace_fn(\(x) {
 }, list(nv_aval("double", c())))
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: f64[] <- double
-    ##   Constants:
-    ##     %c1: f64[]
-    ##   Body:
-    ##     %1: f64[] = add(%x1, %c1)
-    ##   Outputs:
-    ##     %1: f64[]
+    ## <AnvlGraph> [%c1: f64[]] (%x1: f64[] <- double) {
+    ##   %1: f64[] = add(%x1, %c1)
+    ##   return %1
+    ## }
 
-Otherwise, the `double` input is fed as an `f32` to the pjrt program:
+Otherwise the input is fed at whatever data type its use sites ask for,
+and a use site that asks for nothing in particular – a bare R number on
+the other side – settles on the default float:
 
 ``` r
 
 trace_fn(\(x) {
-  prim_add(x, nv_scalar(1, "f32"))
+  prim_add(x, 1)
 }, list(nv_aval("double", c())))
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: f32[] <- double
-    ##   Constants:
-    ##     %c1: f32[]
-    ##   Body:
-    ##     %1: f32[] = add(%x1, %c1)
-    ##   Outputs:
-    ##     %1: f32[]
+    ## <AnvlGraph> (%x1: f32[] <- double) {
+    ##   %1: f32[] = add(%x1, 1:f32)
+    ##   return %1
+    ## }
 
 There is one special case, however: operations that explicitly request a
 data type, such as
@@ -772,9 +727,11 @@ and the
 [`nv_array()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md)
 constructor. If
 [`prim_convert()`](https://r-xla.github.io/anvl/dev/reference/prim_convert.md)
-were to follow the usual rule of materializing its R inputs at their
+were to follow the usual rule of materializing its R inputs to their
 default data type, then `prim_convert(large_double, "i32")` would first
-convert the R `double` to an `f32` (the default float data type on pjrt)
+convert the R `double` to the default float (`f32` as pjrt registers it
+– see
+[`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md))
 and then to an `i32`, which would result in a loss of precision. In
 order to prevent this,
 [`prim_convert()`](https://r-xla.github.io/anvl/dev/reference/prim_convert.md)
@@ -787,13 +744,10 @@ trace_fn(\(x) {
 }, list(nv_aval("double", c())))
 ```
 
-    ## <AnvlGraph>
-    ##   Inputs:
-    ##     %x1: f64[] <- double
-    ##   Body:
-    ##     %1: i32[] = convert [dtype = i32] (%x1)
-    ##   Outputs:
-    ##     %1: i32[]
+    ## <AnvlGraph> (%x1: f64[] <- double) {
+    ##   %1: i32[] = convert [dtype = i32] (%x1)
+    ##   return %1
+    ## }
 
 This brings an `f64` into a program that never asked for one, which a
 backend without `f64` support cannot run. We accept this for now,

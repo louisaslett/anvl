@@ -90,9 +90,8 @@ trace_fn(
 
 ## Value
 
-An
-[`AnvlGraph`](https://r-xla.github.io/anvl/dev/reference/AnvlGraph.md)
-containing the traced operations.
+([`AnvlGraph`](https://r-xla.github.io/anvl/dev/reference/AnvlGraph.md))
+Contains the traced operations.
 
 ## See also
 
@@ -107,12 +106,8 @@ end-to-end compilation.
 graph <- trace_fn(function(x, y) x + y,
   args = list(x = nv_array(1, dtype = "f32"), y = nv_array(2, dtype = "f32")))
 graph
-#> <AnvlGraph>
-#>   Inputs:
-#>     %x1: f32[1]
-#>     %x2: f32[1]
-#>   Body:
-#>     %1: f32[1] = add(%x1, %x2)
-#>   Outputs:
-#>     %1: f32[1] 
+#> <AnvlGraph> (%x1: f32[1], %x2: f32[1]) {
+#>   %1: f32[1] = add(%x1, %x2)
+#>   return %1
+#> }
 ```

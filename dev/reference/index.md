@@ -80,13 +80,13 @@ Functions for converting arrays
 Functions for serializing and deserializing arrays
 
 - [`nv_save()`](https://r-xla.github.io/anvl/dev/reference/nv_save.md) :
-  Save arrays to a file
+  Save Arrays to a File
 - [`nv_read()`](https://r-xla.github.io/anvl/dev/reference/nv_read.md) :
-  Read arrays from a file
+  Read Arrays from a File
 - [`nv_serialize()`](https://r-xla.github.io/anvl/dev/reference/nv_serialize.md)
-  : Serialize arrays to raw bytes
+  : Serialize Arrays to Raw Bytes
 - [`nv_unserialize()`](https://r-xla.github.io/anvl/dev/reference/nv_unserialize.md)
-  : Deserialize arrays from raw bytes
+  : Deserialize Arrays from Raw Bytes
 
 ### Base R Generics
 
@@ -118,6 +118,8 @@ Functions for type conversion, promotion, and broadcasting
   : Broadcast Arrays to a Common Shape
 - [`nv_broadcast_to()`](https://r-xla.github.io/anvl/dev/reference/nv_broadcast_to.md)
   : Broadcast to Shape
+- [`dtypes`](https://r-xla.github.io/anvl/dev/reference/dtypes.md) :
+  Data Type Categories
 - [`common_dtype()`](https://r-xla.github.io/anvl/dev/reference/common_dtype.md)
   : Type Promotion Rules
 - [`promotion_common()`](https://r-xla.github.io/anvl/dev/reference/promotion_rule.md)
@@ -464,6 +466,8 @@ Control flow operations
   Conditional Branching
 - [`nv_while()`](https://r-xla.github.io/anvl/dev/reference/nv_while.md)
   : While Loop
+- [`nv_scan()`](https://r-xla.github.io/anvl/dev/reference/nv_scan.md) :
+  Scan (Loop With Per-Step Outputs)
 - [`nv_ifelse()`](https://r-xla.github.io/anvl/dev/reference/nv_ifelse.md)
   : Conditional Element Selection
 
@@ -477,6 +481,10 @@ distributions
   [`nv_qnorm()`](https://r-xla.github.io/anvl/dev/reference/nv_normal.md)
   [`nv_rnorm()`](https://r-xla.github.io/anvl/dev/reference/nv_normal.md)
   : The Normal Distribution
+- [`nv_dunif()`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md)
+  [`nv_punif()`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md)
+  [`nv_qunif()`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md)
+  : The Uniform Distribution
 - [`nv_runif()`](https://r-xla.github.io/anvl/dev/reference/nv_runif.md)
   : Sample from a Uniform Distribution
 - [`nv_rbinom()`](https://r-xla.github.io/anvl/dev/reference/nv_rbinom.md)
@@ -540,6 +548,9 @@ Backend-related functionality and implementations
   : Create a Device
 - [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md)
   : Get the default device
+- [`local_default_device()`](https://r-xla.github.io/anvl/dev/reference/local_default_device.md)
+  [`with_default_device()`](https://r-xla.github.io/anvl/dev/reference/local_default_device.md)
+  : Temporarily Set the Default Device
 - [`is_device()`](https://r-xla.github.io/anvl/dev/reference/is_device.md)
   : Test whether an object is a device
 - [`quickr_device()`](https://r-xla.github.io/anvl/dev/reference/quickr_device.md)
@@ -679,7 +690,7 @@ Low-level primitive operations (prim\_\* functions)
 - [`prim_and()`](https://r-xla.github.io/anvl/dev/reference/prim_and.md)
   : Primitive Bitwise And
 - [`prim_argmax()`](https://r-xla.github.io/anvl/dev/reference/prim_argmax.md)
-  : Primitive Argmax
+  : Primitive Index of the Maximum
 - [`prim_argmin()`](https://r-xla.github.io/anvl/dev/reference/prim_argmin.md)
   : Primitive Index of the Minimum
 - [`prim_asin()`](https://r-xla.github.io/anvl/dev/reference/prim_asin.md)
@@ -707,7 +718,7 @@ Low-level primitive operations (prim\_\* functions)
 - [`prim_concatenate()`](https://r-xla.github.io/anvl/dev/reference/prim_concatenate.md)
   : Primitive Concatenate
 - [`prim_convert()`](https://r-xla.github.io/anvl/dev/reference/prim_convert.md)
-  : Primitive Convert
+  : Primitive Convert Data Type
 - [`prim_convolution()`](https://r-xla.github.io/anvl/dev/reference/prim_convolution.md)
   : Primitive Convolution
 - [`prim_cos()`](https://r-xla.github.io/anvl/dev/reference/prim_cos.md)
@@ -830,6 +841,8 @@ Low-level primitive operations (prim\_\* functions)
   : Primitive Round
 - [`prim_rsqrt()`](https://r-xla.github.io/anvl/dev/reference/prim_rsqrt.md)
   : Primitive Reciprocal Square Root
+- [`prim_scan()`](https://r-xla.github.io/anvl/dev/reference/prim_scan.md)
+  : Primitive Scan
 - [`prim_scatter()`](https://r-xla.github.io/anvl/dev/reference/prim_scatter.md)
   : Primitive Scatter
 - [`prim_shift_left()`](https://r-xla.github.io/anvl/dev/reference/prim_shift_left.md)

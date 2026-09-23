@@ -19,7 +19,8 @@ nv_lower_tri_like(like, diagonal = -1L, shape = NULL, device = NULL)
 - shape:
 
   ([`integer()`](https://rdrr.io/r/base/integer.html))  
-  Shape.
+  Shape of the result: exactly two axis sizes, since the result is a
+  matrix.
 
 - diagonal:
 
@@ -49,9 +50,7 @@ nv_lower_tri_like(like, diagonal = -1L, shape = NULL, device = NULL)
     backend-specific, it also determines the backend.
 
   The default (`NULL`) uses
-  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md):
-  the CPU, or the platform named by the `PJRT_PLATFORM` environment
-  variable on the `"pjrt"` backend.
+  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md).
 
 - like:
 
@@ -61,8 +60,11 @@ nv_lower_tri_like(like, diagonal = -1L, shape = NULL, device = NULL)
 
 ## Value
 
-[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
-Has the given `shape` and dtype `bool`.
+([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+Has the given `shape` and boolean data type. It is a mask over
+positions, so no array data enters it – pass it to
+[`nv_ifelse()`](https://r-xla.github.io/anvl/dev/reference/nv_ifelse.md)
+or multiply by it to use it.
 
 ## See also
 
@@ -74,6 +76,7 @@ for the underlying primitive.
 ## Examples
 
 ``` r
+# a boolean mask, whatever the array it is later used with
 nv_lower_tri(c(3, 3))
 #> AnvlArray
 #>  0 0 0

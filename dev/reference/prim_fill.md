@@ -18,9 +18,9 @@ prim_fill(value, shape, dtype, device = NULL)
 
   (`numeric(1)`)  
   Scalar value to fill the array with. It has to be something `dtype`
-  can hold: a whole number for an integer data type, a non-negative
-  whole number for an unsigned one, and a logical or `0` / `1` for
-  `bool`.
+  can hold: a whole number in its range for an integer data type, a
+  non-negative one for an unsigned integer, and a logical or `0` / `1`
+  for `bool`.
 
 - shape:
 
@@ -31,7 +31,7 @@ prim_fill(value, shape, dtype, device = NULL)
 
   (`character(1)` \|
   [`DataType`](https://r-xla.github.io/tengen/reference/DataType.html))  
-  Data type.
+  Data type of the result.
 
 - device:
 
@@ -52,13 +52,11 @@ prim_fill(value, shape, dtype, device = NULL)
     backend-specific, it also determines the backend.
 
   The default (`NULL`) uses
-  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md):
-  the CPU, or the platform named by the `PJRT_PLATFORM` environment
-  variable on the `"pjrt"` backend.
+  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md).
 
 ## Value
 
-[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
+([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
 Has the given `shape` and `dtype`.
 
 ## Implemented Rules
@@ -70,7 +68,9 @@ Has the given `shape` and `dtype`.
 ## StableHLO
 
 Lowers to
-[`hlo_tensor()`](https://r-xla.github.io/stablehlo/reference/hlo_constant.html).
+[`hlo_tensor()`](https://r-xla.github.io/stablehlo/reference/hlo_constant.html),
+stablehlo's constant builder, specified under
+[constant](https://openxla.org/stablehlo/spec#constant).
 
 ## See also
 
@@ -79,6 +79,7 @@ Lowers to
 ## Examples
 
 ``` r
+# the R double is built at the requested data type
 prim_fill(3.14, shape = c(2, 3), dtype = "f32")
 #> AnvlArray
 #>  3.1400 3.1400 3.1400

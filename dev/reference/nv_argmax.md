@@ -1,12 +1,12 @@
 # Index of the Maximum
 
-Returns the index of the maximum value along an axis. Ties are broken by
-returning the smallest index.
+Returns the index of the maximum value over one or more axes. Ties are
+broken by returning the smallest index.
 
 ## Usage
 
 ``` r
-nv_argmax(x, axis = NULL, drop = TRUE, nan_rm = FALSE)
+nv_argmax(x, axes = NULL, drop = TRUE, nan_rm = FALSE)
 ```
 
 ## Arguments
@@ -14,39 +14,55 @@ nv_argmax(x, axis = NULL, drop = TRUE, nan_rm = FALSE)
 - x:
 
   ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
-  Input array.
+  One input. Can be any data type. An R value materializes at its
+  [default data
+  type](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md).
 
-- axis:
+- axes:
 
-  (`integer(1)` \| `NULL`)  
-  Axis along which to find the index. Negative values count from the
-  end, i.e. `-1` refers to the last axis. If `NULL` (default), uses the
-  last axis.
+  ([`integer()`](https://rdrr.io/r/base/integer.html) \| `NULL`)  
+  Axes to reduce over. Negative values count from the end, i.e. `-1`
+  refers to the last axis. If `NULL` (default), reduces over all axes.
 
 - drop:
 
   (`logical(1)`)  
-  If `TRUE` (default) the reduced axis is removed; if `FALSE` it is kept
-  with size 1.
+  Whether to drop the reduced axes: removed from the output shape if
+  `TRUE`, set to 1 if `FALSE`.
 
 - nan_rm:
 
   (`logical(1)`)  
-  How to handle `NaN` values in floating-point inputs. If `FALSE`
-  (default), `NaN` propagates. If `TRUE`, `NaN` values are skipped.
+  How to handle `NaN` values in float inputs. If `FALSE` (default),
+  `NaN` propagates. If `TRUE`, `NaN` values are skipped.
 
 ## Value
 
-[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md) of
-the default integer data type (see
-[`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md))  
-Same shape as `x` with `axis` removed (or set to 1 if `drop = FALSE`).
+([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+Has the default integer data type (see
+[`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md))
+regardless of the input's, and the input's shape with `axes` removed
+(`drop = TRUE`) or set to 1 (`drop = FALSE`).
+
+## Reducing several axes
+
+`nv_argmax()` is the index to
+[`nv_reduce_max()`](https://r-xla.github.io/anvl/dev/reference/nv_reduce_max.md)'s
+value: called with the same `axes` and `drop`, it points at the element
+whose value
+[`nv_reduce_max()`](https://r-xla.github.io/anvl/dev/reference/nv_reduce_max.md)
+returns. Reducing several axes ranks their elements together, and the
+result indexes the column-major flattening of those axes – the order
+[`nv_flatten()`](https://r-xla.github.io/anvl/dev/reference/nv_flatten.md)
+produces and
+[`base::which.max()`](https://rdrr.io/r/base/which.min.html) reports –
+which is also the order ties are broken in.
 
 ## NaN handling
 
-With `nan_rm = FALSE` (default), if any entry along the reduced axis is
-`NaN`, the returned index points at the first such `NaN`. With
-`nan_rm = TRUE`, `NaN` entries are skipped.
+With `nan_rm = FALSE` (default), if any entry being reduced is `NaN`,
+the returned index points at the first such `NaN`. With `nan_rm = TRUE`,
+`NaN` entries are skipped.
 
 ## See also
 
@@ -56,13 +72,17 @@ With `nan_rm = FALSE` (default), if any entry along the reduced axis is
 ## Examples
 
 ``` r
+# the index comes out at the default integer data type
 nv_argmax(nv_array(c(3, 1, 4, 1, 5, 9, 2, 6)))
 #> AnvlArray
 #>  6
 #> [ CPUi32{} ] 
-nv_argmax(nv_matrix(c(3, 1, 5, 2, 4, 0), nrow = 2, byrow = TRUE),
-  axis = 2L
-)
+m <- nv_matrix(c(3, 1, 5, 2, 4, 0), nrow = 2, byrow = TRUE)
+nv_argmax(m) # indexes the flattened matrix
+#> AnvlArray
+#>  5
+#> [ CPUi32{} ] 
+nv_argmax(m, axes = 2L) # one index per row
 #> AnvlArray
 #>  3
 #>  2

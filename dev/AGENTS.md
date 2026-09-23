@@ -23,20 +23,30 @@ The generic R workflow (`devtools::test()`, `make format`,
 - Single file:
   `testthat::test_active_file("tests/testthat/test-reverse.R")`, or
   `devtools::test(filter = "reverse")`.
-- `ANVL_SKIP_QUICKR=1` skips the (slow) quickr tests;
-  `PJRT_PLATFORM=cuda` runs the suite on the CUDA plugin (`is_cpu()` /
-  `is_cuda()` in `helper.R` branch on it). `setup.R` sets
-  `PJRT_CPU_DEVICE_COUNT=2` so multi-device tests have something to
+- `ANVL_TEST_SKIP_QUICKR=1` skips the (slow) quickr tests. `setup.R`
+  sets `PJRT_CPU_DEVICE_COUNT=2` so multi-device tests have something to
   spread over.
-- `ANVL_DEFAULT_DTYPES="float=f64,int=i64"` runs the whole suite at
-  another pair of default data types; `setup.R` turns it into the
-  `anvl.default_dtypes` option. The `default-dtypes` workflow runs the
-  suite this way so that anything hardcoding `f32` / `i32` where it
-  should read
-  [`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)
-  fails in CI. A test that asserts the *registered* pair calls
-  `local_registered_default_dtypes()` (`helper.R`) to clear the
-  override.
+- `ANVL_DEFAULT_DEVICE` / `ANVL_DEFAULT_DTYPES` are package-level: anvl
+  reads them once when it is loaded and falls back to them when the
+  `anvl.default_device` / `anvl.default_dtypes` options are not set. The
+  suite uses them to run on another configuration, and `setup.R` skips
+  quickr for such a run:
+  - `ANVL_DEFAULT_DEVICE=cuda` runs the suite on the CUDA plugin
+    (`is_cpu()` / `is_cuda()` in `helper.R` branch on it).
+    `ANVL_DEFAULT_DEVICE=cpu:1` runs it on the second CPU device, so
+    anything allocating on the first CPU device where it should have
+    followed the trace or its operands lands on a device of its own,
+    which jit’s autodetect reports; the `default-device` workflow runs
+    it on the `full-test` PR label. A test that asserts the unset
+    default calls `local_unset_default_device()` (`helper.R`) to clear
+    both.
+  - `ANVL_DEFAULT_DTYPES="float=f64,int=i64"` runs the suite at another
+    pair of default data types; the `default-dtypes` workflow runs it so
+    that anything hardcoding `f32` / `i32` where it should read
+    [`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)
+    fails in CI. A test that asserts the *registered* pair calls
+    `local_registered_default_dtypes()` (`helper.R`) to clear the
+    override.
 - anvl tracks the **dev** versions of its r-xla dependencies:
   `pak::pkg_install(c("r-xla/xlamisc", "r-xla/pjrt", "r-xla/stablehlo", "r-xla/tengen"))`.
 
@@ -65,13 +75,30 @@ Inside `nv_*` API functions, pass plain R literals (e.g. `0`, `1`,
 [`nv_scalar()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md)
 /
 [`nv_scalar_like()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md).
-The literal takes the dtype of the operands it meets, so write it in the
-*category* the operand is in – `0` for a float array, `0L` for an
-integer one. Shape is a separate matter: primitives do not broadcast, so
-a literal only works in a slot that takes a scalar (a padding value, a
-clamp bound, a reduction’s `init`). For an elementwise primitive,
-broadcast first with
+The literal takes the dtype of the operands it meets. Shape is a
+separate matter: primitives do not broadcast, so a literal only works in
+a slot that takes a scalar (a padding value, a clamp bound, a
+reduction’s `init`). For an elementwise primitive, broadcast first with
 [`nv_broadcast_scalars()`](https://r-xla.github.io/anvl/dev/reference/nv_broadcast_scalars.md).
+
+The two spellings of a whole number are not symmetric here. An R integer
+widens into whatever category it meets, while a plain `1` is an R
+*double* and pulls an integer array into the float category –
+`x_i32 - 1` is `f32`, where `x_i32 - 1L` is `i32`. So a whole number
+keeps its `L` even when it meets a float array:
+`nv_ifelse(mask, 0L, x)`, `prim_fill(1L, dtype = dtype(x), ...)`,
+`hlo_scalar(0L, dtype = dtype(x), ...)`, `U - 1L`.
+
+Drop the `L` only where the value is genuinely a real number that
+happens to be whole – a distribution parameter, a probability bound, a
+threshold, a coefficient: `sd = 1`, `lower = 0, upper = 1`,
+`nv_max(-d, 1)`, `2 / sqrt(pi)`, `base::log(2 * pi)`.
+
+That distinction bites hardest on a literal that meets *nothing*, where
+it decides a data type outright by settling on the default of its own
+category. `nv_rnorm(mean = 0, sd = 1)` has to stay plain: written `0L` /
+`1L`, a call that names no dtype returns the sample at the default
+*integer*.
 
 ## Terminology
 
@@ -123,7 +150,15 @@ broadcast first with
 
 ## Supported dtypes
 
-- there is currently no support for complex numbers.
+The data types and the words the docs use for groups of them are in
+[`?dtypes`](https://r-xla.github.io/anvl/dev/reference/dtypes.md)
+(`R/promotion.R`) and `man-roxygen/section_dtype_words.R`: *any* /
+*numeric* / *integer* / *integerish* / *signed numeric* / *float* /
+*boolean*. Two things to keep in mind:
+
+- There is currently no support for complex numbers.
+- We currently do not worry about any float type other than `f32` and
+  `f64`.
 
 ## Type Promotion
 
@@ -144,7 +179,7 @@ Two rules that bite while writing code:
   [`dtype()`](https://r-xla.github.io/anvl/dev/reference/dtype.md) on an
   argument that may still be a bare R value – it errors. Use
   [`peek_dtype()`](https://r-xla.github.io/anvl/dev/reference/peek_dtype.md)
-  to ask which data type it would take.
+  to ask what it *would* materialize at.
 - A primitive promotes nothing unless its body says so: one whose
   operands must agree calls
   [`apply_promotion()`](https://r-xla.github.io/anvl/dev/reference/apply_promotion.md)
@@ -291,9 +326,9 @@ manually instead. Write one or the other, not both.
 
 Tests that use the quickr backend must call `skip_if_no_quickr()` at the
 top of the test body. This helper skips when quickr is not installed,
-and also when the `ANVL_SKIP_QUICKR` environment variable is set (quickr
-tests can be slow and are often skipped locally). To test a different
-backend, use
+and also when the `ANVL_TEST_SKIP_QUICKR` environment variable is set
+(quickr tests can be slow and are often skipped locally). To test a
+different backend, use
 [`local_backend()`](https://r-xla.github.io/anvl/dev/reference/local_backend.md)
 (not
 [`withr::local_options()`](https://withr.r-lib.org/reference/with_options.html)

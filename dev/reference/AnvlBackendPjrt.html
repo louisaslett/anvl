@@ -95,7 +95,8 @@ backend.</p>
 
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>An <code><a href="AnvlBackend.html">AnvlBackend</a></code> object with subclass <code>"AnvlBackendPjrt"</code>.</p>
+    <p>(<code><a href="AnvlBackend.html">AnvlBackend</a></code>)<br>
+With subclass <code>"AnvlBackendPjrt"</code>.</p>
     </div>
     <div class="section level2">
     <h2 id="data-representation">Data representation<a class="anchor" aria-label="anchor" href="#data-representation"></a></h2>
@@ -111,8 +112,8 @@ device.</p>
 <code><a href="device.html">device()</a></code>. A device is a <code><a href="https://r-xla.github.io/pjrt/reference/as_pjrt_device.html" class="external-link">pjrt::as_pjrt_device()</a></code> object (e.g. the
 platform <code>"cpu"</code> or <code>"cuda"</code>, optionally with an index such as <code>"cuda:1"</code>).
 When <code>device</code> is <code>NULL</code> in <code><a href="AnvlArray.html">nv_array()</a></code> or the <code><a href="jit.html">jit()</a></code> wrapper, the
-device defaults to the <code>PJRT_PLATFORM</code> environment variable (falling back
-to <code>"cpu"</code>), or is inferred from the existing inputs of a jitted call.
+device defaults to <code><a href="default_device.html">default_device()</a></code>, or is inferred from the existing
+inputs of a jitted call.
 Operations require all inputs to live on the same device.</p>
     </div>
     <div class="section level2">
@@ -123,6 +124,16 @@ Operations require all inputs to live on the same device.</p>
 integers <code>ui8</code>, <code>ui16</code>, <code>ui32</code> and <code>ui64</code>; and the floats <code>f32</code> and <code>f64</code>.
 An R double materializes at <code>f32</code> on this backend and an R integer at <code>i32</code>
 unless the defaults say otherwise (see <code><a href="default_dtypes.html">default_dtypes()</a></code>).</p>
+    </div>
+    <div class="section level2">
+    <h2 id="floating-point-behavior">Floating-point behavior<a class="anchor" aria-label="anchor" href="#floating-point-behavior"></a></h2>
+
+
+<p>Subnormal floating-point values may be preserved when stored in an array and
+read back into R, yet treated as zero in calculations. On CPUs, XLA enables
+a mode that replaces subnormal inputs and results with zero. The exact
+behavior depends on the platform, backend, and operation.</p>
+<p>See <code><a href="../articles/gotchas.html">vignette("gotchas", package = "anvl")</a></code> for an explanation and examples.</p>
     </div>
     <div class="section level2">
     <h2 id="pjrt-jit-arguments">PJRT JIT arguments<a class="anchor" aria-label="anchor" href="#pjrt-jit-arguments"></a></h2>

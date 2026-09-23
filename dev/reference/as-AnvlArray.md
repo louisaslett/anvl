@@ -18,8 +18,8 @@ compatible dtype:
   `i64` and `ui32`, but
   [`bit64::integer64`](https://bit64.r-lib.org/reference/bit64-package.html)
   is itself signed, so a `ui64` value `>= 2^63` wraps to a negative one
-  (exactly `2^63` becomes `NA`); pass `check = TRUE` to be told when
-  that happens.
+  (exactly `2^63` becomes `NA`); that is warned about, and
+  `check = "err"` makes it an error.
 
 - [`as.logical()`](https://rdrr.io/r/base/logical.html): `bool`.
 
@@ -39,24 +39,25 @@ to obtain an R array that preserves the shape, or
 to change the dtype of an
 [`AnvlArray`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md)
 before coercing. [`as.vector()`](https://rdrr.io/r/base/vector.html)'s
-signature is fixed by the generic, so it takes no `check` argument; call
+signature is fixed by the generic, so it takes no `check` argument and
+always reports at the default level; call
 [`as_array()`](https://r-xla.github.io/anvl/dev/reference/as_array.md)
-with `check = TRUE` to have the values validated.
+directly to pick another one.
 
 ## Usage
 
 ``` r
 # S3 method for class 'AnvlArray'
-as.double(x, check = FALSE, ...)
+as.double(x, check = "warn", ...)
 
 # S3 method for class 'AnvlArray'
-as.integer(x, check = FALSE, ...)
+as.integer(x, check = "warn", ...)
 
 # S3 method for class 'AnvlArray'
-as.integer64(x, check = FALSE, ...)
+as.integer64(x, check = "warn", ...)
 
 # S3 method for class 'AnvlArray'
-as.logical(x, check = FALSE, ...)
+as.logical(x, check = "warn", ...)
 
 # S3 method for class 'AnvlArray'
 as.vector(x, mode = "any")
@@ -71,7 +72,7 @@ as.vector(x, mode = "any")
 
 - check:
 
-  (`logical(1)`)  
+  (`character(1)` \| `FALSE`)  
   Forwarded to
   [`as_array()`](https://r-xla.github.io/anvl/dev/reference/as_array.md);
   see there for details.
@@ -90,9 +91,7 @@ as.vector(x, mode = "any")
 
 ## Value
 
-An R vector holding the array's values, of the type the method names:
-`double`, `integer`, `logical`, or
-[`bit64::integer64`](https://bit64.r-lib.org/reference/bit64-package.html).
+(`vector`)
 
 ## Examples
 

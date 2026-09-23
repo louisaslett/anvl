@@ -168,20 +168,17 @@ already had one.
 ``` r
 
 trace_fn(prim_repeat_along, list(nv_aval("double", c(2, 3)), 2, 1))
-#> <AnvlGraph>
-#>   Inputs:
-#>     %x1: f32[2, 3] <- double
-#>   Body:
-#>     %1: f32[4, 3] = repeat_along [times = 2, axis = 1] (%x1)
-#>   Outputs:
-#>     %1: f32[4, 3]
+#> <AnvlGraph> (%x1: f32[2,3] <- double) {
+#>   %1: f32[4,3] = repeat_along [times = 2, axis = 1] (%x1)
+#>   return %1
+#> }
 ```
 
 Where the default goes wrong is when a primitive has several operands
 that must agree. Materializing each at its own default would make
 `prim_add(1, nv_scalar(2, "f64"))` an error – the literal would become
-`f32` and meet an `f64` – where it should give `f64`. In such cases, you
-should call
+the default float and could meet an `f64` – where it should give `f64`.
+In such cases, you should call
 [`apply_promotion()`](https://r-xla.github.io/anvl/dev/reference/apply_promotion.md)
 in the primitive and pass the rules you want to apply. This needs to be
 done before calling
@@ -320,10 +317,10 @@ prim_repeat_along[["reverse"]] <- rule_reverse(function(inputs, outputs, grads, 
 
   new_shape <- grad_shape
   new_shape[axis] <- old_shape[axis]
-  new_shape <- append(new_shape, times, after = axis - 1L)
+  new_shape <- append(new_shape, times, after = axis)
 
   grad_reshaped <- prim_reshape(grad, new_shape)
-  grad_summed <- prim_reduce_sum(grad_reshaped, axes = axis, drop = TRUE)
+  grad_summed <- prim_reduce_sum(grad_reshaped, axes = axis + 1L, drop = TRUE)
   list(grad_summed)
 })
 ```
@@ -408,7 +405,7 @@ prim_repeat_along
 #>     }
 #>     .jit_args <- mget(.jit_given, envir = .jit_env)
 #>     if (.jit_dots) {
-#>         .jit_args <- c(.jit_args, list(...))
+#>         .jit_args <- c(.jit_args, eval(quote(list(...)), .jit_env))
 #>     }
 #>     .jit_be <- active_backend()
 #>     .jit_run <- .jit_runs[[.jit_be]]
@@ -428,7 +425,7 @@ prim_repeat_along
 #>     }
 #>     .jit_run(.jit_args)
 #> }
-#> <environment: 0x5585491efc40>
+#> <environment: 0x55f7d45dc8c0>
 #> attr(,"class")
 #> [1] "JitPrimitive" "JitFunction" 
 #> attr(,"primitive")
@@ -470,7 +467,7 @@ R value – one that has no data type yet (see
 [`naxes()`](https://r-xla.github.io/anvl/dev/reference/naxes.md) answer
 for it as they do for an array. For the data type there is
 [`peek_dtype()`](https://r-xla.github.io/anvl/dev/reference/peek_dtype.md),
-which reports the data type the value *would* take;
+which reports the type the value *would* materialize at;
 [`dtype()`](https://r-xla.github.io/anvl/dev/reference/dtype.md) errors
 on an R value, because there is nothing to report until it is used.
 

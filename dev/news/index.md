@@ -4,15 +4,76 @@
 
 ### Breaking changes
 
+- [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md)
+  no longer follows `PJRT_PLATFORM`; set `ANVL_DEFAULT_DEVICE` or the
+  `anvl.default_device` option instead.
+- [`prim_reshape()`](https://r-xla.github.io/anvl/dev/reference/prim_reshape.md)
+  and
+  [`nv_reshape()`](https://r-xla.github.io/anvl/dev/reference/nv_reshape.md),
+  and with them
+  [`nv_flatten()`](https://r-xla.github.io/anvl/dev/reference/nv_flatten.md)
+  and every `axis = NULL` flattening default, are now column-major like
+  base R.
+- [`prim_bitcast_convert()`](https://r-xla.github.io/anvl/dev/reference/prim_bitcast_convert.md)
+  puts the axis holding an element’s pieces first rather than last when
+  the two data types differ in width, so the pieces of one element are
+  adjacent in the order
+  [`nv_flatten()`](https://r-xla.github.io/anvl/dev/reference/nv_flatten.md)
+  reads and a narrowing conversion lays the bytes out the way
+  [`as_raw()`](https://r-xla.github.io/anvl/dev/reference/as_raw.md)
+  writes them.
+- [`nv_broadcast_to()`](https://r-xla.github.io/anvl/dev/reference/nv_broadcast_to.md)
+  and
+  [`nv_broadcast_arrays()`](https://r-xla.github.io/anvl/dev/reference/nv_broadcast_arrays.md)
+  align axes from the first instead of the last: a shorter shape gets
+  size-1 axes appended, so a length-`nrow` vector broadcasts against a
+  matrix where a length-`ncol` one no longer does. Write
+  [`prim_broadcast_in_axes()`](https://r-xla.github.io/anvl/dev/reference/prim_broadcast_in_axes.md)
+  with an explicit axis mapping for the previous right-aligned behavior.
 - The `@jit` roxygen tag was removed; wrap functions in
   [`jit()`](https://r-xla.github.io/anvl/dev/reference/jit.md) at the
   definition instead.
+- [`nv_top_k()`](https://r-xla.github.io/anvl/dev/reference/nv_top_k.md),
+  [`nv_cummax()`](https://r-xla.github.io/anvl/dev/reference/nv_cummax.md)
+  and
+  [`nv_cummin()`](https://r-xla.github.io/anvl/dev/reference/nv_cummin.md)
+  take `indices` instead of `with_indices`, spelling it the way
+  [`prim_top_k()`](https://r-xla.github.io/anvl/dev/reference/prim_top_k.md)
+  does.
+- [`nv_top_k()`](https://r-xla.github.io/anvl/dev/reference/nv_top_k.md)
+  takes `axes` instead of `axis`, ranking the elements of several axes
+  together, and `axes = NULL` (the default) now ranks over every axis
+  where it used to take the last one. Write `axes = -1` for the old
+  default.
 - The type system of {anvl} was changed to avoid the problems reported
   in issue [\#373](https://github.com/r-xla/anvl/issues/373).
   Specifically, the ambiguity system was replaced with the `RData`
   system and a new system of rules for type promotions. With it, also
   the promotion behavior of various primitives and API functions was
   improved.
+- An R value is now built directly at every data type of its own
+  category, narrow and unsigned integers included, so one the data type
+  cannot hold is an error instead of wrapping around: `x_ui8 + (-2L)`
+  and `x_i8 + 300L` are refused. Write
+  [`nv_convert()`](https://r-xla.github.io/anvl/dev/reference/nv_convert.md)
+  on an array where the wraparound is what you want.
+- [`as_array()`](https://r-xla.github.io/anvl/dev/reference/as_array.md)
+  and the [`as.double()`](https://rdrr.io/r/base/double.html) /
+  [`as.integer()`](https://rdrr.io/r/base/integer.html) /
+  [`bit64::as.integer64()`](https://bit64.r-lib.org/reference/as.integer64.character.html)
+  / [`as.logical()`](https://rdrr.io/r/base/logical.html) methods take
+  `check = "warn"`, `"err"` or `FALSE` instead of a flag, following
+  {pjrt}, and warn by default about a value R’s type cannot hold. Write
+  `check = "err"` where you wrote `check = TRUE`, and `check = FALSE` to
+  materialize silently.
+- [`nv_array()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md)
+  and
+  [`nv_scalar()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md)
+  no longer take a `check` argument, following {pjrt}: what happens to
+  an `NA` is fixed by the dtype it is built at, and the input is always
+  scanned for values the requested dtype cannot hold. Call
+  [`anyNA()`](https://rdrr.io/r/base/NA.html) on the data yourself if
+  you want to hear about a missing value the dtype accepts.
 - [`common_dtype()`](https://r-xla.github.io/anvl/dev/reference/common_dtype.md)
   now errors for `ui64` and a signed integer instead of returning `i64`,
   which could not hold every `ui64` value. Convert one of them with
@@ -46,12 +107,95 @@
   array, improving consistency with base R.
 - The method for `round` was removed, as `digits` is currently not
   supported.
+- [`nv_quantile()`](https://r-xla.github.io/anvl/dev/reference/nv_quantile.md)
+  and
+  [`nv_median()`](https://r-xla.github.io/anvl/dev/reference/nv_median.md)
+  now reduce over `axes` (plural) instead of a single `axis`, defaulting
+  to every axis like
+  [`nv_mean()`](https://r-xla.github.io/anvl/dev/reference/nv_mean.md)
+  and base R’s [`quantile()`](https://rdrr.io/r/stats/quantile.html) /
+  [`median()`](https://rdrr.io/r/stats/median.html), and gained a `drop`
+  argument. Write `nv_median(x, axes = -1L)` for the previous default.
+- [`nv_sort()`](https://r-xla.github.io/anvl/dev/reference/nv_sort.md)
+  and
+  [`nv_argsort()`](https://r-xla.github.io/anvl/dev/reference/nv_argsort.md)
+  now flatten a multi-axis array when `axis = NULL`, instead of working
+  along the last axis, so [`sort()`](https://rdrr.io/r/base/sort.html)
+  on an anvl array agrees with base R. Write `axis = -1L` for the
+  previous default.
+- [`prim_sort()`](https://r-xla.github.io/anvl/dev/reference/prim_sort.md)
+  no longer defaults `axis` to `1L`; pass it explicitly, as with every
+  other primitive.
+- [`nv_argmax()`](https://r-xla.github.io/anvl/dev/reference/nv_argmax.md)
+  and
+  [`nv_argmin()`](https://r-xla.github.io/anvl/dev/reference/nv_argmin.md)
+  now reduce over `axes` (plural) instead of a single `axis`, defaulting
+  to every axis so that they pair with
+  [`nv_reduce_max()`](https://r-xla.github.io/anvl/dev/reference/nv_reduce_max.md)
+  /
+  [`nv_reduce_min()`](https://r-xla.github.io/anvl/dev/reference/nv_reduce_min.md).
+  Reducing several axes indexes their column-major flattening. Write
+  `nv_argmax(x, axes = -1L)` for the previous default.
 - The `tensor_to_gval` argument of
   [`GraphDescriptor()`](https://r-xla.github.io/anvl/dev/reference/GraphDescriptor.md)
   is now called `array_to_gval`.
 
 ### Features
 
+- New
+  [`local_default_device()`](https://r-xla.github.io/anvl/dev/reference/local_default_device.md)
+  and
+  [`with_default_device()`](https://r-xla.github.io/anvl/dev/reference/local_default_device.md)
+  set the `anvl.default_device` option, which names the device a call
+  that names none allocates on in place of the first CPU device.
+- The environment variables `ANVL_DEFAULT_DEVICE` and
+  `ANVL_DEFAULT_DTYPES`, read when anvl is loaded, are used when the
+  `anvl.default_device` and `anvl.default_dtypes` options are not set.
+- [`nv_rng_state()`](https://r-xla.github.io/anvl/dev/reference/nv_rng_state.md)
+  accepts a seed of any signed or unsigned integer data type, bringing
+  it to `i32`, where it took an `i32` only. The state stays `ui64[2]`
+  whatever the seed and the default integer data type are.
+- [`nv_flatten()`](https://r-xla.github.io/anvl/dev/reference/nv_flatten.md)
+  accepts a scalar, returning a length-1 array, instead of erroring.
+- [`as_anvl_array()`](https://r-xla.github.io/anvl/dev/reference/as_anvl_array.md)
+  gained a `.promote` argument, naming the data type the input is
+  brought to, as
+  [`as_anvl_arrays()`](https://r-xla.github.io/anvl/dev/reference/as_anvl_array.md)
+  already had.
+- [`nv_is_nan()`](https://r-xla.github.io/anvl/dev/reference/nv_is_nan.md),
+  [`nv_is_finite()`](https://r-xla.github.io/anvl/dev/reference/nv_is_finite.md)
+  and
+  [`nv_is_infinite()`](https://r-xla.github.io/anvl/dev/reference/nv_is_infinite.md)
+  accept any data type and answer a constant (all `FALSE` / all `TRUE` /
+  all `FALSE`) for one that holds no NaN or infinity, instead of
+  comparing – or, for
+  [`nv_is_finite()`](https://r-xla.github.io/anvl/dev/reference/nv_is_finite.md)
+  and
+  [`nv_is_infinite()`](https://r-xla.github.io/anvl/dev/reference/nv_is_infinite.md),
+  erroring.
+- The linear algebra functions
+  ([`nv_solve()`](https://r-xla.github.io/anvl/dev/reference/nv_solve.md),
+  [`nv_triangular_solve()`](https://r-xla.github.io/anvl/dev/reference/nv_triangular_solve.md),
+  [`nv_chol()`](https://r-xla.github.io/anvl/dev/reference/nv_chol.md),
+  [`nv_inv()`](https://r-xla.github.io/anvl/dev/reference/nv_inv.md),
+  [`nv_det()`](https://r-xla.github.io/anvl/dev/reference/nv_det.md),
+  [`nv_determinant()`](https://r-xla.github.io/anvl/dev/reference/nv_determinant.md),
+  [`nv_lu()`](https://r-xla.github.io/anvl/dev/reference/nv_lu.md),
+  [`nv_qr()`](https://r-xla.github.io/anvl/dev/reference/nv_qr.md),
+  [`nv_svd()`](https://r-xla.github.io/anvl/dev/reference/nv_svd.md),
+  [`nv_eigh()`](https://r-xla.github.io/anvl/dev/reference/nv_eigh.md))
+  accept integer input, computing at the default float data type where
+  the input is not a float already, instead of erroring. The `prim_*`
+  ones still take a float only.
+- [`nv_sign()`](https://r-xla.github.io/anvl/dev/reference/nv_sign.md)
+  accepts an unsigned integer array, returning `0` or `1` like base R’s
+  [`sign()`](https://rdrr.io/r/base/sign.html) on a non-negative number;
+  [`prim_sign()`](https://r-xla.github.io/anvl/dev/reference/prim_sign.md)
+  still takes a signed input only.
+- [`nv_reverse()`](https://r-xla.github.io/anvl/dev/reference/nv_reverse.md)
+  gained an `axes = NULL` default that reverses every axis, matching
+  [`rev()`](https://rdrr.io/r/base/rev.html) and `numpy.flip()`, and
+  returns `x` unchanged for an empty `axes` instead of erroring.
 - [`nv_seq()`](https://r-xla.github.io/anvl/dev/reference/nv_seq.md) /
   [`nv_seq_like()`](https://r-xla.github.io/anvl/dev/reference/nv_seq.md)
   gained a `by` argument and now count down when `start > end`, like
@@ -82,6 +226,15 @@
   payload. Only supported on the `"pjrt"` backend; the inverse direction
   is the existing
   [`as_raw()`](https://r-xla.github.io/anvl/dev/reference/as_raw.md).
+- New
+  [`nv_scan()`](https://r-xla.github.io/anvl/dev/reference/nv_scan.md):
+  a fixed-length loop in the style of JAX’s `lax.scan` that threads a
+  carry through a body function and stacks each step’s outputs along a
+  new leading axis. Supports nested carries, multiple `xs` and `out`
+  leaves, reverse scans, `xs = NULL` counted loops, carry-only loops and
+  zero-length scans. Backed by the new
+  [`prim_scan()`](https://r-xla.github.io/anvl/dev/reference/prim_scan.md)
+  primitive, which lowers to a `while` loop on the pjrt backend.
 - The reductions ([`sum()`](https://rdrr.io/r/base/sum.html),
   [`prod()`](https://rdrr.io/r/base/prod.html),
   [`max()`](https://rdrr.io/r/base/Extremes.html),
@@ -137,9 +290,51 @@
   [`nv_round()`](https://r-xla.github.io/anvl/dev/reference/nv_round.md)
   return an integer array unchanged, like base R does.
 - Improved documentation of API functions and primitives.
+- Printed graphs read as `[captures] (inputs) { ... return ... }`, show
+  sub-graphs in full, and wrap long lines to the console width;
+  [`format()`](https://rdrr.io/r/base/format.html) takes `width` and
+  `digits` arguments.
+- New functions for the uniform distribution:
+  [`nv_dunif()`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md),
+  [`nv_punif()`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md),
+  and
+  [`nv_qunif()`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md).
+
+### Performance
+
+- [`nv_quantile()`](https://r-xla.github.io/anvl/dev/reference/nv_quantile.md)
+  and
+  [`nv_median()`](https://r-xla.github.io/anvl/dev/reference/nv_median.md)
+  select the needed order statistics with `top_k` instead of a full sort
+  when every requested quantile lies in the same half of the axis.
+  Results are unchanged: the interpolation index is computed at `f64`,
+  so it agrees with the window the host sizes.
+- [`prim_top_k()`](https://r-xla.github.io/anvl/dev/reference/prim_top_k.md)
+  gained `indices`; without them the CUDA lowering uses an unstable sort
+  of the values and a slice instead of the CHLO op, which costs no more
+  than a full sort there. `nv_top_k(indices = FALSE)` and the quantile
+  fast path use it.
 
 ### Bug fixes
 
+- The `_like` constructors
+  ([`nv_scalar_like()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md),
+  [`nv_array_like()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md),
+  [`nv_fill_like()`](https://r-xla.github.io/anvl/dev/reference/nv_fill.md),
+  [`nv_iota_like()`](https://r-xla.github.io/anvl/dev/reference/nv_iota.md),
+  [`nv_empty_like()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md))
+  no longer allocate on the first CPU device when `like` is an array
+  built inside a trace. The stray device made
+  [`jit()`](https://r-xla.github.io/anvl/dev/reference/jit.md) abort
+  with “found more than one device” wherever the operands were
+  elsewhere, which took out every
+  [`nv_qnorm()`](https://r-xla.github.io/anvl/dev/reference/nv_normal.md)
+  call on CUDA.
+- [`nv_unserialize()`](https://r-xla.github.io/anvl/dev/reference/nv_unserialize.md)
+  / [`nv_read()`](https://r-xla.github.io/anvl/dev/reference/nv_read.md)
+  place the loaded arrays on
+  \[[`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md)\],
+  where they always used pjrt’s first device.
 - [`nv_chol()`](https://r-xla.github.io/anvl/dev/reference/nv_chol.md) /
   [`prim_chol()`](https://r-xla.github.io/anvl/dev/reference/prim_chol.md)
   and
@@ -311,6 +506,14 @@
 
 ### Tests
 
+- The environment variables that configure only the test suite are now
+  spelled with an `ANVL_TEST` prefix: `ANVL_TEST_SKIP_QUICKR`.
+  `ANVL_TEST` itself is unchanged.
+- The suite can be run with `ANVL_DEFAULT_DEVICE=cpu:1`, which makes
+  anything allocating on the first CPU device rather than following the
+  trace land on a device of its own instead of agreeing with everything
+  else by accident. The `default-device` workflow runs it that way on
+  the `full-test` label.
 - Moved some of pjrt’s dispatcher tests into anvl.
 
 ## anvl 0.4.0

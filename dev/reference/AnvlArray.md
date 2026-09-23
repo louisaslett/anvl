@@ -1,21 +1,14 @@
 # AnvlArray
 
-The main array object. Its type is determined by a data type and a
-shape.
+The main array object. Its type is determined by a data type and a shape
+and lives on a device, which can be a CPU or a GPU.
 
 ## Usage
 
 ``` r
-nv_array(
-  data,
-  dtype = NULL,
-  device = NULL,
-  shape = NULL,
-  byrow = FALSE,
-  check = FALSE
-)
+nv_array(data, dtype = NULL, device = NULL, shape = NULL, byrow = FALSE)
 
-nv_scalar(data, dtype = NULL, device = NULL, check = FALSE)
+nv_scalar(data, dtype = NULL, device = NULL)
 
 nv_matrix(
   data,
@@ -53,17 +46,15 @@ nv_empty_like(like, dtype = NULL, shape = NULL, device = NULL)
 
   (`NULL` \| `character(1)` \|
   [`DataType`](https://r-xla.github.io/tengen/reference/DataType.html))  
-  One of bool, i8, i16, i32, i64, ui8, ui16, ui32, ui64, f32, f64 or a
-  [`tengen::DataType`](https://r-xla.github.io/tengen/reference/DataType.html).
-  The default (`NULL`) uses the data type the R value takes (see
-  [`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)).
-  This depends on the backend. For the default `"pjrt"` backend,
-  `double`s become `f32`, `integer` `i32` and `logical`s `bool`. You can
-  change the defaults via the `anvl.default_dtypes` option, or for a
-  scope with
-  [`local_default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/local_default_dtypes.md)
-  /
-  [`with_default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/local_default_dtypes.md).
+  The data type at which to create the array: a
+  [`tengen::DataType`](https://r-xla.github.io/tengen/reference/DataType.html)
+  or one of bool, i8, i16, i32, i64, ui8, ui16, ui32, ui64, f32, f64.
+  `data` is built at it rather than converted to it, and a value it
+  cannot hold at all is an error (`nv_array(3e9, dtype = "i32")`
+  overflows); a `double` at an integer data type is truncated. The
+  default (`NULL`) uses the [default data
+  type](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md) of
+  `data`'s category.
 
 - device:
 
@@ -84,9 +75,7 @@ nv_empty_like(like, dtype = NULL, shape = NULL, device = NULL)
     backend-specific, it also determines the backend.
 
   The default (`NULL`) uses
-  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md):
-  the CPU, or the platform named by the `PJRT_PLATFORM` environment
-  variable on the `"pjrt"` backend.
+  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md).
 
 - shape:
 
@@ -107,15 +96,6 @@ nv_empty_like(like, dtype = NULL, shape = NULL, device = NULL)
   [`base::matrix()`](https://rdrr.io/r/base/matrix.html)'s `byrow`. Only
   allowed when `data` is an R object — passing an existing `AnvlArray`
   together with `byrow = TRUE` is an error.
-
-- check:
-
-  (`logical(1)`)  
-  If `TRUE`, error when `data` contains any `NA` values. XLA has no
-  representation for missing values, so they are otherwise silently
-  coerced to the closest available value of the target dtype (e.g. `NaN`
-  for floats, the bit pattern `-2147483648` for `i32`, `TRUE` for
-  `bool`). Defaults to `FALSE`. See the "Gotchas" vignette.
 
 - nrow:
 
@@ -194,6 +174,37 @@ An `AnvlArray` is backend-dependent: it belongs to exactly one backend
 (`"pjrt"` or the experimental `"quickr"`) and lives on a device of that
 backend. The supported data types and devices differ between backends.
 
+## Missing values
+
+XLA, the compiler that is used by the `"pjrt"` (the default) backend has
+no notion of a missing (`NA`) value. When creating a new `AnvlArray`,
+the input is therefore checked for the presence of such values. `NA`s
+are always rejected, except when:
+
+1.  Creating `float` arrays where we convert the `NA` to `NaN`.
+
+2.  When creating an `i32` from an R
+    [`integer()`](https://rdrr.io/r/base/integer.html). There, we throw
+    a warning, but the resulting `AnvlArray` gets the bit representation
+    of `NAinteger_`, which is `-INT_MIN`. Disallowing this would prevent
+    round-trips between the data types.
+
+See the "Gotchas" vignette for more information.
+
+## Out of Range values
+
+Because base R has fewer data types than anvl, creating `AnvlArray`s
+from R often involves type conversions. When such conversions are
+performed, anvl performs a scan of the inputs to ensure that the
+requested data type can actually hold the input data. For example,
+trying to create an unsigned integer from a negative R
+[`integer()`](https://rdrr.io/r/base/integer.html) fails. The same holds
+where an R value takes its data type from the array it meets rather than
+from an argument: `nv_scalar(1L, "ui8") + (-2L)` is refused, where
+converting an array with
+[`nv_convert()`](https://r-xla.github.io/anvl/dev/reference/nv_convert.md)
+wraps around.
+
 ## See also
 
 [nv_fill](https://r-xla.github.io/anvl/dev/reference/nv_fill.md),
@@ -205,7 +216,7 @@ backend. The supported data types and devices differ between backends.
 ## Examples
 
 ``` r
-# A 1-d array (vector) with shape (4). Default type for integers is `i32`
+# a 1-d array (vector) with shape (4), at the default data type for integers
 nv_array(1:4)
 #> AnvlArray
 #>  1
@@ -236,7 +247,7 @@ nv_array(1:6, shape = c(2L, 3L), byrow = TRUE)
 #>  4 5 6
 #> [ CPUi32{2,3} ] 
 
-# A scalar array.
+# a scalar array
 nv_scalar(3.14)
 #> AnvlArray
 #>  3.1400
@@ -245,8 +256,8 @@ nv_scalar(3.14)
 # an uninitialized 2x3 array (contents are unspecified)
 nv_empty("f32", shape = c(2L, 3L))
 #> AnvlArray
-#>  2.3409e+36 3.0915e-41 2.3409e+36
-#>  3.0915e-41 0.0000e+00 0.0000e+00
+#>        -nan       -nan 2.8026e-45
+#>  8.4078e-45 1.1210e-44       -nan
 #> [ CPUf32{2,3} ] 
 
 # --- Extractors ---

@@ -17,9 +17,8 @@ AnvlBackendPjrt()
 
 ## Value
 
-An
-[`AnvlBackend`](https://r-xla.github.io/anvl/dev/reference/AnvlBackend.md)
-object with subclass `"AnvlBackendPjrt"`.
+([`AnvlBackend`](https://r-xla.github.io/anvl/dev/reference/AnvlBackend.md))  
+With subclass `"AnvlBackendPjrt"`.
 
 ## Data representation
 
@@ -43,9 +42,10 @@ object (e.g. the platform `"cpu"` or `"cuda"`, optionally with an index
 such as `"cuda:1"`). When `device` is `NULL` in
 [`nv_array()`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md)
 or the [`jit()`](https://r-xla.github.io/anvl/dev/reference/jit.md)
-wrapper, the device defaults to the `PJRT_PLATFORM` environment variable
-(falling back to `"cpu"`), or is inferred from the existing inputs of a
-jitted call. Operations require all inputs to live on the same device.
+wrapper, the device defaults to
+[`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md),
+or is inferred from the existing inputs of a jitted call. Operations
+require all inputs to live on the same device.
 
 ## Supported data types
 
@@ -54,6 +54,17 @@ integers `ui8`, `ui16`, `ui32` and `ui64`; and the floats `f32` and
 `f64`. An R double materializes at `f32` on this backend and an R
 integer at `i32` unless the defaults say otherwise (see
 [`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)).
+
+## Floating-point behavior
+
+Subnormal floating-point values may be preserved when stored in an array
+and read back into R, yet treated as zero in calculations. On CPUs, XLA
+enables a mode that replaces subnormal inputs and results with zero. The
+exact behavior depends on the platform, backend, and operation.
+
+See
+[`vignette("gotchas", package = "anvl")`](https://r-xla.github.io/anvl/dev/articles/gotchas.md)
+for an explanation and examples.
 
 ## PJRT JIT arguments
 

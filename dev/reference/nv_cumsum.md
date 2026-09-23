@@ -15,7 +15,9 @@ nv_cumsum(x, axis = NULL, nan_rm = FALSE)
 - x:
 
   ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
-  Input array.
+  One input. Can be any data type. An R value materializes at its
+  [default data
+  type](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md).
 
 - axis:
 
@@ -28,28 +30,20 @@ nv_cumsum(x, axis = NULL, nan_rm = FALSE)
 - nan_rm:
 
   (`logical(1)`)  
-  How to handle `NaN` values in floating-point inputs. If `FALSE`
-  (default), `NaN` propagates forward from its first occurrence. If
-  `TRUE`, `NaN` is treated as the identity element of the cumulative op
-  (`0` for sum, `1` for prod, `-Inf` / `+Inf` for max / min) and
-  contributes nothing to the running value.
+  How to handle `NaN` values in float inputs. If `FALSE` (default),
+  `NaN` propagates forward from its first occurrence. If `TRUE`, `NaN`
+  is treated as the identity element of the cumulative op (`0` for sum,
+  `1` for prod, `-Inf` / `+Inf` for max / min) and contributes nothing
+  to the running value.
 
 ## Value
 
-[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
-Has the same shape as the input, and the same data type, except for a
-boolean input, which is accumulated at the default integer data type
-(see
+([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+Has the input's shape when `axis` is given, and is 1-D of length
+`prod(shape(x))` when `axis` is `NULL`, which flattens first. Has the
+input's data type, except for a boolean input, which is accumulated at
+the default integer data type (see
 [`default_dtypes()`](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)).
-
-## Relation to base R
-
-Both `nv_cumsum()` (with `axis = NULL`) and
-[`base::cumsum()`](https://rdrr.io/r/base/cumsum.html) flatten inputs to
-a single axis before accumulating, but the flatten order differs: anvl
-arrays are row-major (C order), so the flattened sequence iterates the
-last axis fastest, whereas base R uses column-major (Fortran) order. The
-two agree on 1-D inputs.
 
 ## See also
 
@@ -60,12 +54,12 @@ for the underlying primitive.
 
 ``` r
 x <- nv_matrix(1:6, nrow = 2)
-nv_cumsum(x)              # row-major flatten, then accumulate
+nv_cumsum(x)              # flatten, then accumulate
 #> AnvlArray
 #>   1
-#>   4
-#>   9
-#>  11
+#>   3
+#>   6
+#>  10
 #>  15
 #>  21
 #> [ CPUi32{6} ] 

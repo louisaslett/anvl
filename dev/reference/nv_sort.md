@@ -18,13 +18,17 @@ sort(x, decreasing = FALSE, ..., axis = NULL)
 - x:
 
   ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
-  Input array.
+  One input. Can be any data type. An R value materializes at its
+  [default data
+  type](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md).
 
 - axis:
 
   (`integer(1)` \| `NULL`)  
   Axis along which to sort. Negative values count from the end, i.e.
-  `-1` refers to the last axis. If `NULL` (default), uses the last axis.
+  `-1` refers to the last axis. If `NULL` (default), the input is first
+  flattened to a 1-D array, like
+  [`base::sort()`](https://rdrr.io/r/base/sort.html).
 
 - decreasing:
 
@@ -46,8 +50,8 @@ sort(x, decreasing = FALSE, ..., axis = NULL)
 
 ## Value
 
-[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
-Same shape and data type as `x`.
+([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+Has the input's shape and data type.
 
 ## NaN handling
 
@@ -56,13 +60,13 @@ Same shape and data type as `x`.
 
 ## The [`sort()`](https://rdrr.io/r/base/sort.html) generic
 
-[`base::sort()`](https://rdrr.io/r/base/sort.html) flattens a multi-axis
-array into a vector, while `nv_sort()` (and
-[`sort()`](https://rdrr.io/r/base/sort.html) on an anvl array) sorts
-along a single axis, the last one by default, and keeps the shape.
-Flatten with
-[`nv_flatten()`](https://r-xla.github.io/anvl/dev/reference/nv_flatten.md)
-first if you want a single sorted sequence.
+Like [`base::sort()`](https://rdrr.io/r/base/sort.html), `nv_sort()`
+with `axis = NULL` flattens a multi-axis array into one sorted vector,
+so [`sort()`](https://rdrr.io/r/base/sort.html) on an anvl array agrees
+with base R (the flatten order does not matter once the elements are
+sorted). It differs in one respect: base R drops `NA` by default,
+whereas `NaN` is kept and sorted to the end. Pass `axis` to sort each
+slice along one axis instead, which keeps the shape.
 
 ## See also
 
@@ -77,6 +81,7 @@ for the underlying primitive,
 ## Examples
 
 ``` r
+# sorting moves elements, so the data type and shape stay
 x <- nv_array(c(3, 1, 4, 1, 5, 9, 2, 6))
 nv_sort(x)
 #> AnvlArray
@@ -113,7 +118,16 @@ nv_sort(x, decreasing = TRUE)
 #> [ CPUf32{8} ] 
 
 m <- nv_matrix(c(3, 1, 5, 2, 4, 0), nrow = 2, byrow = TRUE)
-nv_sort(m, axis = 2L)
+nv_sort(m) # one sorted vector, like base R
+#> AnvlArray
+#>  0
+#>  1
+#>  2
+#>  3
+#>  4
+#>  5
+#> [ CPUf32{6} ] 
+nv_sort(m, axis = 2L) # each row sorted, shape kept
 #> AnvlArray
 #>  1 3 5
 #>  0 2 4

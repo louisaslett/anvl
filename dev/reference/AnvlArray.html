@@ -6,8 +6,10 @@
     }
   };
 </script><script src="../lightswitch.js"></script><script src="../deps/jquery-3.6.0/jquery-3.6.0.min.js"></script><meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no"><link href="../deps/bootstrap-5.3.8/bootstrap.min.css" rel="stylesheet"><script src="../deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="../deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet"><link href="../deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet"><script src="../deps/headroom-0.11.0/headroom.min.js"></script><script src="../deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="../deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="../deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="../deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="../deps/search-1.0.0/fuse.min.js"></script><script src="../deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="../pkgdown.js"></script><meta property="og:title" content="AnvlArray — AnvlArray"><meta name="description" content="The main array object.
-Its type is determined by a data type and a shape."><meta property="og:description" content="The main array object.
-Its type is determined by a data type and a shape."><meta property="og:image" content="https://r-xla.github.io/anvl/logo.svg"><meta name="robots" content="noindex"></head><body>
+Its type is determined by a data type and a shape and lives on a device, which can
+be a CPU or a GPU."><meta property="og:description" content="The main array object.
+Its type is determined by a data type and a shape and lives on a device, which can
+be a CPU or a GPU."><meta property="og:image" content="https://r-xla.github.io/anvl/logo.svg"><meta name="robots" content="noindex"></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -79,21 +81,15 @@ Its type is determined by a data type and a shape."><meta property="og:image" co
 
     <div class="ref-description section level2">
     <p>The main array object.
-Its type is determined by a data type and a shape.</p>
+Its type is determined by a data type and a shape and lives on a device, which can
+be a CPU or a GPU.</p>
     </div>
 
     <div class="section level2">
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">nv_array</span><span class="op">(</span></span>
-<span>  <span class="va">data</span>,</span>
-<span>  dtype <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  device <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  shape <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  byrow <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  check <span class="op">=</span> <span class="cn">FALSE</span></span>
-<span><span class="op">)</span></span>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">nv_array</span><span class="op">(</span><span class="va">data</span>, dtype <span class="op">=</span> <span class="cn">NULL</span>, device <span class="op">=</span> <span class="cn">NULL</span>, shape <span class="op">=</span> <span class="cn">NULL</span>, byrow <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span></span>
-<span><span class="fu">nv_scalar</span><span class="op">(</span><span class="va">data</span>, dtype <span class="op">=</span> <span class="cn">NULL</span>, device <span class="op">=</span> <span class="cn">NULL</span>, check <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
+<span><span class="fu">nv_scalar</span><span class="op">(</span><span class="va">data</span>, dtype <span class="op">=</span> <span class="cn">NULL</span>, device <span class="op">=</span> <span class="cn">NULL</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu">nv_matrix</span><span class="op">(</span></span>
 <span>  <span class="va">data</span>,</span>
@@ -128,13 +124,11 @@ with <code>byrow = TRUE</code>.</p></dd>
 
 <dt id="arg-dtype">dtype<a class="anchor" aria-label="anchor" href="#arg-dtype"></a></dt>
 <dd><p>(<code>NULL</code> | <code>character(1)</code> | <code><a href="https://r-xla.github.io/tengen/reference/DataType.html" class="external-link">DataType</a></code>)<br>
-One of bool, i8, i16, i32, i64, ui8, ui16, ui32, ui64, f32, f64 or a <code><a href="https://r-xla.github.io/tengen/reference/DataType.html" class="external-link">tengen::DataType</a></code>.
-The default (<code>NULL</code>) uses the data type the R value takes (see
-<code><a href="default_dtypes.html">default_dtypes()</a></code>). This depends on the backend.
-For the default <code>"pjrt"</code> backend, <code>double</code>s become <code>f32</code>, <code>integer</code>
-<code>i32</code> and <code>logical</code>s <code>bool</code>.
-You can change the defaults via the <code>anvl.default_dtypes</code> option, or for
-a scope with <code><a href="local_default_dtypes.html">local_default_dtypes()</a></code> / <code><a href="local_default_dtypes.html">with_default_dtypes()</a></code>.</p></dd>
+The data type at which to create the array: a <code><a href="https://r-xla.github.io/tengen/reference/DataType.html" class="external-link">tengen::DataType</a></code> or one
+of bool, i8, i16, i32, i64, ui8, ui16, ui32, ui64, f32, f64. <code>data</code> is built at it rather than converted to it,
+and a value it cannot hold at all is an error (<code>nv_array(3e9, dtype = "i32")</code> overflows); a <code>double</code> at an integer data type is truncated.
+The default (<code>NULL</code>) uses the <a href="default_dtypes.html">default data type</a> of
+<code>data</code>'s category.</p></dd>
 
 
 <dt id="arg-device">device<a class="anchor" aria-label="anchor" href="#arg-device"></a></dt>
@@ -145,8 +139,7 @@ The device the data lives on, given either as:</p><ul><li><p>a <em>device string
 <code><a href="https://r-xla.github.io/pjrt/reference/pjrt_device.html" class="external-link">PJRTDevice</a></code> for the <code>"pjrt"</code> backend or a
 <code><a href="quickr_device.html">quickr_device</a></code> for the <code>"quickr"</code> backend. Because a device object
 is backend-specific, it also determines the backend.</p></li>
-</ul><p>The default (<code>NULL</code>) uses <code><a href="default_device.html">default_device()</a></code>: the CPU, or the platform
-named by the <code>PJRT_PLATFORM</code> environment variable on the <code>"pjrt"</code> backend.</p></dd>
+</ul><p>The default (<code>NULL</code>) uses <code><a href="default_device.html">default_device()</a></code>.</p></dd>
 
 
 <dt id="arg-shape">shape<a class="anchor" aria-label="anchor" href="#arg-shape"></a></dt>
@@ -166,15 +159,6 @@ axes, fill the array in row-major order rather than the
 default column-major order, mirroring <code><a href="https://rdrr.io/r/base/matrix.html" class="external-link">base::matrix()</a></code>'s <code>byrow</code>.
 Only allowed when <code>data</code> is an R object — passing an existing
 <code>AnvlArray</code> together with <code>byrow = TRUE</code> is an error.</p></dd>
-
-
-<dt id="arg-check">check<a class="anchor" aria-label="anchor" href="#arg-check"></a></dt>
-<dd><p>(<code>logical(1)</code>)<br>
-If <code>TRUE</code>, error when <code>data</code> contains any <code>NA</code> values. XLA has no
-representation for missing values, so they are otherwise silently
-coerced to the closest available value of the target dtype (e.g. <code>NaN</code>
-for floats, the bit pattern <code>-2147483648</code> for <code>i32</code>, <code>TRUE</code> for
-<code>bool</code>). Defaults to <code>FALSE</code>. See the "Gotchas" vignette.</p></dd>
 
 
 <dt id="arg-nrow">nrow<a class="anchor" aria-label="anchor" href="#arg-nrow"></a></dt>
@@ -241,13 +225,41 @@ Serialize/deserialize arrays to/from raw vectors.</p></li>
 The supported data types and devices differ between backends.</p>
     </div>
     <div class="section level2">
+    <h2 id="missing-values">Missing values<a class="anchor" aria-label="anchor" href="#missing-values"></a></h2>
+
+
+<p>XLA, the compiler that is used by the <code>"pjrt"</code> (the default) backend
+has no notion of a missing (<code>NA</code>) value.
+When creating a new <code>AnvlArray</code>, the input is therefore checked for the
+presence of such values.
+<code>NA</code>s are always rejected, except when:</p><ol><li><p>Creating <code>float</code> arrays where we convert the <code>NA</code> to <code>NaN</code>.</p></li>
+<li><p>When creating an <code>i32</code> from an R <code><a href="https://rdrr.io/r/base/integer.html" class="external-link">integer()</a></code>.
+There, we throw a warning, but the resulting <code>AnvlArray</code> gets the bit
+representation of <code>NAinteger_</code>, which is <code>-INT_MIN</code>.
+Disallowing this would prevent round-trips between the data types.</p></li>
+</ol><p>See the "Gotchas" vignette for more information.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="out-of-range-values">Out of Range values<a class="anchor" aria-label="anchor" href="#out-of-range-values"></a></h2>
+
+
+<p>Because base R has fewer data types than anvl, creating <code>AnvlArray</code>s from R often involves
+type conversions.
+When such conversions are performed, anvl performs a scan of the inputs to ensure that the
+requested data type can actually hold the input data.
+For example, trying to create an unsigned integer from a negative R <code><a href="https://rdrr.io/r/base/integer.html" class="external-link">integer()</a></code> fails.
+The same holds where an R value takes its data type from the array it meets
+rather than from an argument: <code>nv_scalar(1L, "ui8") + (-2L)</code> is refused, where
+converting an array with <code><a href="nv_convert.html">nv_convert()</a></code> wraps around.</p>
+    </div>
+    <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
     <div class="dont-index"><p><a href="nv_fill.html">nv_fill</a>, <a href="nv_iota.html">nv_iota</a>, <a href="nv_seq.html">nv_seq</a>, <a href="as_array.html">as_array</a>, <a href="nv_serialize.html">nv_serialize</a></p></div>
     </div>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="co"># A 1-d array (vector) with shape (4). Default type for integers is `i32`</span></span></span>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="co"># a 1-d array (vector) with shape (4), at the default data type for integers</span></span></span>
 <span class="r-in"><span><span class="fu">nv_array</span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">4</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> AnvlArray</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>  1</span>
@@ -278,7 +290,7 @@ The supported data types and devices differ between backends.</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span>  4 5 6</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [ CPUi32{2,3} ] </span>
 <span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># A scalar array.</span></span></span>
+<span class="r-in"><span><span class="co"># a scalar array</span></span></span>
 <span class="r-in"><span><span class="fu">nv_scalar</span><span class="op">(</span><span class="fl">3.14</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> AnvlArray</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>  3.1400</span>
@@ -287,8 +299,8 @@ The supported data types and devices differ between backends.</p>
 <span class="r-in"><span><span class="co"># an uninitialized 2x3 array (contents are unspecified)</span></span></span>
 <span class="r-in"><span><span class="fu">nv_empty</span><span class="op">(</span><span class="st">"f32"</span>, shape <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">2L</span>, <span class="fl">3L</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> AnvlArray</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>  2.3409e+36 3.0915e-41 2.3409e+36</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>  3.0915e-41 0.0000e+00 0.0000e+00</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>        -nan       -nan 2.8026e-45</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>  8.4078e-45 1.1210e-44       -nan</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [ CPUf32{2,3} ] </span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># --- Extractors ---</span></span></span>

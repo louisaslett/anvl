@@ -78,8 +78,25 @@
 <h2 class="pkg-version" data-toc-text="development version" id="anvl-development-version">anvl (development version)<a class="anchor" aria-label="anchor" href="#anvl-development-version"></a></h2>
 <div class="section level3">
 <h3 id="breaking-changes-development-version">Breaking changes<a class="anchor" aria-label="anchor" href="#breaking-changes-development-version"></a></h3>
-<ul><li>The <code>@jit</code> roxygen tag was removed; wrap functions in <code><a href="../reference/jit.html">jit()</a></code> at the definition instead.</li>
+<ul><li>
+<code><a href="../reference/default_device.html">default_device()</a></code> no longer follows <code>PJRT_PLATFORM</code>; set <code>ANVL_DEFAULT_DEVICE</code> or the <code>anvl.default_device</code> option instead.</li>
+<li>
+<code><a href="../reference/prim_reshape.html">prim_reshape()</a></code> and <code><a href="../reference/nv_reshape.html">nv_reshape()</a></code>, and with them <code><a href="../reference/nv_flatten.html">nv_flatten()</a></code> and every <code>axis = NULL</code> flattening default, are now column-major like base R.</li>
+<li>
+<code><a href="../reference/prim_bitcast_convert.html">prim_bitcast_convert()</a></code> puts the axis holding an element’s pieces first rather than last when the two data types differ in width, so the pieces of one element are adjacent in the order <code><a href="../reference/nv_flatten.html">nv_flatten()</a></code> reads and a narrowing conversion lays the bytes out the way <code><a href="../reference/as_raw.html">as_raw()</a></code> writes them.</li>
+<li>
+<code><a href="../reference/nv_broadcast_to.html">nv_broadcast_to()</a></code> and <code><a href="../reference/nv_broadcast_arrays.html">nv_broadcast_arrays()</a></code> align axes from the first instead of the last: a shorter shape gets size-1 axes appended, so a length-<code>nrow</code> vector broadcasts against a matrix where a length-<code>ncol</code> one no longer does. Write <code><a href="../reference/prim_broadcast_in_axes.html">prim_broadcast_in_axes()</a></code> with an explicit axis mapping for the previous right-aligned behavior.</li>
+<li>The <code>@jit</code> roxygen tag was removed; wrap functions in <code><a href="../reference/jit.html">jit()</a></code> at the definition instead.</li>
+<li>
+<code><a href="../reference/nv_top_k.html">nv_top_k()</a></code>, <code><a href="../reference/nv_cummax.html">nv_cummax()</a></code> and <code><a href="../reference/nv_cummin.html">nv_cummin()</a></code> take <code>indices</code> instead of <code>with_indices</code>, spelling it the way <code><a href="../reference/prim_top_k.html">prim_top_k()</a></code> does.</li>
+<li>
+<code><a href="../reference/nv_top_k.html">nv_top_k()</a></code> takes <code>axes</code> instead of <code>axis</code>, ranking the elements of several axes together, and <code>axes = NULL</code> (the default) now ranks over every axis where it used to take the last one. Write <code>axes = -1</code> for the old default.</li>
 <li>The type system of {anvl} was changed to avoid the problems reported in issue <a href="https://github.com/r-xla/anvl/issues/373" class="external-link">#373</a>. Specifically, the ambiguity system was replaced with the <code>RData</code> system and a new system of rules for type promotions. With it, also the promotion behavior of various primitives and API functions was improved.</li>
+<li>An R value is now built directly at every data type of its own category, narrow and unsigned integers included, so one the data type cannot hold is an error instead of wrapping around: <code>x_ui8 + (-2L)</code> and <code>x_i8 + 300L</code> are refused. Write <code><a href="../reference/nv_convert.html">nv_convert()</a></code> on an array where the wraparound is what you want.</li>
+<li>
+<code><a href="../reference/as_array.html">as_array()</a></code> and the <code><a href="https://rdrr.io/r/base/double.html" class="external-link">as.double()</a></code> / <code><a href="https://rdrr.io/r/base/integer.html" class="external-link">as.integer()</a></code> / <code><a href="https://bit64.r-lib.org/reference/as.integer64.character.html" class="external-link">bit64::as.integer64()</a></code> / <code><a href="https://rdrr.io/r/base/logical.html" class="external-link">as.logical()</a></code> methods take <code>check = "warn"</code>, <code>"err"</code> or <code>FALSE</code> instead of a flag, following {pjrt}, and warn by default about a value R’s type cannot hold. Write <code>check = "err"</code> where you wrote <code>check = TRUE</code>, and <code>check = FALSE</code> to materialize silently.</li>
+<li>
+<code><a href="../reference/AnvlArray.html">nv_array()</a></code> and <code><a href="../reference/AnvlArray.html">nv_scalar()</a></code> no longer take a <code>check</code> argument, following {pjrt}: what happens to an <code>NA</code> is fixed by the dtype it is built at, and the input is always scanned for values the requested dtype cannot hold. Call <code><a href="https://rdrr.io/r/base/NA.html" class="external-link">anyNA()</a></code> on the data yourself if you want to hear about a missing value the dtype accepts.</li>
 <li>
 <code><a href="../reference/common_dtype.html">common_dtype()</a></code> now errors for <code>ui64</code> and a signed integer instead of returning <code>i64</code>, which could not hold every <code>ui64</code> value. Convert one of them with <code><a href="../reference/nv_convert.html">nv_convert()</a></code>.</li>
 <li>
@@ -95,16 +112,40 @@
 <li>A <code>Shape</code> is now represented as an integer vector.</li>
 <li>The operators <code>&amp;</code>, <code>|</code>, <code>!</code>, as well as the generics <code><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum()</a></code> and <code><a href="https://rdrr.io/r/base/all.html" class="external-link">all()</a></code> now require a boolean input array, improving consistency with base R.</li>
 <li>The method for <code>round</code> was removed, as <code>digits</code> is currently not supported.</li>
+<li>
+<code><a href="../reference/nv_quantile.html">nv_quantile()</a></code> and <code><a href="../reference/nv_median.html">nv_median()</a></code> now reduce over <code>axes</code> (plural) instead of a single <code>axis</code>, defaulting to every axis like <code><a href="../reference/nv_mean.html">nv_mean()</a></code> and base R’s <code><a href="https://rdrr.io/r/stats/quantile.html" class="external-link">quantile()</a></code> / <code><a href="https://rdrr.io/r/stats/median.html" class="external-link">median()</a></code>, and gained a <code>drop</code> argument. Write <code>nv_median(x, axes = -1L)</code> for the previous default.</li>
+<li>
+<code><a href="../reference/nv_sort.html">nv_sort()</a></code> and <code><a href="../reference/nv_argsort.html">nv_argsort()</a></code> now flatten a multi-axis array when <code>axis = NULL</code>, instead of working along the last axis, so <code><a href="https://rdrr.io/r/base/sort.html" class="external-link">sort()</a></code> on an anvl array agrees with base R. Write <code>axis = -1L</code> for the previous default.</li>
+<li>
+<code><a href="../reference/prim_sort.html">prim_sort()</a></code> no longer defaults <code>axis</code> to <code>1L</code>; pass it explicitly, as with every other primitive.</li>
+<li>
+<code><a href="../reference/nv_argmax.html">nv_argmax()</a></code> and <code><a href="../reference/nv_argmin.html">nv_argmin()</a></code> now reduce over <code>axes</code> (plural) instead of a single <code>axis</code>, defaulting to every axis so that they pair with <code><a href="../reference/nv_reduce_max.html">nv_reduce_max()</a></code> / <code><a href="../reference/nv_reduce_min.html">nv_reduce_min()</a></code>. Reducing several axes indexes their column-major flattening. Write <code>nv_argmax(x, axes = -1L)</code> for the previous default.</li>
 <li>The <code>tensor_to_gval</code> argument of <code><a href="../reference/GraphDescriptor.html">GraphDescriptor()</a></code> is now called <code>array_to_gval</code>.</li>
 </ul></div>
 <div class="section level3">
 <h3 id="features-development-version">Features<a class="anchor" aria-label="anchor" href="#features-development-version"></a></h3>
-<ul><li>
+<ul><li>New <code><a href="../reference/local_default_device.html">local_default_device()</a></code> and <code><a href="../reference/local_default_device.html">with_default_device()</a></code> set the <code>anvl.default_device</code> option, which names the device a call that names none allocates on in place of the first CPU device.</li>
+<li>The environment variables <code>ANVL_DEFAULT_DEVICE</code> and <code>ANVL_DEFAULT_DTYPES</code>, read when anvl is loaded, are used when the <code>anvl.default_device</code> and <code>anvl.default_dtypes</code> options are not set.</li>
+<li>
+<code><a href="../reference/nv_rng_state.html">nv_rng_state()</a></code> accepts a seed of any signed or unsigned integer data type, bringing it to <code>i32</code>, where it took an <code>i32</code> only. The state stays <code>ui64[2]</code> whatever the seed and the default integer data type are.</li>
+<li>
+<code><a href="../reference/nv_flatten.html">nv_flatten()</a></code> accepts a scalar, returning a length-1 array, instead of erroring.</li>
+<li>
+<code><a href="../reference/as_anvl_array.html">as_anvl_array()</a></code> gained a <code>.promote</code> argument, naming the data type the input is brought to, as <code><a href="../reference/as_anvl_array.html">as_anvl_arrays()</a></code> already had.</li>
+<li>
+<code><a href="../reference/nv_is_nan.html">nv_is_nan()</a></code>, <code><a href="../reference/nv_is_finite.html">nv_is_finite()</a></code> and <code><a href="../reference/nv_is_infinite.html">nv_is_infinite()</a></code> accept any data type and answer a constant (all <code>FALSE</code> / all <code>TRUE</code> / all <code>FALSE</code>) for one that holds no NaN or infinity, instead of comparing – or, for <code><a href="../reference/nv_is_finite.html">nv_is_finite()</a></code> and <code><a href="../reference/nv_is_infinite.html">nv_is_infinite()</a></code>, erroring.</li>
+<li>The linear algebra functions (<code><a href="../reference/nv_solve.html">nv_solve()</a></code>, <code><a href="../reference/nv_triangular_solve.html">nv_triangular_solve()</a></code>, <code><a href="../reference/nv_chol.html">nv_chol()</a></code>, <code><a href="../reference/nv_inv.html">nv_inv()</a></code>, <code><a href="../reference/nv_det.html">nv_det()</a></code>, <code><a href="../reference/nv_determinant.html">nv_determinant()</a></code>, <code><a href="../reference/nv_lu.html">nv_lu()</a></code>, <code><a href="../reference/nv_qr.html">nv_qr()</a></code>, <code><a href="../reference/nv_svd.html">nv_svd()</a></code>, <code><a href="../reference/nv_eigh.html">nv_eigh()</a></code>) accept integer input, computing at the default float data type where the input is not a float already, instead of erroring. The <code>prim_*</code> ones still take a float only.</li>
+<li>
+<code><a href="../reference/nv_sign.html">nv_sign()</a></code> accepts an unsigned integer array, returning <code>0</code> or <code>1</code> like base R’s <code><a href="https://rdrr.io/r/base/sign.html" class="external-link">sign()</a></code> on a non-negative number; <code><a href="../reference/prim_sign.html">prim_sign()</a></code> still takes a signed input only.</li>
+<li>
+<code><a href="../reference/nv_reverse.html">nv_reverse()</a></code> gained an <code>axes = NULL</code> default that reverses every axis, matching <code><a href="https://rdrr.io/r/base/rev.html" class="external-link">rev()</a></code> and <code>numpy.flip()</code>, and returns <code>x</code> unchanged for an empty <code>axes</code> instead of erroring.</li>
+<li>
 <code><a href="../reference/nv_seq.html">nv_seq()</a></code> / <code><a href="../reference/nv_seq.html">nv_seq_like()</a></code> gained a <code>by</code> argument and now count down when <code>start &gt; end</code>, like <code><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq()</a></code>.</li>
 <li>New <code><a href="../reference/jit_cache_size.html">jit_cache_size()</a></code> reports how many compiled programs a jitted function currently holds for a backend.</li>
 <li>The random number generators (<code><a href="../reference/nv_runif.html">nv_runif()</a></code>, <code><a href="../reference/nv_normal.html">nv_rnorm()</a></code>, <code><a href="../reference/nv_rbinom.html">nv_rbinom()</a></code>, <code><a href="../reference/nv_sample_int.html">nv_sample_int()</a></code>, <code><a href="../reference/nv_sample.html">nv_sample()</a></code>) and <code><a href="../reference/prim_rng_bit_generator.html">prim_rng_bit_generator()</a></code> return a named list with elements <code>state</code> and <code>values</code> instead of an unnamed pair, and <code><a href="../reference/prim_top_k.html">prim_top_k()</a></code>, <code><a href="../reference/prim_cummax.html">prim_cummax()</a></code> and <code><a href="../reference/prim_cummin.html">prim_cummin()</a></code> name theirs <code>values</code> and <code>indices</code>.</li>
 <li>
 <code><a href="../reference/AnvlArray.html">nv_array()</a></code> accepts a <code><a href="https://rdrr.io/r/base/raw.html" class="external-link">raw()</a></code> vector holding the native byte payload of <code>prod(shape)</code> elements of <code>dtype</code> (both then required); <code>byrow</code> selects row-major element order for the payload. Only supported on the <code>"pjrt"</code> backend; the inverse direction is the existing <code><a href="../reference/as_raw.html">as_raw()</a></code>.</li>
+<li>New <code><a href="../reference/nv_scan.html">nv_scan()</a></code>: a fixed-length loop in the style of JAX’s <code>lax.scan</code> that threads a carry through a body function and stacks each step’s outputs along a new leading axis. Supports nested carries, multiple <code>xs</code> and <code>out</code> leaves, reverse scans, <code>xs = NULL</code> counted loops, carry-only loops and zero-length scans. Backed by the new <code><a href="../reference/prim_scan.html">prim_scan()</a></code> primitive, which lowers to a <code>while</code> loop on the pjrt backend.</li>
 <li>The reductions (<code><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum()</a></code>, <code><a href="https://rdrr.io/r/base/prod.html" class="external-link">prod()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">max()</a></code>, <code><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">min()</a></code>, <code><a href="https://rdrr.io/r/base/range.html" class="external-link">range()</a></code>, <code><a href="https://rdrr.io/r/base/any.html" class="external-link">any()</a></code>, <code><a href="https://rdrr.io/r/base/all.html" class="external-link">all()</a></code>) now work with multiple data inputs.</li>
 <li>The default data types for floating point numbers and integers can now be configured via the <code>anvl.default_dtypes</code> field. You can configure this for a specific scope via <code><a href="../reference/local_default_dtypes.html">local_default_dtypes()</a></code> and <code><a href="../reference/local_default_dtypes.html">with_default_dtypes()</a></code>. To convert a function to one running at a specified precision, use <code><a href="../reference/with_dtypes.html">with_dtypes()</a></code>.</li>
 <li>New <code><a href="../reference/nv_linspace.html">nv_linspace()</a></code> and <code><a href="../reference/nv_linspace.html">nv_linspace_like()</a></code>, replacing <code><a href="../reference/nv_seq.html">nv_seq()</a></code> with a provided <code>steps</code> argument.</li>
@@ -125,10 +166,22 @@
 <li>
 <code><a href="../reference/nv_floor.html">nv_floor()</a></code>, <code><a href="../reference/nv_ceiling.html">nv_ceiling()</a></code>, <code><a href="../reference/nv_trunc.html">nv_trunc()</a></code> and <code><a href="../reference/nv_round.html">nv_round()</a></code> return an integer array unchanged, like base R does.</li>
 <li>Improved documentation of API functions and primitives.</li>
+<li>Printed graphs read as <code>[captures] (inputs) { ... return ... }</code>, show sub-graphs in full, and wrap long lines to the console width; <code><a href="https://rdrr.io/r/base/format.html" class="external-link">format()</a></code> takes <code>width</code> and <code>digits</code> arguments.</li>
+<li>New functions for the uniform distribution: <code><a href="../reference/nv_uniform.html">nv_dunif()</a></code>, <code><a href="../reference/nv_uniform.html">nv_punif()</a></code>, and <code><a href="../reference/nv_uniform.html">nv_qunif()</a></code>.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="performance-development-version">Performance<a class="anchor" aria-label="anchor" href="#performance-development-version"></a></h3>
+<ul><li>
+<code><a href="../reference/nv_quantile.html">nv_quantile()</a></code> and <code><a href="../reference/nv_median.html">nv_median()</a></code> select the needed order statistics with <code>top_k</code> instead of a full sort when every requested quantile lies in the same half of the axis. Results are unchanged: the interpolation index is computed at <code>f64</code>, so it agrees with the window the host sizes.</li>
+<li>
+<code><a href="../reference/prim_top_k.html">prim_top_k()</a></code> gained <code>indices</code>; without them the CUDA lowering uses an unstable sort of the values and a slice instead of the CHLO op, which costs no more than a full sort there. <code>nv_top_k(indices = FALSE)</code> and the quantile fast path use it.</li>
 </ul></div>
 <div class="section level3">
 <h3 id="bug-fixes-development-version">Bug fixes<a class="anchor" aria-label="anchor" href="#bug-fixes-development-version"></a></h3>
-<ul><li>
+<ul><li>The <code>_like</code> constructors (<code><a href="../reference/AnvlArray.html">nv_scalar_like()</a></code>, <code><a href="../reference/AnvlArray.html">nv_array_like()</a></code>, <code><a href="../reference/nv_fill.html">nv_fill_like()</a></code>, <code><a href="../reference/nv_iota.html">nv_iota_like()</a></code>, <code><a href="../reference/AnvlArray.html">nv_empty_like()</a></code>) no longer allocate on the first CPU device when <code>like</code> is an array built inside a trace. The stray device made <code><a href="../reference/jit.html">jit()</a></code> abort with “found more than one device” wherever the operands were elsewhere, which took out every <code><a href="../reference/nv_normal.html">nv_qnorm()</a></code> call on CUDA.</li>
+<li>
+<code><a href="../reference/nv_unserialize.html">nv_unserialize()</a></code> / <code><a href="../reference/nv_read.html">nv_read()</a></code> place the loaded arrays on [<code><a href="../reference/default_device.html">default_device()</a></code>], where they always used pjrt’s first device.</li>
+<li>
 <code><a href="../reference/nv_chol.html">nv_chol()</a></code> / <code><a href="../reference/prim_chol.html">prim_chol()</a></code> and <code><a href="../reference/prim_triangular_solve.html">prim_triangular_solve()</a></code> accept batched inputs again: axes before the last two are batch axes.</li>
 <li>A function returned by <code><a href="../reference/jit.html">jit()</a></code> no longer evaluates its arguments a second time. It used to rebuild the call with <code><a href="https://rdrr.io/r/base/match.call.html" class="external-link">match.call()</a></code> and evaluate the argument expressions again in the caller’s frame, which computed them twice whenever something had evaluated them already – most visibly under S3 dispatch, which evaluates the first argument to choose a method.</li>
 <li>
@@ -181,7 +234,9 @@
 </ul></div>
 <div class="section level3">
 <h3 id="tests-development-version">Tests<a class="anchor" aria-label="anchor" href="#tests-development-version"></a></h3>
-<ul><li>Moved some of pjrt’s dispatcher tests into anvl.</li>
+<ul><li>The environment variables that configure only the test suite are now spelled with an <code>ANVL_TEST</code> prefix: <code>ANVL_TEST_SKIP_QUICKR</code>. <code>ANVL_TEST</code> itself is unchanged.</li>
+<li>The suite can be run with <code>ANVL_DEFAULT_DEVICE=cpu:1</code>, which makes anything allocating on the first CPU device rather than following the trace land on a device of its own instead of agreeing with everything else by accident. The <code>default-device</code> workflow runs it that way on the <code>full-test</code> label.</li>
+<li>Moved some of pjrt’s dispatcher tests into anvl.</li>
 </ul></div>
 </div>
     <div class="section level2">

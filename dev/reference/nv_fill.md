@@ -20,9 +20,9 @@ nv_fill_like(like, value, shape = NULL, dtype = NULL, device = NULL)
 
   (`numeric(1)`)  
   Scalar value to fill the array with. It has to be something `dtype`
-  can hold: a whole number for an integer data type, a non-negative
-  whole number for an unsigned one, and a logical or `0` / `1` for
-  `bool`.
+  can hold: a whole number in its range for an integer data type, a
+  non-negative one for an unsigned integer, and a logical or `0` / `1`
+  for `bool`.
 
 - shape:
 
@@ -31,8 +31,11 @@ nv_fill_like(like, value, shape = NULL, dtype = NULL, device = NULL)
 
 - dtype:
 
-  (`character(1)` \| `NULL`)  
-  Data type.
+  (`NULL` \| `character(1)` \|
+  [`DataType`](https://r-xla.github.io/tengen/reference/DataType.html))  
+  Data type of the result. The default (`NULL`) uses the [default data
+  type](https://r-xla.github.io/anvl/dev/reference/default_dtypes.md)
+  for `nv_fill` and `dtype(like)` for `nv_fill_like`.
 
 - device:
 
@@ -53,9 +56,7 @@ nv_fill_like(like, value, shape = NULL, dtype = NULL, device = NULL)
     backend-specific, it also determines the backend.
 
   The default (`NULL`) uses
-  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md):
-  the CPU, or the platform named by the `PJRT_PLATFORM` environment
-  variable on the `"pjrt"` backend.
+  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md).
 
 - like:
 
@@ -65,7 +66,7 @@ nv_fill_like(like, value, shape = NULL, dtype = NULL, device = NULL)
 
 ## Value
 
-[`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md)  
+([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
 Has the given `shape` and `dtype`.
 
 ## See also
@@ -76,11 +77,14 @@ for the underlying primitive.
 ## Examples
 
 ``` r
+# the R double settles the data type, the shape is given
 nv_fill(0, shape = c(2, 3))
 #> AnvlArray
 #>  0 0 0
 #>  0 0 0
 #> [ CPUf32{2,3} ] 
+
+# `_like` takes shape, data type and device from an existing array
 x <- nv_matrix(1:6, nrow = 2)
 nv_fill_like(x, 0)
 #> AnvlArray

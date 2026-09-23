@@ -14,7 +14,9 @@ nv_rng_state(seed, device = NULL)
 - seed:
 
   ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
-  Scalar `i32` seed value.
+  Scalar seed. Must be a signed or unsigned integer; it is brought to
+  `i32`, so a wider one is narrowed to its low 32 bits. An R integer is
+  built at `i32` directly, whatever the default integer data type is.
 
 - device:
 
@@ -35,14 +37,12 @@ nv_rng_state(seed, device = NULL)
     backend-specific, it also determines the backend.
 
   The default (`NULL`) uses
-  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md):
-  the CPU, or the platform named by the `PJRT_PLATFORM` environment
-  variable on the `"pjrt"` backend.
+  [`default_device()`](https://r-xla.github.io/anvl/dev/reference/default_device.md).
 
 ## Value
 
-[`nv_array`](https://r-xla.github.io/anvl/dev/reference/AnvlArray.md) of
-dtype `ui64` and shape `(2)`.
+([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
+A `ui64` array of length 2, whatever `seed`'s data type was.
 
 ## See also
 

@@ -78,24 +78,23 @@ For normally distributed random numbers:
 
 ``` r
 
-result <- nv_rnorm(state, dtype = "f32", shape = c(2, 3), mean = 0, sd = 1)
+result <- nv_rnorm(state, shape = c(2, 3), mean = 0, sd = 1)
 result$values
 #> AnvlArray
-#>  -0.0675  0.9489  1.9457
-#>  -0.5255  1.2002  0.0008
+#>  -0.0675  1.9457  1.2002
+#>   0.9489 -0.5255  0.0008
 #> [ CPUf32{2,3} ]
 ```
 
-`mean` and `sd` are arrayish, so they may vary across the sample, as
-long as they have the same shape as it:
+`mean` and `sd` are arrayish, so they may vary across the sample.
 
 ``` r
 
 sds <- nv_matrix(c(0.01, 0.1, 1, 10, 100, 1000), nrow = 2)
-nv_rnorm(state, dtype = "f32", shape = c(2, 3), sd = sds)$values
+nv_rnorm(state, shape = c(2, 3), sd = sds)$values
 #> AnvlArray
-#>   -0.0007   0.9489 194.5720
-#>   -0.0526  12.0017   0.7665
+#>   -0.0007   1.9457 120.0167
+#>    0.0949  -5.2551   0.7665
 #> [ CPUf32{2,3} ]
 ```
 
