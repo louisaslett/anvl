@@ -13,7 +13,7 @@ nv_pnorm(q, mean = 0, sd = 1, lower_tail = TRUE, log_p = FALSE)
 
 nv_qnorm(p, mean = 0, sd = 1, lower_tail = TRUE, log_p = FALSE)
 
-nv_rnorm(shape, initial_state, dtype = NULL, mean = 0, sd = 1)
+nv_rnorm(shape, state, mean = 0, sd = 1, dtype = NULL)
 ```
 
 ## Arguments
@@ -66,7 +66,7 @@ nv_rnorm(shape, initial_state, dtype = NULL, mean = 0, sd = 1)
   ([`integer()`](https://rdrr.io/r/base/integer.html))  
   Shape of the result.
 
-- initial_state:
+- state:
 
   ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
   RNG state: a 1-D array of two `ui64` elements, as
@@ -92,7 +92,7 @@ with the shape and data type of `x`/`q`/`p`.
 
 `nv_rnorm()` returns a named `list` of two
 [`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md):
-`state`, the updated RNG state with `initial_state`'s data type and
+`state`, the updated RNG state with the input `state`'s data type and
 shape, and `values`, the sample of shape `shape` and the data type
 described under `dtype`.
 
@@ -139,9 +139,9 @@ Ellis Horwood. ISBN 0-7458-0289-3.
 Other rng:
 [`nv_rbinom()`](https://r-xla.github.io/anvl/dev/reference/nv_rbinom.md),
 [`nv_rng_state()`](https://r-xla.github.io/anvl/dev/reference/nv_rng_state.md),
-[`nv_runif()`](https://r-xla.github.io/anvl/dev/reference/nv_runif.md),
 [`nv_sample()`](https://r-xla.github.io/anvl/dev/reference/nv_sample.md),
-[`nv_sample_int()`](https://r-xla.github.io/anvl/dev/reference/nv_sample_int.md)
+[`nv_sample_int()`](https://r-xla.github.io/anvl/dev/reference/nv_sample_int.md),
+[`nv_uniform`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md)
 
 ## Examples
 

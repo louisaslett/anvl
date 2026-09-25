@@ -7,7 +7,7 @@ distribution.
 ## Usage
 
 ``` r
-nv_rbinom(shape, initial_state, size = 1L, prob = 0.5, dtype = NULL)
+nv_rbinom(shape, state, size = 1L, prob = 0.5, dtype = NULL)
 ```
 
 ## Arguments
@@ -17,7 +17,7 @@ nv_rbinom(shape, initial_state, size = 1L, prob = 0.5, dtype = NULL)
   ([`integer()`](https://rdrr.io/r/base/integer.html))  
   Shape of the result.
 
-- initial_state:
+- state:
 
   ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
   RNG state: a 1-D array of two `ui64` elements, as
@@ -55,9 +55,9 @@ shape `shape` and data type `dtype`.
 Other rng:
 [`nv_normal`](https://r-xla.github.io/anvl/dev/reference/nv_normal.md),
 [`nv_rng_state()`](https://r-xla.github.io/anvl/dev/reference/nv_rng_state.md),
-[`nv_runif()`](https://r-xla.github.io/anvl/dev/reference/nv_runif.md),
 [`nv_sample()`](https://r-xla.github.io/anvl/dev/reference/nv_sample.md),
-[`nv_sample_int()`](https://r-xla.github.io/anvl/dev/reference/nv_sample_int.md)
+[`nv_sample_int()`](https://r-xla.github.io/anvl/dev/reference/nv_sample_int.md),
+[`nv_uniform`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md)
 
 ## Examples
 

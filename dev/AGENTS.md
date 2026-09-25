@@ -92,7 +92,7 @@ keeps its `L` even when it meets a float array:
 Drop the `L` only where the value is genuinely a real number that
 happens to be whole – a distribution parameter, a probability bound, a
 threshold, a coefficient: `sd = 1`, `lower = 0, upper = 1`,
-`nv_max(-d, 1)`, `2 / sqrt(pi)`, `base::log(2 * pi)`.
+`nv_pmax(-d, 1)`, `2 / sqrt(pi)`, `base::log(2 * pi)`.
 
 That distinction bites hardest on a literal that meets *nothing*, where
 it decides a data type outright by settling on the default of its own
@@ -241,7 +241,12 @@ Primitives are `JitPrimitive` callables constructed by
 wraps `fn` with
 [`jit()`](https://r-xla.github.io/anvl/dev/reference/jit.md)) and
 carries an `AnvlPrimitive` metadata object via `attr(., "primitive")`.
-Primitives are stored as `prim_<name>` variables.
+Primitives are stored as `prim_<name>` variables, and the string passed
+to
+[`new_primitive()`](https://r-xla.github.io/anvl/dev/reference/new_primitive.md)
+is that same `<name>` – not the StableHLO op it lowers to – so printed
+graphs and error messages name a function the reader can look up.
+`test-primitives-meta.R` enforces this.
 [`new_primitive()`](https://r-xla.github.io/anvl/dev/reference/new_primitive.md)
 lexically binds `self` (the `AnvlPrimitive`) into the body’s enclosing
 environment, so inside a primitive body you write

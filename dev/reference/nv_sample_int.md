@@ -10,7 +10,7 @@ To sample from a population other than `1:n`, use
 ## Usage
 
 ``` r
-nv_sample_int(shape, initial_state, n, dtype = NULL)
+nv_sample_int(shape, state, n, dtype = NULL)
 ```
 
 ## Arguments
@@ -20,7 +20,7 @@ nv_sample_int(shape, initial_state, n, dtype = NULL)
   ([`integer()`](https://rdrr.io/r/base/integer.html))  
   Shape of the result.
 
-- initial_state:
+- state:
 
   ([`arrayish`](https://r-xla.github.io/anvl/dev/reference/arrayish.md))  
   RNG state: a 1-D array of two `ui64` elements, as
@@ -57,8 +57,8 @@ Other rng:
 [`nv_normal`](https://r-xla.github.io/anvl/dev/reference/nv_normal.md),
 [`nv_rbinom()`](https://r-xla.github.io/anvl/dev/reference/nv_rbinom.md),
 [`nv_rng_state()`](https://r-xla.github.io/anvl/dev/reference/nv_rng_state.md),
-[`nv_runif()`](https://r-xla.github.io/anvl/dev/reference/nv_runif.md),
-[`nv_sample()`](https://r-xla.github.io/anvl/dev/reference/nv_sample.md)
+[`nv_sample()`](https://r-xla.github.io/anvl/dev/reference/nv_sample.md),
+[`nv_uniform`](https://r-xla.github.io/anvl/dev/reference/nv_uniform.md)
 
 ## Examples
 

@@ -89,7 +89,7 @@ few rules of thumb:
   launches a separate kernel with non-trivial overhead, and the kernels
   run one after another instead of in parallel. Express the work as a
   single vectorized operation on the whole array whenever possible
-  (e.g. `x * y` or `nv_reduce_sum(x)` instead of a `for` loop).
+  (e.g. `x * y` or `nv_sum(x)` instead of a `for` loop).
 - **Prefer batched operations.** Operations like
   [`nv_matmul()`](https://r-xla.github.io/anvl/dev/reference/nv_matmul.md)
   accept a full batch of matrices at once. Stacking many small inputs
@@ -168,7 +168,7 @@ calls:
 
 sum_jit <- jit(function(x) {
   cat("compiling for length ", shape(x), "\n", sep = "")
-  nv_reduce_sum(x, axes = 1L)
+  nv_sum(x, axes = 1L)
 })
 
 for (n in c(7, 11, 13, 17)) {
@@ -310,13 +310,15 @@ x
 One common scenario for this pattern is weight updates in training
 loops.
 
-### Eager-mode subset-assignment always copies
+### Subset assignment in eager mode
 
 In plain R, `y[i] <- val` may happen in place when `y` has only one
-reference. Unfortunately, this is not possible in {anvl} and evaluating
-such calls in eager mode (outside of
-[`jit()`](https://r-xla.github.io/anvl/dev/reference/jit.md)) will
-always produce a copy. This is because we are essentially calling into a
-[`jit()`](https://r-xla.github.io/anvl/dev/reference/jit.md)ted function
-and we can’t always assume it’s okay to donate. In the future, we might
-add an option to do this in place.
+reference. {anvl} cannot track references to an array, so outside of
+[`jit()`](https://r-xla.github.io/anvl/dev/reference/jit.md), such a
+call produces a copy by default: modifying the array in place would also
+modify it for every other variable referring to it. If the original
+array is not needed anymore, `y[i, inplace = TRUE] <- val` instead
+donates `y`’s memory to the result and avoids the copy. See the
+[In-place
+Updates](https://r-xla.github.io/anvl/dev/articles/subsetting.html#in-place-updates)
+section of the Subsetting vignette for details.
