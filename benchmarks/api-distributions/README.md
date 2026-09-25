@@ -256,10 +256,13 @@ establish which side is right before acting on one.
 
 ### Regions with no finite error are classified, not just counted
 
-When the two sides disagree with no meaningful denominator — one is NaN, or the
-reference is zero or infinite — the sample carries no relative error, and these
-arrive in huge contiguous blocks. The sweep collapses them into intervals and
-labels each:
+When the two sides disagree and there is no finite relative error — one is NaN,
+the reference is zero or infinite, the result is ±∞ against a finite reference,
+or the error itself overflows — the sample goes to the region tracker. Every
+such case does, not a list of them: an earlier version enumerated the cases and
+silently dropped the rest, so a spurious overflow could never make a result
+unexplained. These arrive in huge contiguous blocks, and the sweep collapses
+them into intervals and labels each:
 
 | class | meaning |
 |---|---|
@@ -271,6 +274,28 @@ labels each:
 This is measurement, not judgement: it says what the numbers are. Without it
 every quantile cell would report billions of "failures" that are simply `p`
 outside [0, 1].
+
+### Correctly rounded is not the same as zero error
+
+The reference is base R's double and is never rounded before scoring, so the
+relative error measures numerical error against it. Separately, each sample
+records whether the result is that reference **correctly rounded to the
+result's precision** (`n_rounded` on the summary and bands, `rounded` on each
+worst input). The two agree almost everywhere and part company at the edges of
+the f32 range:
+
+| base R's value | correctly rounded f32 | relative error | routed as |
+|---|---|---|---|
+| magnitude ≥ f32 overflow threshold (2^128 − 2^103) | ±∞ | infinite | a match, not a failure |
+| below half the smallest subnormal | ±0 | exactly 1 | a finite error, marked rounded |
+| representable, result ±∞ | — | infinite | a failure (spurious overflow) |
+
+Both statements are kept because both are true: the implementation can be
+perfectly rounded while its error against the reference is still 1. For f64 the
+reference is already a double, so rounded and identical coincide and
+`n_rounded` is always 0. The rounding itself relies on the platform's
+double-to-float conversion; `run.R selftest` checks it at both edges on the
+machine that runs the sweep.
 
 ### A known platform property: subnormal flush-to-zero
 

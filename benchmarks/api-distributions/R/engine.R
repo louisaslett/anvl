@@ -91,36 +91,68 @@ sweep_chunk <- function(plan, k, sign) {
 
 ## ---- 2. scoring ------------------------------------------------------------
 ##
-## Two metrics over the same comparison.
+## Two metrics over the same comparison, and one fact beside them.
 ##
-##   rel  |f - g| / |g|      -- scale-free, comparable across distributions
-##   ulp  |f - g| / ulp(g)   -- the unit accuracy is actually argued in
+##   rel      |f - g| / |g|      -- scale-free, comparable across distributions
+##   ulp      |f - g| / ulp(g)   -- the unit accuracy is actually argued in
+##   rounded  f is g correctly rounded to the result's precision, but not g
 ##
-## The degenerate cases are pinned down identically for both, so neither is
-## ever NaN and a disagreement can never be scored as agreement:
+## The reference g is base R's double and is never rounded before scoring, so
+## rel and ulp measure numerical error against it. `rounded` answers a
+## different question: could this precision have done better? For an f32
+## result the two part company at the edges of the range. Where |g| reaches
+## the f32 overflow threshold (2^128 - 2^103), the rounded answer is +-Inf, and its relative
+## error is still infinite; where g is below half the smallest subnormal, the
+## correctly rounded answer is 0, and its relative error is still exactly 1.
+## Both statements are true and both are kept: rel is not adjusted, and
+## `rounded` is recorded alongside it. For f64, g is already a double, so a
+## rounded result is an identical one and `rounded` is never set.
+##
+## The degenerate cases are pinned down identically for rel and ulp, so
+## neither is ever NaN and a disagreement can never be scored as agreement:
 ##
 ##   f and g bit-identical (incl. both +-Inf, incl. both NaN)  -> 0
-##   g == 0 but f != 0, g non-finite and f not identical to it,
-##   f NaN where g is not                                      -> Inf
+##   anything else without a finite score                     -> Inf
 ##
-## An Inf score means "no meaningful denominator, and they disagree". Those are
-## routed to the range tracker rather than the top-K list, because they arrive
-## in huge contiguous blocks (every NaN pattern, everything off the support)
-## and would otherwise bury every real finding.
+## "Anything else" is deliberately not a list of cases. An earlier version
+## enumerated them -- g zero, g non-finite, f NaN -- and every case it missed
+## scored Inf without being flagged: f = +-Inf against a finite g, an f64
+## difference overflowing (-1e308 against 1e308), a finite difference over a
+## tiny g overflowing. Those samples reached neither the top-K list nor the
+## range tracker and could never make a result unexplained. A difference that
+## overflows only because both operands are huge is not left at Inf either:
+## it is recomputed on halved operands, which is exact at that magnitude.
+##
+## An Inf score means "no finite error, and they disagree". Those are routed to
+## the range tracker rather than the top-K list, because they arrive in huge
+## contiguous blocks (every NaN pattern, everything off the support) and would
+## otherwise bury every real finding. A correctly rounded result is never
+## routed there: it is the best the precision allows.
 
 score_pair <- function(fx, gx, dtype) {
   ok <- (fx == gx) | (is.nan(fx) & is.nan(gx))
   ok[is.na(ok)] <- FALSE
-  bad <- !ok & (gx == 0 | !is.finite(gx) | is.nan(fx))
+
+  gr <- if (dtype == "f32") as_f32(gx) else gx
+  rounded <- !ok & (fx == gr)
+  rounded[is.na(rounded)] <- FALSE
 
   d <- abs(fx - gx)
+  over <- is.infinite(d) & is.finite(fx) & is.finite(gx)
   rel <- d / abs(gx)
   ulp <- d / ulp_size(gx, dtype)
+  if (any(over)) {
+    dh <- abs(0.5 * fx[over] - 0.5 * gx[over])
+    rel[over] <- 2 * (dh / abs(gx[over]))
+    ulp[over] <- 2 * (dh / ulp_size(gx[over], dtype))
+  }
+
+  bad <- !ok & !rounded & !is.finite(rel)
   rel[ok] <- 0
   ulp[ok] <- 0
   rel[bad] <- Inf
   ulp[bad] <- Inf
-  list(rel = rel, ulp = ulp, bad = bad)
+  list(rel = rel, ulp = ulp, bad = bad, rounded = rounded)
 }
 
 ## ---- 3. reducers -----------------------------------------------------------
@@ -184,7 +216,8 @@ reducer_topk <- function(dtype, k = 10L) {
           rel_err = s$rel[j],
           ulp_err = s$ulp[j],
           value = fx[j],
-          reference = gx[j]
+          reference = gx[j],
+          rounded = s$rounded[j]
         )
         old <- store[[key]]
         all <- if (is.null(old)) cand else rbind(old, cand)
@@ -207,7 +240,8 @@ reducer_topk <- function(dtype, k = 10L) {
           value = numeric(0),
           reference = numeric(0),
           rel_err = numeric(0),
-          ulp_err = numeric(0)
+          ulp_err = numeric(0),
+          rounded = logical(0)
         ))
       }
       d <- do.call(rbind, mget(keys, envir = store))
@@ -221,7 +255,8 @@ reducer_topk <- function(dtype, k = 10L) {
         value = d$value,
         reference = d$reference,
         rel_err = d$rel_err,
-        ulp_err = d$ulp_err
+        ulp_err = d$ulp_err,
+        rounded = d$rounded
       )
     }
   )
@@ -279,6 +314,8 @@ reducer_bands <- function(dtype) {
   mk <- function() {
     list(
       n = matrix(0, nexp, 3L),
+      ## correctly rounded but not identical; overlaps columns 2 and 3 of `n`
+      rounded = rep(0, nexp),
       worst = rep(0, nexp),
       m_worst = rep(NA_real_, nexp),
       m_best = rep(NA_real_, nexp)
@@ -295,6 +332,9 @@ reducer_bands <- function(dtype) {
       for (cl in seq_len(ncol(acc[[k]]$n))) {
         i <- cls == cl
         if (any(i)) acc[[k]]$n[, cl] <- acc[[k]]$n[, cl] + tabulate(e[i], nbins = nexp)
+      }
+      if (any(s$rounded)) {
+        acc[[k]]$rounded <- acc[[k]]$rounded + tabulate(e[s$rounded], nbins = nexp)
       }
       fin <- is.finite(s$rel) & s$rel > 0
       if (any(fin)) {
@@ -386,6 +426,7 @@ binade_profile <- function(bands, dtype) {
       n_identical = a$n[ix, 1L],
       n_differ = a$n[ix, 2L],
       n_nonfinite = a$n[ix, 3L],
+      n_rounded = a$rounded[ix],
       m_worst = a$m_worst[ix],
       m_best = a$m_best[ix],
       worst_rel_err = a$worst[ix]
@@ -404,6 +445,7 @@ binade_profile <- function(bands, dtype) {
       n_identical = numeric(0),
       n_differ = numeric(0),
       n_nonfinite = numeric(0),
+      n_rounded = numeric(0),
       m_worst = numeric(0),
       m_best = numeric(0),
       worst_rel_err = numeric(0)
@@ -423,10 +465,12 @@ reducer_hist <- function() {
   counts <- integer(HIST_HI - HIST_LO + 1L)
   n_exact <- 0
   n_inf <- 0
+  n_rounded <- 0
   list(
     add = function(s) {
       n_exact <<- n_exact + sum(s$rel == 0)
       n_inf <<- n_inf + sum(is.infinite(s$rel))
+      n_rounded <<- n_rounded + sum(s$rounded)
       e <- s$rel[s$rel > 0 & is.finite(s$rel)]
       if (!length(e)) {
         return(invisible(NULL))
@@ -440,7 +484,7 @@ reducer_hist <- function() {
         count = counts
       )
     },
-    totals = function() list(n_exact = n_exact, n_inf = n_inf)
+    totals = function() list(n_exact = n_exact, n_inf = n_inf, n_rounded = n_rounded)
   )
 }
 
@@ -513,6 +557,9 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
       summary = data.frame(
         n_samples = plan$n_samples,
         n_exact = tot$n_exact,
+        ## correctly rounded to the result's precision without being identical;
+        ## counted apart from n_exact, since its relative error is not zero
+        n_rounded = tot$n_rounded,
         n_inf = tot$n_inf,
         n_inf_runs = nrow(ranges),
         worst_rel_err = if (have) detail$rel_err[1] else 0,
@@ -682,6 +729,9 @@ category_table <- function(bands, detail, support) {
     cbind(
       n = bands$n_identical + bands$n_differ + bands$n_nonfinite,
       n_identical = bands$n_identical,
+      ## NA for a band from a store written before rounding was recorded:
+      ## unknown, and summed as unknown rather than as zero
+      n_rounded = if (is.null(bands$n_rounded)) NA_real_ else bands$n_rounded,
       n_differ = bands$n_differ,
       n_nonfinite = bands$n_nonfinite
     ),

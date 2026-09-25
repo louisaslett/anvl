@@ -196,6 +196,7 @@ run_cell <- function(spec, row, opt, pv, dir) {
         depth = opt$depth,
         n_samples = NA_real_,
         n_exact = NA_real_,
+        n_rounded = NA_real_,
         n_inf = NA_real_,
         n_inf_runs = NA_integer_,
         n_runs_unclassified = 0L,
@@ -275,6 +276,7 @@ run_cell <- function(spec, row, opt, pv, dir) {
         depth = opt$depth,
         n_samples = r$summary$n_samples,
         n_exact = r$summary$n_exact,
+        n_rounded = r$summary$n_rounded,
         n_inf = r$summary$n_inf,
         n_inf_runs = r$summary$n_inf_runs,
         n_runs_unclassified = sum(cls == "unclassified"),
@@ -760,9 +762,43 @@ cmd_selftest <- function(opt) {
     isTRUE(ok)
   }
 
+  ## Scoring, checked directly on the machine that will run the sweep: the f32
+  ## rounding edges rest on the platform's double-to-float conversion, which C
+  ## leaves implementation-defined out of range, so they are verified, not assumed.
+  fmax <- (2 - 2^-23) * 2^127
+  smin <- 2^-149
+  sc <- function(f, g, dtype) score_pair(f, g, dtype)
+  negzero <- function(x) x == 0 & 1 / x < 0
+  cat("\nscoring:\n")
+  sp <- c(
+    check("f32: overflow threshold rounds to +-Inf, the tie included",
+      identical(as_f32(c(1e40, -1e40, fmax + 2^103, fmax + 2^103 * 0.99)), c(Inf, -Inf, Inf, fmax))),
+    check("f32: below half the smallest subnormal rounds to 0, sign kept, the tie included",
+      all(as_f32(c(1e-46, smin / 2)) == 0) && negzero(as_f32(-1e-46)) && as_f32(smin * 0.51) == smin),
+    check("f32 overflow that is correctly rounded is a match, its error still infinite", {
+      x <- sc(Inf, 1e40, "f32"); x$rounded && !x$bad && is.infinite(x$rel) }),
+    check("f32 underflow that is correctly rounded is a match, its error still 1", {
+      x <- sc(0, 1e-46, "f32"); x$rounded && !x$bad && x$rel == 1 }),
+    check("f32 overflow where the value fits is a failure", {
+      x <- sc(Inf, 1e30, "f32"); !x$rounded && x$bad }),
+    check("f64 flushing a subnormal is not correct rounding: a finite error of 1", {
+      x <- sc(0, 1e-310, "f64"); !x$rounded && !x$bad && x$rel == 1 }),
+    check("f64 -Inf against a finite reference is a failure", sc(-Inf, 2.5, "f64")$bad),
+    check("f64 difference overflow is measured, not infinite", {
+      x <- sc(-1e308, 1e308, "f64"); !x$bad && x$rel == 2 }),
+    check("f64 relative error overflowing a tiny reference is a failure", sc(1e-10, 5e-324, "f64")$bad),
+    check("an ordinary error is unchanged", sc(1.0000001, 1, "f64")$rel == 1.0000001 - 1),
+    check("nothing is left with a non-finite score and no route", {
+      f <- c(Inf, -Inf, -1e308, 1e-10, NaN, 1e-300, 0, 2, Inf, NaN)
+      g <- c(2.5, 2.5, 1e308, 5e-324, 2.5, 0, 1e-310, NaN, -Inf, NaN)
+      x <- sc(f, g, "f64")
+      all(is.finite(x$rel) | x$bad | x$rounded)
+    })
+  )
+
   cat("\nassertions:\n")
   p <- "selftest/anvl/%s/%s/%s/broken=%s"
-  ok <- c(
+  ok <- c(sp,
     check(
       "clean f64 value reproduces the reference exactly",
       get(sprintf(p, "f64", "value", "clean", "FALSE"))$worst_rel_err == 0
