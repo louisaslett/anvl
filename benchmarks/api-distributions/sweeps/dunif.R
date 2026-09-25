@@ -52,10 +52,11 @@ sweep_spec(
   params = UNIF_INTERVALS,
   flags = list(log = c(FALSE, TRUE)),
 
-  ## Off the support the density is a constant (0, or -Inf on the log scale),
-  ## so a disagreement there is a real finding rather than a domain artefact --
-  ## the support is reported as the whole line and only NaN is excused.
-  support = function(p, f) c(-Inf, Inf),
+  ## Defined on the whole line. Off the support the density is a constant (0,
+  ## or -Inf on the log scale), so a disagreement there is a real finding, not
+  ## a domain artefact: the support is reported, and excuses nothing.
+  domain = function(p, f) c(-Inf, Inf),
+  support = function(p, f) c(p$min, p$max),
   value = function(x, dtype, p, f) {
     as.double(anvl::nv_dunif(anvl::nv_array(x, dtype = dtype), p$min, p$max, log = f$log))
   },

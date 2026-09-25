@@ -20,7 +20,19 @@ SPEC_FIELDS_OPTIONAL <- list(
   dtypes = c("f32", "f64"),
   params = list(default = list()),
   flags = list(),
-  support = NULL, # function(params) -> c(lo, hi); classifies Inf runs
+  ## The *valid input domain* of the primary argument: where the function is
+  ## defined at all, e.g. p in [0, 1] for a quantile. Outside it the value is
+  ## NaN by specification. function(params, flags) -> c(lo, hi), closed.
+  domain = NULL,
+  ## The *distribution's support*: where the density is positive. Reporting
+  ## only -- a CDF below the support still has a perfectly good value, so
+  ## nothing is excused by it. function(params, flags) -> c(lo, hi), or NULL.
+  support = NULL,
+  ## Points where the *implementation* switches algorithm, in the primary
+  ## argument: function(params, flags, dtype) -> named numeric. They are
+  ## anvl's own, read from R/api-distributions.R, and go stale when it
+  ## changes; they are checked exactly, with their neighbours, as exact points.
+  branch_points = NULL,
   grad_wrt = character(0),
   grad = NULL,
   ref_grad = NULL,

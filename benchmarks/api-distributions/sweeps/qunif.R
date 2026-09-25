@@ -57,11 +57,10 @@ sweep_spec(
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
 
   ## A quantile function is only defined on its probability scale; base R
-  ## returns NaN with a warning off it, so those regions are explained rather
-  ## than reported. This is the one place the support really bites, and it is
-  ## why classification beats counting: without it every qunif cell reports
-  ## billions of "failures" that are simply p outside [0, 1].
-  support = function(p, f) if (isTRUE(f$log_p)) c(-Inf, 0) else c(0, 1),
+  ## returns NaN with a warning off it. A value disagreement there is still a
+  ## failure (NaN specified, something else returned); only a gradient
+  ## convention where both values are NaN is set aside.
+  domain = function(p, f) if (isTRUE(f$log_p)) c(-Inf, 0) else c(0, 1),
   value = function(x, dtype, p, f) {
     as.double(anvl::nv_qunif(
       anvl::nv_array(x, dtype = dtype),

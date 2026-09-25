@@ -56,7 +56,19 @@ sweep_spec(
   primary = "p",
   params = NORM_PARAMS,
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
-  support = function(p, f) if (isTRUE(f$log_p)) c(-Inf, 0) else c(0, 1),
+  domain = function(p, f) if (isTRUE(f$log_p)) c(-Inf, 0) else c(0, 1),
+  ## nv_qnorm switches between central and tail approximations at p = e^-2 and
+  ## 1 - e^-2, and between near and far tail at z = 8, i.e. t = e^-32 on either
+  ## side. Tested on p, or on log p when log_p = TRUE. See R/api-distributions.R.
+  branch_points = function(p, f, dtype) {
+    if (isTRUE(f$log_p)) {
+      c(lower_central = -2, upper_central = log1p(-exp(-2)),
+        lower_far = -32, upper_far = log1p(-exp(-32)))
+    } else {
+      c(lower_central = exp(-2), upper_central = 1 - exp(-2),
+        lower_far = exp(-32), upper_far = 1 - exp(-32))
+    }
+  },
   value = function(x, dtype, p, f) {
     as.double(anvl::nv_qnorm(
       anvl::nv_array(x, dtype = dtype),

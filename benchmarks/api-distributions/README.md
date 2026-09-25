@@ -35,7 +35,7 @@ Rscript run.R browse                # 3. drill down and read
 Rscript run.R diff                  # 4. after a code change: what moved?
 ```
 
-`Rscript run.R selftest` (~10 s) proves the engine still detects errors; run it
+`Rscript run.R selftest` (~30 s) proves the engine still detects errors; run it
 after touching anything in `R/`.
 
 Nothing is written into this directory. Results go to the store (below).
@@ -254,26 +254,126 @@ entirely; anvl goes through `log1p` and keeps it. The sweep correctly reports a
 disagreement, and the right response is to leave `nv_punif` alone. Always
 establish which side is right before acting on one.
 
-### Regions with no finite error are classified, not just counted
+### Every failure has a tested cause, not a location
 
 When the two sides disagree and there is no finite relative error — one is NaN,
 the reference is zero or infinite, the result is ±∞ against a finite reference,
-or the error itself overflows — the sample goes to the region tracker. Every
-such case does, not a list of them: an earlier version enumerated the cases and
-silently dropped the rest, so a spurious overflow could never make a result
-unexplained. These arrive in huge contiguous blocks, and the sweep collapses
-them into intervals and labels each:
+or the error itself overflows — the sample is a *failure*. Every such case is,
+not a list of them. Failures arrive in contiguous blocks, which the sweep
+collapses into regions, one **cause** per region, each established by a test
+rather than read off where the inputs lie:
 
-| class | meaning |
-|---|---|
-| `nan` | the whole interval is NaN (and ±Inf), where disagreement is a convention |
-| `below_support` / `above_support` | outside the spec's declared support |
-| `subnormal` | wholly below the smallest normal — see below |
-| `unclassified` | nothing in the spec accounts for this |
+| cause | tested how | category |
+|---|---|---|
+| `nan_input` | the input is NaN | failure |
+| `input_flushing` | a subnormal input whose result is **bit-identical** to the function's own result at the same-signed zero, **and** that zero result is **validated**: identical to base R's, or base R's correctly rounded | backend limitation |
+| `flush_inherits_zero_error` | as above, but the zero result is not validated — *any* error at zero, finite or not: the subnormals inherit it | failure |
+| `domain_boundary` | an endpoint of the valid input domain (e.g. p = 0, p = 1), or a subnormal inheriting the behaviour of a zero that is one | boundary |
+| `outside_domain` | wholly outside the valid input domain | failure — or, for a gradient, see below |
+| `zero_input` | ±0 that is not a domain endpoint | failure |
+| `inf_input` | ±∞ inside the domain | failure |
+| `unidentified` | none of the above | failure |
 
-This is measurement, not judgement: it says what the numbers are. Without it
-every quantile cell would report billions of "failures" that are simply `p`
-outside [0, 1].
+The **category** is what a reader weighs, and all four stay visible:
+
+- **failure** — numerical or behavioural failure on valid inputs.
+- **backend limitation** — the platform, not the function: input flushing.
+- **boundary** — behaviour at a domain endpoint, which needs an explicit
+  convention or limiting value; the reference supplies the limiting value.
+- **undefined domain** — a *gradient* outside the valid input domain where the
+  forward values on both sides are NaN, so no derivative is defined and the two
+  sides differ only in convention (e.g. `qnorm` for p > 1: anvl's d/dp is NaN,
+  the reference's is 0). A gradient cell never computes forward values, so this
+  is **established** from the matching value cell, which swept the identical
+  inputs: only where it found both values NaN for every out-of-domain sample in
+  every binade the region touches. Anything less stays a failure. Only this
+  category is set aside from an accuracy verdict, and setting it aside
+  validates nothing.
+
+**The evidence for a convention must come from the same run.** The value cell
+is looked up by the gradient region's own `run_id`, which fixes the platform,
+the anvl build, the harness, the depth and the seed together, so "the identical
+inputs" holds by construction. Evidence from any other run is never used: a
+gradient cell re-run on its own stays a failure, and its region's `evidence`
+column says why. Exact points follow the same rule, matched by bit pattern.
+Resolution always reads the **whole store** — `status`, `report`, `browse`,
+`diff`, `query.R` and `export` all go through the same `resolved_ranges()` /
+`resolved_points()` — so a filter can narrow what is *shown* but never what is
+used as evidence: a gradient-only export classifies exactly as the terminal
+does.
+
+Zero is never a subnormal: it is the value a subnormal is flushed *to*, and it
+is checked, not exempted. The same holds in the aggregates: each sign's swept
+zero is a band row of its own (`zero = TRUE`), binade 0 holds only the
+subnormals, and the categories give zero its own input class. A value disagreement outside the domain — the value
+is specified to be NaN and something else came back — is a failure.
+
+Alongside the cause, each region records **what the two sides returned**, as a
+tally of (value kind, reference kind) pairs over the kinds NaN, +∞, −∞, +0, −0,
+subnormal and normal, plus a representative input with its bits and both
+values. For f64 the region's bounds are those of the 2³²-pattern blocks its
+failing samples fell in and are **not** evidence that the endpoints were
+evaluated; the first and last *sampled* failing inputs are carried separately
+(`sampled_from`, `sampled_to`) and are the ones to cite.
+
+The same kind pairs are tallied for every binade in the `kinds` table, in and
+out of the domain separately, and two further things are counted per binade
+without being failures: **signed-zero disagreements** (`n_zero_sign`: both
+sides zero, opposite signs, which `==` cannot see) and **differences caused by
+input flushing**, split by whether the zero they were flushed onto is
+validated: `n_flushed` (it is, so the difference is the flush's alone) and
+`n_flushed_zero_error` (it is not, so the subnormals also carry the error at
+zero). Their error magnitudes stay in the histogram and worst inputs.
+
+This is measurement, not judgement: it says what the numbers are and why.
+
+### Exact points, beside every sweep
+
+The f64 sweep draws its low 32 bits at random, so it essentially never lands on
+±0, ±∞, or an exact point such as p = 1 — a boundary bug there is invisible
+without a separate check. Every cell therefore also evaluates a fixed set of
+**exact points**, kept in their own `points` table and never added to the
+sweep's counts, so nothing is counted twice:
+
+- ±0, ±∞, NaN, the smallest and largest subnormal, the smallest normal, the
+  largest finite value, ±0.5, ±1;
+- each spec's valid-domain endpoints and distribution-support edges;
+- anvl's **branch points**, where its implementation switches algorithm (anvl
+  cells only);
+
+every point **at the cell's precision** — a boundary of an f32 cell is the
+boundary after conversion to f32 — and every finite one, universal points
+included, with its two representable neighbours. The ±0 results are recorded
+explicitly, so "zero passes" is a recorded comparison, not an absence of
+regions.
+
+The points take part in every assessment without entering the sweep's counts.
+Each results row carries their summary (`n_points`, `n_points_identical`,
+`n_points_failure`, `n_points_boundary`, `n_points_backend`,
+`n_points_domain`, `worst_point_rel_err` and where), `status` lists a result
+with a failing point among its failures, `report` and `browse` print every
+point that is not bit-identical, and `Rscript query.R points --category failure`
+lists them.
+
+### What `status` counts
+
+Every category stays on screen, and each counts: **failures**, **domain
+boundary behaviour** and **backend limitations** are separate sections, each
+counting regions and exact points. The largest finite errors are ranked over
+the sweep and the points together. A result is called **bit-identical** only if
+every sampled input and every exact point matches base R down to the sign of
+zero; results that differ *only* by undefined-domain conventions are counted on
+a line of their own, as set aside. `diff` compares every one of these counts,
+not just the worst error.
+
+### The reference sees the parameters the implementation sees
+
+anvl converts a bare `min = -pi` to f32 for an f32 argument, so an f32 cell's
+reference is evaluated with its parameters rounded to f32 too. Otherwise the
+two sides compute different functions: f32(−π) lies *below* the double −π, and
+at x = f32(−π) anvl is inside the support while a double-parameter reference is
+outside — a failure by construction. Domain, support and branch points are
+taken from the same rounded parameters.
 
 ### Correctly rounded is not the same as zero error
 
@@ -308,10 +408,19 @@ as.vector(nv_array(-1e-39, dtype = "f32") >= 0)             # TRUE  (R says FALS
 as.double(nv_dunif(nv_array(-1e-39, dtype = "f32"), 0, 1))  # 1     (R says 0)
 ```
 
-Nothing measured entirely inside that band describes the function under test,
-so such intervals are classified `subnormal`. They are still recorded —
-`Rscript query.R ranges --class subnormal` lists every one — and the day the
-backend stops flushing, they become ordinary agreement.
+A subnormal input is therefore evaluated as ±0. That is *tested*, per sample:
+a failure is attributed to input flushing only if the result is bit-identical to
+the function's own result at the same-signed zero and that zero result is
+validated (see the cause table above). Flushing that produces a materially
+wrong answer still counts, as `n_flushed`, with its error kept. `Rscript query.R ranges
+--cause input_flushing` lists every region; the day the backend stops flushing,
+they become ordinary agreement.
+
+**Never write the literal `-0` inside a function in this harness.** R's
+byte-code compiler (R 4.6.1, JIT level 3 — verified) folds it to `+0` in some
+call shapes: `c(0, -0)` in a compiled function returns two positive zeros. Use
+`NEG_ZERO` (`R/util.R`), built from its bit pattern; `selftest` checks that it
+survives.
 
 ## `export` — publishing a snapshot
 
@@ -335,9 +444,12 @@ summary.parquet   the results table for every cell of every function
 detail.parquet    the worst inputs, per binade
 bands.parquet     the per-binade profile (unmerged; merged on render)
 hist.parquet      the error distribution
-ranges.parquet    the no-finite-error regions
-categories.parquet  per-result figures by input class (normal, zero & subnormal,
-                  outside the support, ±∞ & NaN), and each cell's support on summary
+ranges.parquet    the no-finite-error regions, resolved (cause, category, evidence)
+kinds.parquet     what each side returned, per binade
+points.parquet    the exact points, resolved
+categories.parquet  per-result figures by input class (normal, zero, subnormal,
+                  outside the domain, ±∞ & NaN); each cell's domain and support
+                  are on summary
 ```
 
 One file per **table**, not per function. The overview page summarises every
@@ -417,7 +529,8 @@ of artifacts became unusable.
 
 ```bash
 Rscript query.R worst --spec nv_qnorm --n 20
-Rscript query.R ranges --class unclassified
+Rscript query.R ranges --category failure
+Rscript query.R points --category failure
 Rscript query.R detail --cell 'nv_qnorm/anvl/f64/value/standard/lower_tail=TRUE,log_p=FALSE'
 Rscript query.R runs
 ```
@@ -452,7 +565,9 @@ sweep_spec(
   primary   = "x",
   params    = list(standard = list(mean = 0, sd = 1)),
   flags     = list(log = c(FALSE, TRUE)),
-  support   = function(p, f) c(-Inf, Inf),
+  domain    = function(p, f) c(-Inf, Inf),         # valid input domain
+  support   = function(p, f) c(p$min, p$max),      # optional; reporting only
+  branch_points = function(p, f, dtype) c(...),    # optional; anvl's own
 
   value     = function(x, dtype, p, f) as.double(anvl::nv_dnorm(...)),
   ref_value = function(x, p, f) dnorm(x, p$mean, p$sd, log = f$log),
@@ -484,9 +599,12 @@ Three things worth knowing before you write a reference:
    below the ulp, so the reference returned 1 where the true value is 1e150 and
    the sweep reported nv_pnorm as wrong by a factor of 1e231. anvl was right.
    See `inv_mills()` in `sweeps/_normal.R`.
-2. **Declare the support honestly.** It is what explains whole regions, and an
-   over-wide support turns every out-of-domain block into a false finding while
-   an over-narrow one hides real ones.
+2. **Declare the domain honestly, and keep it apart from the support.** The
+   *domain* is where the function is defined at all (p in [0, 1] for a
+   quantile); outside it the value is NaN by specification. The *support* is
+   where the distribution lives, and excuses nothing: a CDF below its support
+   has a perfectly good value. `branch_points` are read from anvl's source and
+   go stale when it changes — keep the pointer to the source beside them.
 3. **Prose belongs in the spec.** The derivation of an analytic derivative and
    the reason for a parameter set are the most valuable things in these files.
    Keep them next to the code they justify.

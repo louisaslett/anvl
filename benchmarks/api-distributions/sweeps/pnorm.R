@@ -53,7 +53,14 @@ sweep_spec(
   primary = "q",
   params = NORM_PARAMS,
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
-  support = function(p, f) c(-Inf, Inf),
+  domain = function(p, f) c(-Inf, Inf),
+  ## nv_pnorm branches on d = (q - mean) / sd (or (mean - q) / sd for the upper
+  ## tail): the asymptotic series at d <= -11.9 in f32 / -20 in f64, the direct
+  ## erfc below 0, the complement above. See R/api-distributions.R, nv_pnorm.
+  branch_points = function(p, f, dtype) {
+    d <- c(asymptotic = if (dtype == "f32") -11.9 else -20, erfc_split = 0)
+    if (isTRUE(f$lower_tail)) p$mean + p$sd * d else p$mean - p$sd * d
+  },
   value = function(x, dtype, p, f) {
     as.double(anvl::nv_pnorm(
       anvl::nv_array(x, dtype = dtype),

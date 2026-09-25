@@ -8,7 +8,8 @@
 ##   sw_results()                       # the latest result for every cell
 ##   sw_worst(spec = "nv_qnorm", n = 20)
 ##   sw_detail("nv_qnorm/anvl/f64/value/standard/lower_tail=TRUE,log_p=TRUE")
-##   sw_ranges(class = "unclassified")
+##   sw_ranges(category = "failure")
+##   sw_points(failing = TRUE)          # the exact points that disagree
 ##   sw_bands("nv_qunif/anvl/f32/value/wide/lower_tail=TRUE,log_p=FALSE")
 ##   sw_hist("nv_pnorm/anvl/f64/value/standard/lower_tail=TRUE,log_p=FALSE")
 ##   sw_compare("darwin-arm64-cpu", "linux-x86_64-cuda")
@@ -17,7 +18,8 @@
 ## or from the shell:
 ##
 ##   Rscript query.R worst --spec nv_qnorm --n 20
-##   Rscript query.R ranges --class unclassified
+##   Rscript query.R ranges --category failure
+##   Rscript query.R points --category failure
 ##   Rscript query.R runs
 ##
 ## Everything reads Parquet through nanoparquet, which is the only hard
@@ -68,9 +70,12 @@ sw_worst <- function(n = 20, metric = c("rel", "ulp"), ...) {
   if (is.null(r)) {
     return(NULL)
   }
-  col <- if (metric == "rel") "worst_rel_err" else "worst_ulp_err"
+  r$worst_any <- result_state(r)$worst_any
+  col <- if (metric == "rel") "worst_any" else "worst_ulp_err"
   r <- r[order(-r[[col]]), , drop = FALSE]
-  utils::head(r[c("cell_id", "output", "dtype", "worst_rel_err", "worst_ulp_err", "n_runs_unclassified")], n)
+  cols <- c("cell_id", "output", "dtype", "worst_rel_err", "worst_point_rel_err", "worst_ulp_err",
+    "n_runs_unclassified", "n_points_failure")
+  utils::head(r[intersect(cols, names(r))], n)
 }
 
 ## The top-K worst individual inputs for one cell, with their bit patterns --
@@ -89,21 +94,45 @@ sw_detail <- function(cell_id, output = NULL, n = 20) {
 }
 
 ## The intervals of the number line where the two sides disagreed with no
-## meaningful denominator, and what explains each. `class = "unclassified"` is
-## the list of things nobody has accounted for yet.
-sw_ranges <- function(cell_id = NULL, class = NULL) {
-  r <- store_read(sw_store(), "ranges")
+## finite error, with the tested cause of each and its category.
+## `category = "failure"` is the list of things nothing accounts for.
+## `class` is kept for stores written before causes were recorded.
+sw_ranges <- function(cell_id = NULL, category = NULL, cause = NULL, class = NULL) {
+  r <- resolved_ranges(sw_store())
   if (is.null(r)) {
     return(NULL)
   }
   if (!is.null(cell_id)) {
     r <- r[r$cell_id %in% cell_id, , drop = FALSE]
   }
+  if (!is.null(category)) {
+    r <- r[r$category %in% category, , drop = FALSE]
+  }
+  if (!is.null(cause)) {
+    r <- r[r$cause %in% cause, , drop = FALSE]
+  }
   if (!is.null(class)) {
     r <- r[r$class %in% class, , drop = FALSE]
   }
   rownames(r) <- NULL
   r
+}
+
+## The mandatory exact points (+-0, +-Inf, NaN, extremes, 1/2, 1, domain and
+## support edges, branch points, and their neighbours), resolved like regions.
+## `failing = TRUE` keeps those with no finite error; `category` narrows those.
+sw_points <- function(cell_id = NULL, output = NULL, failing = FALSE, category = NULL) {
+  p <- resolved_points(sw_store())
+  if (is.null(p)) {
+    return(NULL)
+  }
+  if (!is.null(cell_id)) p <- p[p$cell_id %in% cell_id, , drop = FALSE]
+  if (!is.null(output)) p <- p[p$output %in% output, , drop = FALSE]
+  if (isTRUE(failing) || !is.null(category)) p <- p[p$failure, , drop = FALSE]
+  if (!is.null(category)) p <- p[p$category %in% category, , drop = FALSE]
+  rownames(p) <- NULL
+  p[c("cell_id", "output", "label", "x", "bits", "value", "reference", "rel_err", "zero_sign",
+    "failure", "cause", "category", intersect("evidence", names(p)))]
 }
 
 ## The error distribution for one cell: is the worst case one pathological
@@ -165,18 +194,19 @@ sw_bands <- function(cell_id = NULL, output = NULL, merged = TRUE) {
   }
   b <- b[order(b$cell_id, b$output, b$special, b$sign, b$binade), , drop = FALSE]
   rownames(b) <- NULL
-  b[c(
+  b[intersect(c(
     "cell_id",
     "output",
     "sign",
     "binade",
+    "zero",
     "x_from",
     "x_to",
     "behaviour",
     "m_worst",
     "m_best",
     "worst_rel_err"
-  )]
+  ), names(b))]
 }
 
 sw_runs <- function() {
@@ -243,7 +273,8 @@ if (!interactive() && length(commandArgs(trailingOnly = TRUE))) {
     worst = sw_worst(n = num(kv$n, 20), spec = kv$spec, dtype = kv$dtype, kind = kv$kind),
     results = sw_results(spec = kv$spec, dtype = kv$dtype),
     detail = sw_detail(kv$cell, kv$output, n = num(kv$n, 20)),
-    ranges = sw_ranges(cell_id = kv$cell, class = kv$class),
+    ranges = sw_ranges(cell_id = kv$cell, category = kv$category, cause = kv$cause, class = kv$class),
+    points = sw_points(cell_id = kv$cell, output = kv$output, failing = identical(kv$failing, "1"), category = kv$category),
     hist = sw_hist(kv$cell, kv$output %||% "value"),
     bands = sw_bands(cell_id = kv$cell, output = kv$output, merged = !identical(kv$raw, "1")),
     runs = sw_runs(),
@@ -251,7 +282,7 @@ if (!interactive() && length(commandArgs(trailingOnly = TRUE))) {
     stop(
       "unknown query '",
       cmd,
-      "'; try worst, results, detail, ranges, bands, hist, runs, sql",
+      "'; try worst, results, detail, ranges, points, bands, hist, runs, sql",
       call. = FALSE
     )
   )

@@ -144,23 +144,37 @@ cell_functions <- function(spec, row) {
   } else {
     list()
   }
+  ## The implementation receives its parameters at the cell's precision: anvl
+  ## converts a bare `min = -pi` to f32 for an f32 argument. The reference is
+  ## evaluated with the parameters exactly as received, so a comparison
+  ## measures the distribution function, not parameter conversion. Without
+  ## this, f32(-pi) lies below the double -pi and every f32 uniform cell
+  ## "fails" at its own boundary by construction. Domain, support and branch
+  ## points are taken from the same parameters.
+  rparams <- if (row$dtype == "f32") {
+    lapply(params, function(v) if (is.numeric(v)) as_f32(v) else v)
+  } else {
+    params
+  }
 
   if (row$kind == "value") {
     fn <- if (row$backend == "jax") spec$jax_value else spec$value
     list(
       fun = function(x) list(value = fn(x, row$dtype, params, flags)),
-      ref = function(x) list(value = spec$ref_value(x, params, flags)),
+      ref = function(x) list(value = spec$ref_value(x, rparams, flags)),
       outputs = "value",
       params = params,
+      ref_params = rparams,
       flags = flags
     )
   } else {
     fn <- if (row$backend == "jax") spec$jax_grad else spec$grad
     list(
       fun = function(x) fn(x, row$dtype, params, flags),
-      ref = function(x) spec$ref_grad(x, params, flags),
+      ref = function(x) spec$ref_grad(x, rparams, flags),
       outputs = spec$grad_wrt,
       params = params,
+      ref_params = rparams,
       flags = flags
     )
   }
@@ -170,17 +184,35 @@ run_cell <- function(spec, row, opt, pv, dir) {
   cf <- cell_functions(spec, row)
   key <- cell_key(row$cell_id)
 
+  ## Where the function is defined, where its distribution lives, and where
+  ## anvl switches algorithm -- all at the parameters the implementation
+  ## receives. Branch points are anvl's own, so a JAX cell does not get them.
+  domain <- if (is.null(spec$domain)) c(-Inf, Inf) else spec$domain(cf$ref_params, cf$flags)
+  support <- if (is.null(spec$support)) NULL else spec$support(cf$ref_params, cf$flags)
+  branch <- if (row$backend == "anvl" && !is.null(spec$branch_points)) {
+    spec$branch_points(cf$ref_params, cf$flags, row$dtype)
+  }
+  pts <- exact_points(row$dtype, domain, support, branch)
+
   t0 <- Sys.time()
   out <- tryCatch(
-    run_sweep(
-      cf$fun,
-      cf$ref,
-      row$dtype,
-      opt$depth,
-      cf$outputs,
-      progress = !opt$quiet,
-      topk = opt$topk
-    ),
+    {
+      pr <- run_points(cf$fun, cf$ref, row$dtype, cf$outputs, pts, domain)
+      sw <- run_sweep(
+        cf$fun,
+        cf$ref,
+        row$dtype,
+        opt$depth,
+        cf$outputs,
+        progress = !opt$quiet,
+        topk = opt$topk,
+        domain = domain,
+        ctx = attr(pr, "context")
+      )
+      attr(pr, "context") <- NULL
+      attr(sw, "points") <- pr
+      sw
+    },
     error = function(e) {
       structure(conditionMessage(e), class = "sweep_error")
     }
@@ -198,8 +230,21 @@ run_cell <- function(spec, row, opt, pv, dir) {
         n_exact = NA_real_,
         n_rounded = NA_real_,
         n_inf = NA_real_,
+        n_zero_sign = NA_real_,
+        n_flushed = NA_real_,
+        n_flushed_zero_error = NA_real_,
+        n_out_normal = NA_real_,
+        n_out_normal_identical = NA_real_,
+        worst_out_normal = NA_real_,
         n_inf_runs = NA_integer_,
         n_runs_unclassified = 0L,
+        n_regions_backend = 0L,
+        n_regions_boundary = 0L,
+        n_regions_domain = 0L,
+        n_failing_failure = 0,
+        n_failing_backend = 0,
+        n_failing_boundary = 0,
+        n_failing_domain = 0,
         worst_rel_err = NA_real_,
         worst_ulp_err = NA_real_,
         worst_x = NA_real_,
@@ -208,6 +253,7 @@ run_cell <- function(spec, row, opt, pv, dir) {
         worst_reference = NA_real_,
         unexplained_from = NA_real_,
         unexplained_to = NA_real_,
+        as.data.frame(point_summary(NO_POINTS))[rep(1L, 1L), ],
         elapsed_sec = NA_real_,
         error = as.character(out)
       )
@@ -216,14 +262,30 @@ run_cell <- function(spec, row, opt, pv, dir) {
     return(list(status = "ERROR", msg = as.character(out)))
   }
 
-  support <- if (is.null(spec$support)) NULL else spec$support(cf$params, cf$flags)
+  store_write(
+    dir,
+    "points",
+    pv$run_id,
+    key,
+    cbind(data.frame(run_id = pv$run_id, cell_id = row$cell_id), attr(out, "points"))
+  )
 
   res_rows <- list()
+  pts <- attr(out, "points")
   for (o in cf$outputs) {
     r <- out[[o]]
-    cls <- classify_ranges(r$ranges, support, row$dtype)
+    rs <- region_summary(r$ranges)
+    ps <- point_summary(pts[pts$output == o, , drop = FALSE])
+    if (nrow(r$kinds)) {
+      store_write(
+        dir,
+        "kinds",
+        pv$run_id,
+        paste0(key, "-", o),
+        cbind(data.frame(run_id = pv$run_id, cell_id = row$cell_id, output = o), r$kinds)
+      )
+    }
     if (nrow(r$ranges)) {
-      r$ranges$class <- cls
       r$ranges <- cbind(
         data.frame(run_id = pv$run_id, cell_id = row$cell_id, output = o),
         r$ranges
@@ -278,8 +340,22 @@ run_cell <- function(spec, row, opt, pv, dir) {
         n_exact = r$summary$n_exact,
         n_rounded = r$summary$n_rounded,
         n_inf = r$summary$n_inf,
+        n_zero_sign = r$summary$n_zero_sign,
+        n_flushed = r$summary$n_flushed,
+        n_flushed_zero_error = r$summary$n_flushed_zero_error,
+        n_out_normal = r$summary$n_out_normal,
+        n_out_normal_identical = r$summary$n_out_normal_identical,
+        worst_out_normal = r$summary$worst_out_normal,
         n_inf_runs = r$summary$n_inf_runs,
-        n_runs_unclassified = sum(cls == "unclassified"),
+        ## regions whose category is "failure" -- the name predates categories
+        n_runs_unclassified = rs$n_runs_unclassified,
+        n_regions_backend = rs$n_regions_backend,
+        n_regions_boundary = rs$n_regions_boundary,
+        n_regions_domain = rs$n_regions_domain,
+        n_failing_failure = rs$n_failing_failure,
+        n_failing_backend = rs$n_failing_backend,
+        n_failing_boundary = rs$n_failing_boundary,
+        n_failing_domain = rs$n_failing_domain,
         worst_rel_err = r$summary$worst_rel_err,
         worst_ulp_err = r$summary$worst_ulp_err,
         ## The input that produced the worst error, and where the first
@@ -289,8 +365,10 @@ run_cell <- function(spec, row, opt, pv, dir) {
         worst_bits = r$summary$worst_bits,
         worst_value = r$summary$worst_value,
         worst_reference = r$summary$worst_reference,
-        unexplained_from = if (any(cls == "unclassified")) r$ranges$x_from[cls == "unclassified"][1L] else NA_real_,
-        unexplained_to = if (any(cls == "unclassified")) r$ranges$x_to[cls == "unclassified"][1L] else NA_real_,
+        unexplained_from = rs$unexplained_from,
+        unexplained_to = rs$unexplained_to,
+        ## the exact points, summarised apart from the sweep's counts
+        as.data.frame(ps),
         elapsed_sec = as.numeric(difftime(Sys.time(), t0, units = "secs")),
         error = NA_character_
       )
@@ -444,8 +522,14 @@ cmd_status <- function(opt) {
   }
 
   ## ---- the measurements ----------------------------------------------------
-  unexp <- res$n_runs_unclassified > 0
-  line <- function(r, i) {
+  ## Every category is shown, and exact points count alongside regions: a
+  ## failure only at p = 1, or only at a point the f64 sweep never lands on,
+  ## must reach this screen. Only undefined-domain conventions are set aside,
+  ## and the closing tally says how many results that applies to.
+  st <- result_state(res)
+  res$worst_any <- st$worst_any
+  where_pt <- function(label, x) sprintf("exact point %s (x = %s)", label, exact_num(x))
+  line <- function(r, i, show) {
     row <- g[g$cell_id == r$cell_id[i], , drop = FALSE][1L, , drop = FALSE]
     what <- if (r$kind[i] == "value") "value" else paste0("d/d", r$output[i])
     cat(sprintf(
@@ -454,60 +538,116 @@ cmd_status <- function(opt) {
       r$dtype[i],
       what,
       short_cell(row),
-      if (r$n_runs_unclassified[i] > 0) {
-        sprintf(
-          "%s .. %s",
-          fmt_num(min(r$unexplained_from[i], r$unexplained_to[i])),
-          fmt_num(max(r$unexplained_from[i], r$unexplained_to[i]))
-        )
-      } else {
-        sprintf("rel %-10s %s ulp", fmt_num(r$worst_rel_err[i]), fmt_num(r$worst_ulp_err[i]))
-      }
+      show(r, i)
     ))
   }
-  section <- function(r, title, blurb, n = 10L) {
+  show_failure <- function(r, i) {
+    parts <- character(0)
+    if (r$n_runs_unclassified[i] > 0) {
+      parts <- c(parts, sprintf(
+        "%d region(s) from %s .. %s",
+        r$n_runs_unclassified[i],
+        fmt_num(min(r$unexplained_from[i], r$unexplained_to[i])),
+        fmt_num(max(r$unexplained_from[i], r$unexplained_to[i]))
+      ))
+    }
+    np <- r$n_points_failure[i] %||% 0
+    if (!is.na(np) && np > 0) {
+      parts <- c(parts, sprintf("%d point(s), first %s", np, where_pt(r$first_point_failure[i], r$first_point_failure_x[i])))
+    }
+    paste(parts, collapse = "; ")
+  }
+  show_counts <- function(regions, pts) {
+    function(r, i) {
+      n1 <- r[[regions]][i] %||% 0
+      n2 <- r[[pts]][i] %||% 0
+      sprintf("%d region(s), %d exact point(s)", n1, if (is.na(n2)) 0L else n2)
+    }
+  }
+  show_error <- function(r, i) {
+    from_pt <- (r$worst_point_rel_err[i] %||% 0) > r$worst_rel_err[i]
+    sprintf(
+      "rel %-10s %s",
+      fmt_num(r$worst_any[i]),
+      if (isTRUE(from_pt)) {
+        sprintf("at %s", where_pt(r$worst_point_label[i], r$worst_point_x[i]))
+      } else {
+        sprintf("%s ulp", fmt_num(r$worst_ulp_err[i]))
+      }
+    )
+  }
+  section <- function(r, title, blurb, show, n = 10L) {
     rule(title)
     cat(blurb, "\n\n", sep = "")
     if (!nrow(r)) {
       cat("  none\n")
       return(invisible(NULL))
     }
-    r <- r[order(-r$worst_rel_err), , drop = FALSE]
+    r <- r[order(-r$worst_any), , drop = FALSE]
     for (i in seq_len(min(nrow(r), n))) {
-      line(r, i)
+      line(r, i, show)
     }
     if (nrow(r) > n) cat(sprintf("  ... and %d more.\n", nrow(r) - n))
   }
 
-  ## Two different kinds of finding. Ranked together, whichever is rarer gets
-  ## buried: 56 unexplained regions once filled every slot and the largest
-  ## finite errors never appeared at all.
+  ## Separate kinds of finding. Ranked together, whichever is rarer gets
+  ## buried: 56 failure regions once filled every slot and the largest finite
+  ## errors never appeared at all.
   section(
-    res[unexp, , drop = FALSE],
-    sprintf("DISAGREEMENTS NOTHING EXPLAINS (%d)", sum(unexp)),
+    res[st$failing, , drop = FALSE],
+    sprintf("FAILURES (%d)", sum(st$failing)),
     paste0(
-      "Every sampled input across these ranges differs from base R, for a\n",
-      "reason the spec does not account for. The range is shown."
-    )
+      "Inputs where the result differs from base R with no finite error, for no\n",
+      "cause that accounts for it: regions of the sweep, and exact points."
+    ),
+    show_failure
   )
-  f <- res[!unexp & res$worst_rel_err > 0, , drop = FALSE]
+  section(
+    res[st$boundary, , drop = FALSE],
+    sprintf("DOMAIN BOUNDARY BEHAVIOUR (%d)", sum(st$boundary)),
+    paste0(
+      "Results at an endpoint of the valid input domain that differ from base R's\n",
+      "convention or limiting value. Visible, and not set aside."
+    ),
+    show_counts("n_regions_boundary", "n_points_boundary")
+  )
+  section(
+    res[st$backend, , drop = FALSE],
+    sprintf("BACKEND LIMITATIONS (%d)", sum(st$backend)),
+    paste0(
+      "Subnormal inputs the backend flushed to a zero whose result is itself\n",
+      "correct. The platform's doing, not the function's; not set aside."
+    ),
+    show_counts("n_regions_backend", "n_points_backend")
+  )
+  f <- res[!st$failing & st$worst_any > 0, , drop = FALSE]
   section(
     f,
-    sprintf("LARGEST ERRORS (%d of %d results differ at all)", nrow(f), nrow(res)),
+    sprintf("LARGEST FINITE ERRORS (%d of %d results differ at all)", sum(st$worst_any > 0), nrow(res)),
     paste0(
-      "base R is the reference, not the truth; it is sometimes the weaker\n",
-      "implementation, so check which side is right before acting."
-    )
+      "Over the sweep and the exact points. base R is the reference, not the\n",
+      "truth; it is sometimes the weaker implementation, so check which side is\n",
+      "right before acting."
+    ),
+    show_error
   )
   cat(sprintf(
-    "\n  %d of %d results are bit-identical to base R at every sampled input.\n",
-    sum(res$worst_rel_err == 0 & !unexp, na.rm = TRUE),
+    "\n  %d of %d results are bit-identical to base R, down to the sign of zero,\n  at every sampled input and every exact point.\n",
+    sum(st$identical),
     nrow(res)
   ))
+  if (any(st$identical_but_conventions)) {
+    cat(sprintf(
+      "  %d more differ only by undefined-domain conventions, which are set aside.\n",
+      sum(st$identical_but_conventions)
+    ))
+  }
+  nz <- sum(res$n_zero_sign > 0 | (res$n_points_zero_sign %||% 0) > 0, na.rm = TRUE)
+  if (nz) cat(sprintf("  %d result(s) return a zero of the opposite sign somewhere.\n", nz))
 
   ## ---- what to do next -----------------------------------------------------
   rule("NEXT")
-  top <- res[order(!unexp, -res$worst_rel_err), , drop = FALSE][1L, , drop = FALSE]
+  top <- res[order(!st$failing, -res$worst_any), , drop = FALSE][1L, , drop = FALSE]
   cat("  To see what a sweep actually measured \u2014 sample counts, the error\n")
   cat("  distribution, where behaviour changes, the worst inputs:\n")
   cat(sprintf("    Rscript run.R report --filter spec=%s\n", top$spec))
@@ -539,7 +679,8 @@ cmd_report <- function(opt) {
   }
 
   detail <- store_read(dir, "detail")
-  ranges <- store_read(dir, "ranges")
+  ranges <- resolved_ranges(dir)
+  points <- resolved_points(dir)
   hist <- store_read(dir, "hist")
   bands <- store_read(dir, "bands")
   key <- function(tbl, r) {
@@ -583,7 +724,8 @@ cmd_report <- function(opt) {
       key(detail, r),
       key(ranges, r),
       key(hist, r),
-      key(bands, r)
+      key(bands, r),
+      key(points, r)
     )
   }
   cat(sprintf("%d cell result(s).\n", nrow(res)))
@@ -617,7 +759,8 @@ cmd_browse <- function(opt) {
   on.exit(close(con))
 
   detail <- store_read(dir, "detail")
-  ranges <- store_read(dir, "ranges")
+  ranges <- resolved_ranges(dir)
+  points <- resolved_points(dir)
   hist <- store_read(dir, "hist")
   bands <- store_read(dir, "bands")
   keyf <- function(tbl, r) {
@@ -667,7 +810,8 @@ cmd_browse <- function(opt) {
         keyf(detail, leaf),
         keyf(ranges, leaf),
         keyf(hist, leaf),
-        keyf(bands, leaf)
+        keyf(bands, leaf),
+        keyf(points, leaf)
       )
 
       ## The store keeps the worst 1000 inputs; `d` walks through them.
@@ -796,9 +940,229 @@ cmd_selftest <- function(opt) {
     })
   )
 
-  cat("\nassertions:\n")
+  ## Causes and categories, on constructed cases: every branch of the cause
+  ## test, each for the reason it should fire and not merely by location.
+  facts <- function(x, fx, gx, domain, zero_value, zero_fails, dtype = "f64") {
+    z <- c(0, NEG_ZERO)
+    ctx <- list(
+      dtype = dtype, domain = domain, boundaries = domain[is.finite(domain)],
+      zero_is_boundary = any(domain[is.finite(domain)] == 0),
+      zero = list(v = list(value = zero_value, reference = z, validated = !zero_fails))
+    )
+    s <- list(rel = rep(Inf, length(x)), bad = rep(TRUE, length(x)), rounded = rep(FALSE, length(x)))
+    CAUSES[sample_facts(x, fx, gx, s, ctx, "v")$cause]
+  }
+  sub <- 1e-310
+  whole <- c(-Inf, Inf)
+  unit <- c(0, 1)
+  cat("\ncauses:\n")
+  ca0 <- check("negative zero survives inside the compiled harness (NEG_ZERO)",
+    1 / sweep_context(function(x) list(v = x), function(x) list(v = x), "f64", "v")$zero$v$value[2] == -Inf)
+  ca <- c(
+    check("the seven value kinds, judged at the result's precision", identical(
+      value_kind(c(NaN, Inf, -Inf, 0, NEG_ZERO, 1e-40, 1, 1e-40), "f32")[1:7],
+      1:7) && value_kind(1e-40, "f64") == 7L),
+    check("-0 and +0 are not the same value; two NaNs are",
+      !same_value(0, NEG_ZERO) && same_value(NEG_ZERO, NEG_ZERO) && same_value(NaN, NaN)),
+    check("a NaN input is a nan_input failure, never excused",
+      facts(NaN, 0, NaN, whole, c(1, 1), c(FALSE, FALSE)) == "nan_input"),
+    check("a subnormal that behaves exactly as +0, where +0 is right, is input flushing",
+      facts(sub, 5, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "input_flushing"),
+    check("the same subnormal, where +0 itself is wrong, inherits the error at zero",
+      facts(sub, 5, Inf, whole, c(5, 5), c(TRUE, TRUE)) == "flush_inherits_zero_error"),
+    check("... and is boundary behaviour when zero is a domain endpoint",
+      facts(sub, 5, Inf, unit, c(5, 5), c(TRUE, TRUE)) == "domain_boundary"),
+    check("a subnormal that does not behave as its signed zero is not excused as flushing",
+      facts(sub, 6, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "unidentified"),
+    check("-0 is not +0 for the flush test: a negative subnormal must match f(-0)",
+      facts(-sub, 5, Inf, whole, c(5, 7), c(FALSE, FALSE)) == "unidentified"),
+    check("zero is a failure in its own right, not a subnormal",
+      facts(0, 5, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "zero_input"),
+    check("an infinite input inside the domain is a failure",
+      facts(Inf, 5, NaN, whole, c(5, 5), c(FALSE, FALSE)) == "inf_input"),
+    check("outside the valid input domain is recorded as such",
+      facts(c(2, -3, Inf), c(1, 1, 1), c(NaN, NaN, NaN), unit, c(5, 5), c(FALSE, FALSE)) %in% "outside_domain" |> all()),
+    check("a domain endpoint is boundary behaviour",
+      facts(1, 5, Inf, unit, c(5, 5), c(FALSE, FALSE)) == "domain_boundary")
+  )
+
+  ## A zero result is validated only when it is identical or correctly rounded:
+  ## f(0) = 2 against g(0) = 1 has a finite error, and must not excuse the
+  ## subnormals flushed onto it.
+  cat("\nzero validation and flushing:\n")
+  zctx <- function(f0, g0) context_from(list(v = f0), list(v = g0), "f64", "v", whole)
+  zc <- zctx(c(2, 2), c(1, 1))
+  zx <- c(sub, 2 * sub)
+  zf <- c(2, 2)
+  zg <- c(0, 1.5)
+  zs <- score_pair(zf, zg, "f64")
+  zfa <- sample_facts(zx, zf, zg, zs, zc, "v")
+  zok <- zctx(c(1, 1), c(1, 1))
+  zfo <- sample_facts(zx, c(1, 1), c(0, 1.5), score_pair(c(1, 1), c(0, 1.5), "f64"), zok, "v")
+  zv <- c(
+    check("a zero result with a finite 100% error is not validated", !any(zc$zero$v$validated)),
+    check("a zero result one ulp off is not validated either",
+      !any(zctx(c(1 + 2^-52, 1 + 2^-52), c(1, 1))$zero$v$validated)),
+    check("a subnormal flushed onto that zero inherits its error: a failure, not the backend",
+      CAUSES[zfa$cause[1]] == "flush_inherits_zero_error" && CAUSE_CATEGORY[["flush_inherits_zero_error"]] == "failure"),
+    check("flushing onto an unvalidated zero is counted apart from flushing onto a validated one",
+      !any(zfa$flushed) && all(zfa$flushed_zero_error) && all(zfo$flushed) && !any(zfo$flushed_zero_error)),
+    check("the same flush onto a validated zero is input flushing",
+      CAUSES[zfo$cause[1]] == "input_flushing")
+  )
+
+  cat("\nexact points and conventions:\n")
+  ep <- exact_points("f32", domain = c(0, 1), support = c(-pi, 2 * pi), branch = c(mid = 0.3))
+  lab <- function(l) ep$x[grepl(paste0("(^|\\+)", l, "($|\\+)"), ep$label)]
+  rg <- data.frame(
+    run_id = c("A", "A", "B"),
+    cell_id = "s/anvl/f64/grad/p/f", output = "x", cause = "outside_domain",
+    category = "failure", sign = 1, binade_from = c(1030, 1040, 1030), binade_to = c(1031, 1040, 1031))
+  kd <- data.frame(
+    run_id = "A",
+    cell_id = "s/anvl/f64/value/p/f", output = "value", sign = 1, binade = c(1030, 1031, 1040, 1040),
+    in_domain = FALSE, value_kind = c("nan", "nan", "nan", "normal"),
+    reference_kind = c("nan", "nan", "nan", "nan"), n = c(10, 10, 5, 1))
+  rr <- resolve_domain_conventions(rg, kd)
+  pt <- data.frame(
+    run_id = c("A", "A", "B", "A"),
+    cell_id = c("s/anvl/f64/grad/p/f", "s/anvl/f64/value/p/f", "s/anvl/f64/grad/p/f", "s/anvl/f64/grad/p/f"),
+    output = c("x", "value", "x", "x"), label = c("+inf", "+inf", "+inf", "+one"),
+    bits = c("0x7FF0000000000000", "0x7FF0000000000000", "0x7FF0000000000000", "0x7FF0000000000000"),
+    failure = c(TRUE, FALSE, TRUE, TRUE), cause = c("outside_domain", NA, "outside_domain", "outside_domain"),
+    category = c("failure", NA, "failure", "failure"),
+    value_kind = c("normal", "nan", "normal", "normal"), reference_kind = c("nan", "nan", "nan", "nan"))
+  pr <- resolve_point_conventions(pt)
+  ec <- c(
+    check("exact points include +-0, +-Inf and NaN, each once",
+      sum(ep$x == 0, na.rm = TRUE) == 2 && sum(is.infinite(ep$x)) == 2 && sum(is.nan(ep$x)) == 1 &&
+        !anyDuplicated(ep$bits)),
+    check("a domain edge comes with both representable neighbours",
+      all(c(1 - 2^-24, 1, 1 + 2^-23) %in% ep$x)),
+    check("an f32 cell's support edge is the edge after conversion to f32",
+      as_f32(-pi) %in% ep$x && !(-pi %in% ep$x)),
+    check("a gradient outside the domain is a convention only where both values are NaN",
+      rr$category[1] == "undefined_domain"),
+    check("... and stays a failure where the value cell found a finite value",
+      rr$category[2] == "failure"),
+    check("evidence from another run never settles a convention, and says why",
+      rr$category[3] == "failure" && grepl("no value cell", rr$evidence[3])),
+    check("a gradient point is a convention only against the same run's value point, by bits",
+      identical(pr$category, c("undefined_domain", NA, "failure", "undefined_domain")) &&
+        grepl("no value cell", pr$evidence[3])),
+    check("the universal points 1/2 and 1 come with both neighbours",
+      all(c(0.5 - 2^-25, 0.5, 0.5 + 2^-24, 1 - 2^-24, 1 + 2^-23) %in% exact_points("f32")$x)),
+    check("nv_punif declares its log/log1p switch at the midpoint, with neighbours", {
+      sp_all <- load_specs()
+      if (is.null(sp_all$nv_punif)) TRUE else {
+        bp <- sp_all$nv_punif$branch_points(list(min = -1, max = 3), list(log_p = TRUE), "f64")
+        e <- exact_points("f64", branch = bp)
+        bp == 1 && sum(grepl("branch_", e$label)) == 3 &&
+          is.null(sp_all$nv_punif$branch_points(list(min = -1, max = 3), list(log_p = FALSE), "f64"))
+      }
+    }),
+    check("the reference sees f32-rounded parameters in an f32 cell", {
+      sp_all <- load_specs()
+      if (is.null(sp_all$nv_dunif)) TRUE else {
+        cf <- cell_functions(sp_all$nv_dunif, list(spec = "nv_dunif", backend = "anvl", dtype = "f32",
+          kind = "value", param_set = names(sp_all$nv_dunif$params)[1], flags = "log=FALSE"))
+        identical(unname(unlist(cf$ref_params)), as_f32(unname(unlist(cf$params))))
+      }
+    })
+  )
+
+  pts <- store_read(store_dir(opt$store), "points")
+  pts <- pts[pts$run_id == run_id, , drop = FALSE]
+  rng <- store_read(store_dir(opt$store), "ranges")
+  rng <- rng[rng$run_id == run_id, , drop = FALSE]
+  knd <- store_read(store_dir(opt$store), "kinds")
+  knd <- knd[knd$run_id == run_id, , drop = FALSE]
+  bnd <- store_read(store_dir(opt$store), "bands")
+  bnd <- bnd[bnd$run_id == run_id, , drop = FALSE]
   p <- "selftest/anvl/%s/%s/%s/broken=%s"
-  ok <- c(sp,
+  cat("\nwhat the sweep stored:\n")
+  sw <- c(
+    check("every cell stored its exact points, +-0 among them",
+      nrow(pts) > 0 && all(tapply(pts$x %in% 0, paste(pts$cell_id, pts$output), sum) == 2)),
+    check("the clean selftest cells pass every exact point",
+      !any(pts$failure[grepl("broken=FALSE", pts$cell_id) & !grepl("/pinhole/", pts$cell_id)])),
+    check("the f32 break at +Inf is recorded as an infinite-input failure, returning 0 against Inf", {
+      r <- rng[rng$cell_id == sprintf("selftest/anvl/f32/value/clean/broken=TRUE"), , drop = FALSE]
+      nrow(r) == 1 && r$cause == "inf_input" && r$category == "failure" && grepl("+0 vs +inf", r$pairs, fixed = TRUE)
+    }),
+    check("what each side returned is tallied for every cell", nrow(knd) > 0),
+    check("zero inputs are a band of their own; binade 0 holds only the subnormals", {
+      b <- bnd[grepl("/f32/value/clean/broken=FALSE", bnd$cell_id), , drop = FALSE]
+      z <- b[b$zero, , drop = FALSE]
+      s0 <- b[!b$zero & b$binade == 0, , drop = FALSE]
+      nrow(z) == 2 && all(z$x_from == 0 & z$x_to == 0) && all(z$n_identical == 1) &&
+        all(abs(s0$x_from) > 0 & abs(s0$x_to) > 0) &&
+        sum(b$n_identical + b$n_differ + b$n_nonfinite) == get(sprintf(p, "f32", "value", "clean", "FALSE"))$n_samples
+    }),
+    check("a zero error is not displaced from its class by ten worse subnormals", {
+      ## +0 with a 0.1 error, then ten subnormals with error 1, in one chunk
+      x <- f32_from_bits(0:10)
+      fx <- c(1.1, rep(2, 10))
+      gx <- c(1, rep(1, 10))
+      ctx <- context_from(list(v = 1.1), list(v = 1), "f32", "v", c(-Inf, Inf))
+      sc <- score_pair(fx, gx, "f32")
+      sc <- c(sc, sample_facts(x, fx, gx, sc, ctx, "v"))
+      tk <- reducer_topk("f32", 10L)
+      bd <- reducer_bands("f32")
+      tk$add(list(idx = 0:10, x = x), sc, fx, gx, 1)
+      bd$add(0:10, sc, 1, x, fx, gx)
+      tag <- function(d) cbind(data.frame(run_id = "r", cell_id = "c", output = "v"), d)
+      ct <- category_table(tag(binade_profile(bd, "f32")), tag(tk$get()),
+        data.frame(cell_id = "c", domain_lo = -Inf, domain_hi = Inf))
+      z <- ct[ct$input_class == "zero", ]
+      abs(z$worst_rel_err - 0.1) < 1e-6 && z$worst_x == 0 &&
+        ct$worst_rel_err[ct$input_class == "subnormal"] == 1
+    }),
+    check("... and a class of their own in the categories", {
+      b <- bnd[grepl("/f32/value/clean/broken=FALSE", bnd$cell_id), , drop = FALSE]
+      ct <- category_table(b, data.frame(run_id = character(0), cell_id = character(0),
+        output = character(0), sign = numeric(0), binade = numeric(0), x = numeric(0),
+        rel_err = numeric(0), bits = character(0), value = numeric(0), reference = numeric(0)),
+        data.frame(cell_id = b$cell_id[1], domain_lo = -Inf, domain_hi = Inf))
+      identical(ct$n[ct$input_class == "zero"], 2) && "subnormal" %in% ct$input_class
+    })
+  )
+
+  ## Every category counts on the status screen, and exact points with them.
+  cat("\nwhat status and report count:\n")
+  lr <- latest_results(store_dir(opt$store))
+  lr <- lr[lr$run_id == run_id, , drop = FALSE]
+  one <- function(id, out = "value") lr[lr$cell_id == id & lr$output == out, , drop = FALSE]
+  ph <- one(sprintf(p, "f64", "value", "pinhole", "FALSE"))
+  row <- function(...) {
+    base <- list(n_samples = 100, n_exact = 100, n_zero_sign = 0, worst_rel_err = 0,
+      n_runs_unclassified = 0, n_regions_boundary = 0, n_regions_backend = 0, n_regions_domain = 0,
+      n_failing_domain = 0, n_points = 5, n_points_identical = 5, n_points_failure = 0,
+      n_points_boundary = 0, n_points_backend = 0, n_points_domain = 0, worst_point_rel_err = 0)
+    as.data.frame(utils::modifyList(base, list(...)))
+  }
+  stt <- c(
+    check("a failure only at x = 1 is caught by the exact points while the f64 sweep sees nothing",
+      nrow(ph) == 1 && ph$n_inf == 0 && ph$worst_rel_err == 0 && ph$n_points_failure == 1 &&
+        ph$first_point_failure %in% c("+one", "+one+domain_hi")),
+    check("... and makes the result failing, and not bit-identical", {
+      s <- result_state(ph); s$failing && !s$identical
+    }),
+    check("a boundary region alone makes a result not bit-identical, and is shown", {
+      s <- result_state(row(n_exact = 99, n_regions_boundary = 1)); s$boundary && !s$identical && !s$failing
+    }),
+    check("a failing exact point alone does too", {
+      s <- result_state(row(n_points_identical = 4, n_points_boundary = 1)); s$boundary && !s$identical
+    }),
+    check("a signed-zero difference is not bit-identical", !result_state(row(n_zero_sign = 1))$identical),
+    check("undefined-domain conventions alone are set aside, and said so", {
+      s <- result_state(row(n_exact = 90, n_regions_domain = 1, n_failing_domain = 10))
+      !s$identical && s$identical_but_conventions && !s$failing
+    })
+  )
+
+  cat("\nassertions:\n")
+  ok <- c(sp, ca0, ca, zv, ec, sw, stt,
     check(
       "clean f64 value reproduces the reference exactly",
       get(sprintf(p, "f64", "value", "clean", "FALSE"))$worst_rel_err == 0
@@ -838,9 +1202,8 @@ cmd_selftest <- function(opt) {
 
 ## ---- comparing two runs -----------------------------------------------------
 ##
-## "Did my fix help?" `status` cannot answer it: a result that got better simply
-## stays PASS, so an improvement is invisible and only a regression past a
-## recorded bound ever shows.
+## "Did my fix help?" `status` cannot answer it: it shows the current state
+## only, so an improvement is as invisible there as a regression.
 ##
 ## The sweep is deterministic -- fixed seed, fixed stride, same inputs every
 ## time -- so two runs of the same cell at the same depth on the same machine
@@ -860,6 +1223,8 @@ results_with_time <- function(dir) {
   if (is.null(runs)) {
     return(NULL)
   }
+  ## region and point counts resolved exactly as status and export see them
+  res <- resummarise(res, resolved_ranges(dir), resolved_points(dir))
   merge(res, runs[c("run_id", "started_at", "anvl_sha", "branch")], by = "run_id", all.x = TRUE)
 }
 
@@ -958,14 +1323,37 @@ cmd_diff <- function(opt) {
   cat("\n  The sweep is deterministic, so on one machine any difference below was\n")
   cat("  caused by the code, not by measurement noise.\n")
 
-  ## direction, per result
+  ## direction, per result: the worst finite error over sweep and points, and
+  ## every category's region and point counts. More failures, boundary or
+  ## backend findings is worse; a change only in conventions or signed zeros
+  ## is a change, shown, but neither worse nor better.
+  now$worst_rel_err <- result_state(now)$worst_any
+  before$worst_rel_err <- result_state(before)$worst_any
+  counts <- c(
+    "failure regions" = "n_runs_unclassified",
+    "failing points" = "n_points_failure",
+    "boundary regions" = "n_regions_boundary",
+    "boundary points" = "n_points_boundary",
+    "backend regions" = "n_regions_backend",
+    "backend points" = "n_points_backend",
+    "convention regions" = "n_regions_domain",
+    "convention points" = "n_points_domain",
+    "signed-zero samples" = "n_zero_sign"
+  )
+  cnt <- function(d, nm) {
+    v <- d[[nm]]
+    if (is.null(v)) rep(0, nrow(d)) else ifelse(is.na(v), 0, v)
+  }
+  weighs <- counts[1:6]
+  same_counts <- Reduce(`&`, lapply(counts, function(nm) cnt(now, nm) == cnt(before, nm)))
+  more <- Reduce(`|`, lapply(weighs, function(nm) cnt(now, nm) > cnt(before, nm)))
+  fewer <- Reduce(`|`, lapply(weighs, function(nm) cnt(now, nm) < cnt(before, nm)))
   same <- !fresh &
     (now$worst_rel_err == before$worst_rel_err | (is.na(now$worst_rel_err) & is.na(before$worst_rel_err))) &
-    now$n_runs_unclassified == before$n_runs_unclassified
-  worse <- !fresh &
-    !same &
-    (now$worst_rel_err > before$worst_rel_err | now$n_runs_unclassified > before$n_runs_unclassified)
-  better <- !fresh & !same & !worse
+    same_counts
+  worse <- !fresh & !same & (now$worst_rel_err > before$worst_rel_err | more) %in% TRUE
+  better <- !fresh & !same & !worse & (now$worst_rel_err < before$worst_rel_err | fewer) %in% TRUE
+  moved <- !fresh & !same & !worse & !better
 
   line <- function(k) {
     what <- if (now$kind[k] == "value") "value" else sprintf("d/d%s", now$output[k])
@@ -1000,12 +1388,10 @@ cmd_diff <- function(opt) {
         fmt_num(now$worst_ulp_err[k])
       ))
     }
-    if (before$n_runs_unclassified[k] != now$n_runs_unclassified[k]) {
-      cat(sprintf(
-        "    unexplained regions  %d -> %d\n",
-        before$n_runs_unclassified[k],
-        now$n_runs_unclassified[k]
-      ))
+    for (lab in names(counts)) {
+      a <- cnt(before[k, , drop = FALSE], counts[[lab]])
+      z <- cnt(now[k, , drop = FALSE], counts[[lab]])
+      if (a != z) cat(sprintf("    %-20s %s -> %s\n", lab, format(a, big.mark = ","), format(z, big.mark = ",")))
     }
   }
 
@@ -1029,17 +1415,19 @@ cmd_diff <- function(opt) {
 
   section(worse, "REGRESSED")
   section(better, "IMPROVED")
+  section(moved, "CHANGED (conventions or signed zeros only)")
 
   rule("SUMMARY")
   cat(sprintf("  %4d regressed\n", sum(worse)))
   cat(sprintf("  %4d improved\n", sum(better)))
+  if (any(moved)) cat(sprintf("  %4d changed in conventions or signed zeros only\n", sum(moved)))
   cat(sprintf("  %4d unchanged (bit-identical to the earlier run)\n", sum(same)))
   cat(sprintf("  %4d had no earlier result to compare against\n", sum(fresh)))
   cat("\n")
   invisible(data.frame(
     cell_id = now$cell_id,
     output = now$output,
-    change = ifelse(fresh, "new", ifelse(same, "same", ifelse(worse, "regressed", "improved")))
+    change = ifelse(fresh, "new", ifelse(same, "same", ifelse(worse, "regressed", ifelse(better, "improved", "changed"))))
   ))
 }
 
@@ -1150,26 +1538,31 @@ cmd_export <- function(opt) {
     stop("no results to export for that filter", call. = FALSE)
   }
 
-  ## Each cell's support, resolved from its params and flags exactly as the
-  ## sweep resolved it. Carried on the summary, so a reader can shade the part
-  ## of the axis that is off the support without asking the harness.
+  ## Each cell's valid input domain and distribution support, resolved from its
+  ## params and flags exactly as the sweep resolved them -- at the precision
+  ## the implementation receives. Carried on the summary, so a reader can shade
+  ## either part of the axis without asking the harness.
   cells <- g[match(unique(res$cell_id), g$cell_id), , drop = FALSE]
   bounds <- lapply(seq_len(nrow(cells)), function(i) {
     row <- cells[i, ]
     spec <- specs[[row$spec]]
-    if (is.null(spec$support)) {
-      return(c(-Inf, Inf))
-    }
     cf <- cell_functions(spec, row)
-    spec$support(cf$params, cf$flags)
+    d <- if (is.null(spec$domain)) c(-Inf, Inf) else spec$domain(cf$ref_params, cf$flags)
+    u <- if (is.null(spec$support)) c(NA_real_, NA_real_) else spec$support(cf$ref_params, cf$flags)
+    c(d, u)
   })
   support <- data.frame(
     cell_id = cells$cell_id,
-    support_lo = vapply(bounds, `[`, 0, 1L),
-    support_hi = vapply(bounds, `[`, 0, 2L)
+    domain_lo = vapply(bounds, `[`, 0, 1L),
+    domain_hi = vapply(bounds, `[`, 0, 2L),
+    support_lo = vapply(bounds, `[`, 0, 3L),
+    support_hi = vapply(bounds, `[`, 0, 4L)
   )
-  res$support_lo <- support$support_lo[match(res$cell_id, support$cell_id)]
-  res$support_hi <- support$support_hi[match(res$cell_id, support$cell_id)]
+  m <- match(res$cell_id, support$cell_id)
+  res$domain_lo <- support$domain_lo[m]
+  res$domain_hi <- support$domain_hi[m]
+  res$support_lo <- support$support_lo[m]
+  res$support_hi <- support$support_hi[m]
 
   out <- normalizePath(opt$out, mustWork = FALSE)
   dir.create(out, recursive = TRUE, showWarnings = FALSE)
@@ -1179,9 +1572,17 @@ cmd_export <- function(opt) {
 
   ## Keyed on exactly the rows kept above, so a detail row from a superseded
   ## run can never leak in beside a newer summary row.
+  ##
+  ## Regions and points are taken already resolved against the WHOLE store --
+  ## the same call the terminal makes -- and only then filtered. Resolving
+  ## after filtering let a gradient-only export drop the value cells whose
+  ## evidence settles a convention, turning a terminal convention into an
+  ## exported failure. `res` came from latest_results(), which summarised the
+  ## same resolved tables, so its region and point counts agree with these.
   keep <- paste(res$run_id, res$cell_id, res$output)
+  resolved <- list(ranges = resolved_ranges(dir), points = resolved_points(dir))
   pick <- function(tbl) {
-    x <- store_read(dir, tbl)
+    x <- if (tbl %in% names(resolved)) resolved[[tbl]] else store_read(dir, tbl)
     if (is.null(x) || !nrow(x)) {
       return(NULL)
     }
@@ -1198,18 +1599,17 @@ cmd_export <- function(opt) {
     nrow(x)
   }
 
+  kept <- list()
+  for (tbl in c("detail", "bands", "hist", "ranges", "kinds", "points")) {
+    x <- pick(tbl)
+    if (!is.null(x) && nrow(x)) kept[[tbl]] <- x
+  }
+
   nanoparquet::write_parquet(runs, file.path(out, "runs.parquet"))
   nanoparquet::write_parquet(res[order(res$cell_id, res$output), , drop = FALSE], file.path(out, "summary.parquet"))
-
   counts <- c(runs = nrow(runs), summary = nrow(res))
-  kept <- list()
-  for (tbl in c("detail", "bands", "hist", "ranges")) {
-    x <- pick(tbl)
-    if (is.null(x) || !nrow(x)) {
-      next
-    }
-    kept[[tbl]] <- x
-    counts[tbl] <- write_by_cell(x, file.path(out, paste0(tbl, ".parquet")))
+  for (tbl in names(kept)) {
+    counts[tbl] <- write_by_cell(kept[[tbl]], file.path(out, paste0(tbl, ".parquet")))
   }
 
   ## Per-result figures split by input class (see input_class()). A few rows

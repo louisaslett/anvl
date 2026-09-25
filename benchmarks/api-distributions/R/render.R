@@ -46,9 +46,14 @@ next_axis <- function(res) {
 }
 
 ## One row per group, with f32 and f64 side by side. The two numbers that
-## matter for deciding where to look next are the worst relative error and the
-## count of regions nothing explains, so those are what a row carries.
+## matter for deciding where to look next are the worst finite relative error
+## (over the sweep and the exact points) and the count of results with a
+## failure (a failure region or a failing exact point), so those are what a
+## row carries.
 summarise_by <- function(res, axis) {
+  st <- result_state(res)
+  res$worst_any <- st$worst_any
+  res$failing <- st$failing
   keys <- sort(unique(res[[axis]]))
   do.call(
     rbind,
@@ -57,8 +62,8 @@ summarise_by <- function(res, axis) {
       row <- data.frame(key = k, n = nrow(g))
       for (dt in c("f32", "f64")) {
         d <- g[g$dtype == dt, , drop = FALSE]
-        row[[paste0(dt, "_worst")]] <- if (nrow(d)) max(d$worst_rel_err, na.rm = TRUE) else NA_real_
-        row[[paste0(dt, "_unexp")]] <- if (nrow(d)) sum(d$n_runs_unclassified > 0) else NA_integer_
+        row[[paste0(dt, "_worst")]] <- if (nrow(d)) max(d$worst_any, na.rm = TRUE) else NA_real_
+        row[[paste0(dt, "_unexp")]] <- if (nrow(d)) sum(d$failing) else NA_integer_
         row[[paste0(dt, "_n")]] <- nrow(d)
       }
       row
@@ -72,16 +77,21 @@ print_summary <- function(res, axis, indent = "  ") {
   ## At the precision level the f32/f64 columns would repeat the rows, so show
   ## a plain list instead. This is the last step before a single result.
   if (axis == "dtype") {
-    cat(sprintf("%s%-10s %12s %12s %s\n", indent, "precision", "worst rel", "worst ulp", "regions"))
+    cat(sprintf("%s%-10s %12s %12s %s\n", indent, "precision", "worst rel", "worst ulp", "failures"))
     for (i in seq_len(nrow(sm))) {
       d <- res[res$dtype == sm$key[i], , drop = FALSE][1L, , drop = FALSE]
+      np <- d$n_points_failure %||% 0
       cat(sprintf(
         "%s%-10s %12s %12s %s\n",
         indent,
         sm$key[i],
-        fmt_num(d$worst_rel_err),
+        fmt_num(result_state(d)$worst_any),
         fmt_num(d$worst_ulp_err),
-        if (d$n_runs_unclassified > 0) sprintf("%d unexplained", d$n_runs_unclassified) else "."
+        if (d$n_runs_unclassified > 0 || np > 0) {
+          sprintf("%d region(s), %d exact point(s)", d$n_runs_unclassified, np)
+        } else {
+          "."
+        }
       ))
     }
     return(invisible(sm))
@@ -104,7 +114,7 @@ print_summary <- function(res, axis, indent = "  ") {
     c(one("f32"), one("f64"))
   })
 
-  H <- c("worst rel", "unexplained")
+  H <- c("worst rel", "failing")
   w <- max(nchar(sm$key), nchar(DRILL_LABEL[[axis]]))
   numw <- max(nchar(H), nchar(unlist(cells)))
   groupw <- 2L * numw + 1L
@@ -146,7 +156,8 @@ print_summary <- function(res, axis, indent = "  ") {
     ))
   }
   cat(sprintf(
-    "\n%s\"unexplained\" counts results with a disagreement the spec cannot account for.\n",
+    "\n%s\"failing\" counts results with a failure region or a failing exact point;\n%s\"worst rel\" is the worst finite error over the sweep and the exact points.\n",
+    indent,
     indent
   ))
   invisible(sm)
@@ -260,9 +271,15 @@ merge_bands <- function(b) {
   if (is.null(b) || !nrow(b)) {
     return(b)
   }
-  b <- b[order(b$special, b$sign, b$binade), , drop = FALSE]
+  if (is.null(b$zero)) b$zero <- FALSE
+  b <- b[order(b$special, b$sign, b$binade, !b$zero), , drop = FALSE]
   key <- paste(b$sign, b$special, b$behaviour, b$m_worst)
-  contiguous <- c(TRUE, diff(b$binade) != 1L | key[-1L] != key[-length(key)] | b$special[-1L] | b$special[-nrow(b)])
+  ## the Inf/NaN field and each sign's zero are rows of their own, never
+  ## merged into a neighbouring range
+  alone <- b$special | b$zero
+  contiguous <- c(TRUE, diff(b$binade) != 1L | key[-1L] != key[-length(key)] | alone[-1L] | alone[-nrow(b)])
+  ## the zero row and binade 0's subnormals share a binade number
+  contiguous[c(FALSE, diff(b$binade) == 0L)] <- TRUE
   grp <- cumsum(contiguous)
 
   agg <- function(f, col) vapply(split(b[[col]], grp), f, numeric(1))
@@ -274,6 +291,7 @@ merge_bands <- function(b) {
     x_from = agg(na_min, "x_from"),
     x_to = agg(na_max, "x_to"),
     special = vapply(split(b$special, grp), function(v) v[1L], logical(1)),
+    zero = vapply(split(b$zero, grp), function(v) v[1L], logical(1)),
     behaviour = vapply(split(b$behaviour, grp), function(v) v[1L], ""),
     n_identical = agg(sum, "n_identical"),
     n_differ = agg(sum, "n_differ"),
@@ -286,7 +304,7 @@ merge_bands <- function(b) {
   rownames(out) <- NULL
   ## x_from is NA on the Inf/NaN rows, so sign breaks the tie and their order
   ## does not drift between runs.
-  out[order(out$special, out$x_from, -out$sign), , drop = FALSE]
+  out[order(out$special, out$x_from, ifelse(out$zero, out$sign, -out$sign)), , drop = FALSE]
 }
 
 print_bands <- function(bands) {
@@ -308,6 +326,8 @@ print_bands <- function(bands) {
   for (i in seq_len(nrow(b))) {
     span <- if (isTRUE(b$special[i])) {
       sprintf("%sInf and NaN", if (b$sign[i] > 0) "+" else "-")
+    } else if (isTRUE(b$zero[i])) {
+      sprintf("%s0 exactly", if (b$sign[i] > 0) "+" else "-")
     } else {
       sprintf("%s .. %s", fmt_num(b$x_from[i]), fmt_num(b$x_to[i]))
     }
@@ -353,7 +373,7 @@ print_bands <- function(bands) {
   cat("  place where one of those genuinely changes.\n")
 }
 
-report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL) {
+report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, points = NULL) {
   what <- if (row$kind == "value") "value" else sprintf("gradient d/d%s", res$output)
   cat(strrep("\u2500", 72), "\n", sep = "")
   cat(sprintf("%s  \u00b7  %s\n", row$spec, spec$blurb))
@@ -397,6 +417,16 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL) {
     pct(res$n_inf, res$n_samples),
     if (res$n_inf > 0) "   (see REGIONS below)" else ""
   ))
+  ## Facts that sit across the three lines above, each kept visible.
+  extra <- function(label, v, note) {
+    if (!is.null(v) && !is.na(v) && v > 0) {
+      cat(sprintf("  %-23s%18s  %s\n", label, human_int(v), note))
+    }
+  }
+  extra("correctly rounded", res$n_rounded, "differ, but the best this precision can do")
+  extra("signed zero differs", res$n_zero_sign, "counted identical above: +0 against -0")
+  extra("flushed subnormal", res$n_flushed, "the result at the flushed zero, which is right")
+  extra("flushed, zero wrong", res$n_flushed_zero_error, "the result at the flushed zero, which is itself wrong")
 
   if (!is.null(hist) && nrow(hist) && sum(hist$count) > 0) {
     cat(sprintf("\nRELATIVE ERROR of the %s that differ\n", human_int(n_diff)))
@@ -426,29 +456,71 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL) {
   if (is.null(ranges) || !nrow(ranges)) {
     cat("  none\n")
   } else {
+    ## A store written before causes were recorded has only the old
+    ## positional `class`; read it as the category it used to stand for.
+    if (is.null(ranges$category)) {
+      ranges$category <- ifelse(ranges$class == "unclassified", "failure", ranges$class)
+      ranges$cause <- ranges$class
+      ranges$pairs <- ""
+    }
     lab <- c(
-      nan = "reference is NaN",
-      subnormal = "subnormal, flushed by the backend",
-      below_support = "below the supported domain",
-      above_support = "above the supported domain",
-      unclassified = "UNEXPLAINED"
+      failure = "FAILURE",
+      backend_limitation = "backend limitation",
+      boundary = "domain boundary",
+      undefined_domain = "undefined-domain convention"
     )
-    r <- ranges[order(ranges$class == "unclassified", decreasing = TRUE), , drop = FALSE]
+    r <- ranges[order(ranges$category != "failure"), , drop = FALSE]
+    rng <- function(a, b) {
+      if (is.nan(a) && is.nan(b)) {
+        return("NaN")
+      }
+      sprintf("%s .. %s", fmt_num(min(a, b)), fmt_num(max(a, b)))
+    }
     for (i in seq_len(nrow(r))) {
-      lo <- min(r$x_from[i], r$x_to[i])
-      hi <- max(r$x_from[i], r$x_to[i])
-      span <- if (is.nan(r$x_from[i]) && is.nan(r$x_to[i])) "NaN" else sprintf("%s .. %s", fmt_num(lo), fmt_num(hi))
-      ## n_patterns is how many representable values lie in the interval, not
-      ## how many were sampled -- at anything short of `full` those differ by
-      ## the stride.
+      what <- sprintf("%s (%s)", lab[[r$category[i]]] %||% r$category[i], gsub("_", " ", r$cause[i]))
+      ## For f32 the bounds are sampled inputs. For f64 they are the bounds of
+      ## the 2^32-pattern blocks the failing samples fell in -- not inputs that
+      ## were evaluated -- so they are labelled as such and the sampled
+      ## evidence is shown beside them. n_patterns is how many representable
+      ## values lie in the interval, not how many were sampled.
+      bounds <- isTRUE(r$bounds_are_samples[i]) || is.null(r$bounds_are_samples)
       cat(sprintf(
-        "  %-28s %-36s spans %s values\n",
-        span,
-        lab[[r$class[i]]],
-        human_int(r$n_patterns[i])
+        "  %-28s %-44s %s\n",
+        rng(r$x_from[i], r$x_to[i]),
+        what,
+        if (bounds) {
+          sprintf("spans %s values", human_int(r$n_patterns[i]))
+        } else {
+          sprintf("block bounds; %s values", human_int(r$n_patterns[i]))
+        }
       ))
+      if (!bounds && !is.null(r$sampled_from)) {
+        cat(sprintf(
+          "  %-28s sampled: %s failing, %s .. %s (%s .. %s)\n",
+          "",
+          human_int(r$n_failing[i]),
+          exact_num(r$sampled_from[i]),
+          exact_num(r$sampled_to[i]),
+          r$sampled_bits_from[i],
+          r$sampled_bits_to[i]
+        ))
+      }
+      if (!is.null(r$pairs) && nzchar(r$pairs[i])) cat(sprintf("  %-28s returned: %s\n", "", r$pairs[i]))
+      if (!is.null(r$rep_x) && !is.na(r$rep_x[i])) {
+        cat(sprintf(
+          "  %-28s e.g. x = %s (%s): %.17g vs base R %.17g\n",
+          "",
+          exact_num(r$rep_x[i]),
+          r$rep_bits[i],
+          r$rep_value[i],
+          r$rep_reference[i]
+        ))
+      }
+      if (!is.null(r$evidence) && !is.na(r$evidence[i])) cat(sprintf("  %-28s evidence: %s\n", "", r$evidence[i]))
     }
   }
+
+  print_points(points)
 
   if (!is.null(detail) && nrow(detail) > 1L) {
     cat(sprintf("\n  next worst inputs (%d kept in the store)\n", nrow(detail)))
@@ -464,4 +536,42 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL) {
     }
   }
   cat("\n")
+}
+
+## The mandatory exact points: every one that is not bit-identical to base R,
+## with its category, and a count of the rest. Never merged into the sweep's
+## figures above.
+print_points <- function(points) {
+  cat("\nEXACT POINTS")
+  if (is.null(points) || !nrow(points)) {
+    cat("\n  (not recorded \u2014 re-run the sweep to populate this)\n")
+    return(invisible(NULL))
+  }
+  same <- points$identical & !points$zero_sign
+  cat(sprintf(" \u2014 %d of %d bit-identical to base R\n", sum(same), nrow(points)))
+  p <- points[!same, , drop = FALSE]
+  if (!nrow(p)) {
+    return(invisible(NULL))
+  }
+  lab <- c(
+    failure = "FAILURE",
+    backend_limitation = "backend limitation",
+    boundary = "domain boundary",
+    undefined_domain = "undefined-domain convention"
+  )
+  p <- p[order(!p$failure, p$category != "failure", -p$rel_err), , drop = FALSE]
+  what <- ifelse(
+    p$failure,
+    sprintf("%s (%s)", ifelse(is.na(lab[p$category]), p$category, lab[p$category]), gsub("_", " ", p$cause)),
+    ifelse(p$zero_sign, "signed zero differs", ifelse(p$rounded, "correctly rounded", sprintf("rel %s", fmt_num(p$rel_err))))
+  )
+  for (i in seq_len(nrow(p))) {
+    cat(sprintf(
+      "  %-30s x = %-24s %s\n",
+      substr(p$label[i], 1L, 30L),
+      exact_num(p$x[i]),
+      what[i]
+    ))
+    cat(sprintf("  %-30s %s  %.17g vs base R %.17g\n", "", p$bits[i], p$value[i], p$reference[i]))
+  }
 }

@@ -35,7 +35,7 @@ sweep_spec(
   primary = "x",
   params = NORM_PARAMS,
   flags = list(log = c(FALSE, TRUE)),
-  support = function(p, f) c(-Inf, Inf),
+  domain = function(p, f) c(-Inf, Inf),
   value = function(x, dtype, p, f) {
     as.double(anvl::nv_dnorm(anvl::nv_array(x, dtype = dtype), p$mean, p$sd, log = f$log))
   },

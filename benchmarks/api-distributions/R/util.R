@@ -36,6 +36,14 @@ f64_from_words <- function(hi, lo) {
   )
 }
 
+## Negative zero, built from its bit pattern (0x8000000000000000; the high word
+## 0x80000000 is NA_integer_'s pattern). Never write the literal `-0` inside a
+## function: R's byte-code compiler (JIT level 3, R 4.6.1, verified) folds it to
+## +0 in some call shapes -- `c(0, -0)` in a compiled function returns two
+## positive zeros -- so every "evaluate at -0" silently became "at +0".
+NEG_ZERO <- f64_from_words(NA_integer_, 0L)
+stopifnot(NEG_ZERO == 0, 1 / NEG_ZERO == -Inf)
+
 ## n uniform 32-bit words, as R integers holding the raw bit patterns.
 ## as.integer(-2^31) overflows to NA_integer_, whose own bit pattern is
 ## 0x80000000 -- exactly the word we wanted -- so the coercion is correct.
@@ -73,6 +81,61 @@ bits_of <- function(x, dtype) {
     ## sprintf rather than paste0: keeps a length-0 input at length 0
     sprintf("0x%s%s", hex32(u32(w[2, ])), hex32(u32(w[1, ])))
   }
+}
+
+## ---- neighbours ------------------------------------------------------------
+
+## The representable neighbours of each x in `dtype`, one step towards -Inf and
+## one towards +Inf, as a two-column matrix (down, up). Worked on the bit
+## pattern -- sign plus magnitude -- so it is exact across binade and sign
+## boundaries: the step down from +0 is the smallest negative subnormal, the
+## step up from the largest finite value is Inf. Non-finite x gives NA.
+float_neighbours <- function(x, dtype) {
+  move <- function(neg, hi, lo, towards_pos, carry) {
+    grow <- (towards_pos & !neg) | (!towards_pos & neg)
+    zero <- hi == 0 & lo == 0
+    cross <- !grow & zero
+    lo2 <- ifelse(grow, lo + 1, lo - 1)
+    hi2 <- hi
+    if (carry) {
+      up <- grow & lo2 == 2^32
+      hi2[up] <- hi[up] + 1
+      lo2[up] <- 0
+      dn <- !grow & !zero & lo == 0
+      hi2[dn] <- hi[dn] - 1
+      lo2[dn] <- 2^32 - 1
+    }
+    neg2 <- neg
+    neg2[cross] <- !neg[cross]
+    lo2[cross] <- 1
+    hi2[cross] <- 0
+    list(neg = neg2, hi = hi2, lo = lo2)
+  }
+  as_int <- function(u) suppressWarnings(as.integer(ifelse(u >= 2^31, u - 2^32, u)))
+  finite <- is.finite(x)
+  out <- matrix(NA_real_, length(x), 2L, dimnames = list(NULL, c("down", "up")))
+  if (!any(finite)) {
+    return(out)
+  }
+  xf <- x[finite]
+  if (dtype == "f32") {
+    w <- u32(readBin(writeBin(as_f32(xf), raw(), size = 4L), "integer", size = 4L, n = length(xf)))
+    neg <- w >= 2^31
+    for (j in 1:2) {
+      m <- move(neg, 0, w %% 2^31, towards_pos = j == 2L, carry = FALSE)
+      out[finite, j] <- f32_from_bits(as_int(m$lo + m$neg * 2^31))
+    }
+  } else {
+    w <- matrix(readBin(writeBin(xf, raw(), size = 8L), "integer", size = 4L, n = 2 * length(xf)), nrow = 2)
+    hi <- u32(w[2, ])
+    lo <- u32(w[1, ])
+    neg <- hi >= 2^31
+    for (j in 1:2) {
+      m <- move(neg, hi %% 2^31, lo, towards_pos = j == 2L, carry = TRUE)
+      out[finite, j] <- f64_from_words(as_int(m$hi + m$neg * 2^31), as_int(m$lo))
+    }
+  }
+  out
 }
 
 ## ---- ulp spacing -----------------------------------------------------------

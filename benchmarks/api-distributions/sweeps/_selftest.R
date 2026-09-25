@@ -12,6 +12,8 @@
 ##   value/nudged   one ulp added on a known interval       -> expect ~1 ulp
 ##   grad           two outputs from one pass, one broken   -> expect a FAIL
 ##   ranges         a deliberate NaN-only disagreement      -> expect "nan"
+##   value/pinhole  right everywhere but x = 1 exactly     -> only the exact
+##                                                             points see it in f64
 ##
 ## Run it with:  Rscript run.R selftest
 ## ---------------------------------------------------------------------------
@@ -29,17 +31,19 @@ sweep_spec(
   blurb = "synthetic family exercising the harness contract",
   primary = "x",
   dtypes = c("f32", "f64"),
-  params = list(clean = list(err = 0), nudged = list(err = 1)),
+  params = list(clean = list(err = 0), nudged = list(err = 1), pinhole = list(err = -1)),
   flags = list(broken = c(FALSE, TRUE)),
 
-  ## Support is the whole line, so only NaN should ever be classified -- which
-  ## is exactly the assertion: an unclassified range here means the classifier
-  ## has drifted.
-  support = function(params, flags) c(-Inf, Inf),
+  ## Defined on the whole line, so no failure here can be excused as lying
+  ## outside the domain: every region found must carry a real cause.
+  domain = function(params, flags) c(-Inf, Inf),
   value = function(x, dtype, params, flags) {
     y <- abs(x)
     if (params$err > 0) {
       y <- nudge(y, 1, 2)
+    }
+    if (params$err < 0) {
+      y[x %in% 1] <- NaN
     }
     if (isTRUE(flags$broken)) {
       y[!is.na(x) & x > 1e300] <- 0

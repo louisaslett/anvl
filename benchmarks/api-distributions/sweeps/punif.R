@@ -69,8 +69,17 @@ sweep_spec(
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
 
   ## punif() is defined on the whole line and never warns, so nothing off the
-  ## interval is excused: a disagreement there is a real finding.
-  support = function(p, f) c(-Inf, Inf),
+  ## interval is excused: a disagreement there is a real finding. The support
+  ## is reported, and excuses nothing.
+  domain = function(p, f) c(-Inf, Inf),
+  support = function(p, f) c(p$min, p$max),
+  ## With log_p, nv_punif switches from log(u) to log1p(-v) of the opposite
+  ## tail where u = 1/2, i.e. at the interval's midpoint; u is computed at the
+  ## cell's precision, so the switch can sit an ulp either side, which the
+  ## midpoint's neighbours cover. See R/api-distributions.R, nv_punif.
+  branch_points = function(p, f, dtype) {
+    if (isTRUE(f$log_p)) c(log_log1p_switch = p$min + (p$max - p$min) / 2)
+  },
   value = function(x, dtype, p, f) {
     as.double(anvl::nv_punif(
       anvl::nv_array(x, dtype = dtype),

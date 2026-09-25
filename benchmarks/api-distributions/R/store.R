@@ -21,12 +21,22 @@
 ## comes back widened to a double -- so bit patterns are stored as hex strings.
 ## ---------------------------------------------------------------------------
 
-TABLES <- c("runs", "results", "detail", "ranges", "hist", "bands")
+## Every table a run writes. merge() copies exactly these, so a table missing
+## here would be silently left behind when shards come back from a cluster.
+TABLES <- c("runs", "results", "detail", "ranges", "hist", "bands", "kinds", "points")
 
 ## Bumped whenever the shape of an exported artifact changes in a way a reader
 ## must know about. It travels in the manifest so a website can refuse, or
 ## adapt to, an artifact it does not understand rather than mis-rendering it.
-SCHEMA_VERSION <- 1L
+## 2: regions carry a tested cause and a category rather than a positional
+##    class; new tables `kinds` (what each side returned, per binade) and
+##    `points` (the exact-point checks); references use precision-rounded
+##    parameters.
+## 3: bands have a `zero` row per sign, apart from binade 0's subnormals, and
+##    categories a `zero` input class; ranges and points carry `evidence`;
+##    summary carries exact-point figures and failing-sample counts per
+##    category; n_flushed_zero_error beside n_flushed.
+SCHEMA_VERSION <- 3L
 
 ## Where the store lives. Out of the package tree by default, so a result file
 ## can never be committed by accident and the package stays what upstream
@@ -115,11 +125,11 @@ store_merge <- function(from, into) {
 ## Collapse to one row per (cell, output): the deepest sweep available.
 ##
 ## `latest_results()` keeps a row per depth, which is what the coverage table
-## wants, but every other consumer wants one current verdict per measurement.
+## wants, but every other consumer wants one current result per measurement.
 ## A shallower sweep visits a subset of a deeper one's inputs -- same index
-## space, larger stride -- so the deeper row is strictly better evidence and
-## its bound is the one that matters. Shared by `status` and `baseline` so the
-## two can never disagree about what "the current result" is.
+## space, larger stride -- so the deeper row is strictly better evidence.
+## Shared by `status`, `report`, `browse` and `export` so they can never
+## disagree about what "the current result" is.
 deepest_per_cell <- function(res, depths) {
   if (is.null(res) || !nrow(res)) {
     return(res)
@@ -153,5 +163,82 @@ latest_results <- function(dir) {
   k <- paste(res$cell_id, res$output, res$platform_key, res$depth, sep = "\r")
   res <- res[!duplicated(k), , drop = FALSE]
   rownames(res) <- NULL
+
+  resummarise(res, resolved_ranges(dir), resolved_points(dir))
+}
+
+## Region and point counts as every screen must show them: with outside-domain
+## gradients settled against their value cells over the whole store, so the
+## terminal and an export -- which calls this with the same resolved tables,
+## before any filter -- cannot disagree. A result with no regions gets zeros,
+## not whatever the sweep wrote before resolution.
+resummarise <- function(res, ranges, points) {
+  key <- paste(res$run_id, res$cell_id, res$output, sep = "\r")
+  if (!is.null(ranges) && !is.null(ranges$cause)) {
+    by <- split(ranges, paste(ranges$run_id, ranges$cell_id, ranges$output, sep = "\r"))
+    empty <- ranges[0L, , drop = FALSE]
+    for (i in which(res$output != "-")) {
+      rs <- region_summary(by[[key[i]]] %||% empty)
+      for (f in names(rs)) res[[f]][i] <- rs[[f]]
+    }
+  }
+  if (!is.null(points) && nrow(points)) {
+    by <- split(points, paste(points$run_id, points$cell_id, points$output, sep = "\r"))
+    for (i in which(key %in% names(by))) {
+      ps <- point_summary(by[[key[i]]])
+      for (f in names(ps)) res[[f]][i] <- ps[[f]]
+    }
+  }
   res
+}
+
+## Failure regions with outside-domain gradient regions settled against their
+## value cells (see resolve_domain_conventions()). Every reader of regions goes
+## through here, and it always resolves against the whole store: the evidence
+## is chosen by the run rule, never by what a caller happens to be showing.
+## A store written before causes were recorded is returned as is.
+resolved_ranges <- function(dir) {
+  r <- store_read(dir, "ranges")
+  if (is.null(r) || is.null(r$cause)) {
+    return(r)
+  }
+  resolve_domain_conventions(r, store_read(dir, "kinds"))
+}
+
+## The exact points, resolved the same way (see resolve_point_conventions()).
+resolved_points <- function(dir) {
+  resolve_point_conventions(store_read(dir, "points"))
+}
+
+## What a result's figures add up to, without judging any of it. Every flag is
+## a statement of fact about the samples and points, and each of the four
+## categories keeps its own flag: only undefined-domain conventions are
+## set aside, and `identical_but_conventions` says so rather than hiding it.
+##
+##   failing      a failure region or a failing exact point
+##   boundary     a boundary region or point
+##   backend      a backend-limitation region or point
+##   identical    every sampled input and every exact point bit-identical,
+##                down to the sign of zero
+##   identical_but_conventions
+##                not identical, but every sample and point that differs is an
+##                undefined-domain convention
+result_state <- function(res) {
+  col <- function(nm, d = 0) {
+    v <- res[[nm]]
+    if (is.null(v)) rep(d, nrow(res)) else ifelse(is.na(v), d, v)
+  }
+  pts_ok <- col("n_points_identical") == col("n_points")
+  differ <- col("n_samples") - col("n_exact")
+  data.frame(
+    failing = col("n_runs_unclassified") > 0 | col("n_points_failure") > 0,
+    boundary = col("n_regions_boundary") > 0 | col("n_points_boundary") > 0,
+    backend = col("n_regions_backend") > 0 | col("n_points_backend") > 0,
+    identical = differ == 0 & col("n_zero_sign") == 0 & pts_ok & !is.na(res$n_samples),
+    identical_but_conventions = differ > 0 & differ == col("n_failing_domain") &
+      col("n_zero_sign") == 0 &
+      col("n_points_identical") + col("n_points_domain") == col("n_points"),
+    ## the larger of the sweep's worst finite error and the points'
+    worst_any = pmax(col("worst_rel_err"), col("worst_point_rel_err"))
+  )
 }
