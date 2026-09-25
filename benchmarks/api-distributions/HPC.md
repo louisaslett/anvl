@@ -30,8 +30,11 @@ Nothing needs to change to shard this.
 - **Merging is a file copy.** `run.R merge --from <dir>`.
 
 ```bash
-Rscript run.R run --depth full --shard "$SLURM_ARRAY_TASK_ID" --shards 40
+Rscript run.R run --depth full --backends anvl,jax --shard "$SLURM_ARRAY_TASK_ID" --shards 40
 ```
+
+`--backends anvl,jax` sweeps JAX as a comparator too, which needs a Python with
+`jax` visible to reticulate (`RETICULATE_PYTHON`). Leave it off for anvl alone.
 
 Each task writes into `$NV_SWEEP_STORE`; point that at scratch, then merge into
 the store you analyse on.
@@ -50,7 +53,7 @@ export NV_SWEEP_STORE="$SCRATCH/anvl-sweeps/$SLURM_ARRAY_JOB_ID"
 export NV_SWEEP_DEVICE=cpu            # or cuda, on a GPU partition
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-Rscript run.R run --depth full --quiet \
+Rscript run.R run --depth full --quiet --backends anvl,jax \
   --shard "$SLURM_ARRAY_TASK_ID" --shards "$SLURM_ARRAY_TASK_COUNT"
 ```
 

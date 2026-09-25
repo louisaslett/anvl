@@ -292,11 +292,16 @@ backend stops flushing, they become ordinary agreement.
 
 The store accumulates: every run appends, and queries take the latest per cell.
 A published artifact must instead be one coherent snapshot — **one artifact per
-(anvl version, platform, backend)**, covering every function.
+(anvl version, platform)**, covering every function and **every backend in the
+store**, so anvl and its JAX twin can be compared side by side.
 
 ```bash
 Rscript run.R export --out ../anvl-bench-darwin-arm64-cpu
+Rscript run.R export --out <dir> --backends anvl     # restrict, if you mean to
 ```
+
+Unlike `run`, `export` does not default to anvl alone: it exports whatever
+backends the store holds.
 
 ```
 manifest.json     index: schema version, platform, specs, depths, row counts

@@ -47,6 +47,10 @@ parse_args <- function(argv) {
     shard = NA_integer_,
     shards = NA_integer_,
     backends = "anvl",
+    ## Whether --backends was given. `run` defaults to anvl alone because the
+    ## JAX side needs Python; `export` must not inherit that default, or it
+    ## silently drops every JAX result already in the store.
+    backends_given = FALSE,
     ## worst inputs kept *per binade*, not globally -- see reducer_topk()
     topk = 10L,
     ## How many full report pages to print before summarising instead. Four is
@@ -104,6 +108,7 @@ parse_args <- function(argv) {
       },
       backends = {
         o$backends <- trimws(strsplit(val(), ",")[[1L]])
+        o$backends_given <- TRUE
         i <- i + 1L
       },
       topk = {
@@ -1009,7 +1014,8 @@ cmd_diff <- function(opt) {
 ## one result per cell, output and platform -- with the provenance that
 ## produced it, laid out so a browser can fetch only the part it needs.
 ##
-## Layout, under --out -- one artifact per (anvl version, platform, backend):
+## Layout, under --out -- one artifact per (anvl version, platform), holding
+## every backend swept, so anvl and its JAX twin can be compared in one place:
 ##
 ##   manifest.json     what is here: schema version, platform, specs, depths,
 ##                     row counts. Small, fetched first, and readable without a
@@ -1096,7 +1102,10 @@ cmd_export <- function(opt) {
     stop("store is empty; run a sweep first", call. = FALSE)
   }
   specs <- load_specs()
-  g <- apply_filter(build_grid(specs, opt$backends), opt$filter, extra = "output")
+  ## Export what the store holds. Falling back to run's anvl-only default here
+  ## once published a full anvl+JAX sweep with every JAX result missing.
+  backends <- if (isTRUE(opt$backends_given)) opt$backends else sort(unique(all$backend))
+  g <- apply_filter(build_grid(specs, backends), opt$filter, extra = "output")
   res <- deepest_per_cell(all[all$cell_id %in% g$cell_id, , drop = FALSE], names(DEPTHS))
   res <- filter_results(res, opt$filter)
   if (!nrow(res)) {
@@ -1146,6 +1155,7 @@ cmd_export <- function(opt) {
     schema_version = SCHEMA_VERSION,
     exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
     platforms = json_array(sort(unique(res$platform_key))),
+    backends = json_array(sort(unique(res$backend))),
     devices = json_array(sort(unique(res$device))),
     depths = json_array(sort(unique(res$depth))),
     specs = json_array(sort(unique(res$spec))),
@@ -1165,8 +1175,9 @@ cmd_export <- function(opt) {
     out
   ))
   cat(sprintf(
-    "  platforms: %s | depth: %s | %.1f MB in %d file(s)\n",
+    "  platforms: %s | backends: %s | depth: %s | %.1f MB in %d file(s)\n",
     paste(manifest$platforms, collapse = ", "),
+    paste(manifest$backends, collapse = ", "),
     paste(manifest$depths, collapse = ", "),
     sum(file.size(files)) / 1024^2,
     length(files)
