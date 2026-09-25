@@ -1028,6 +1028,8 @@ cmd_diff <- function(opt) {
 ##   bands.parquet     the per-binade profile (unmerged; merged on render)
 ##   hist.parquet      the error distribution
 ##   ranges.parquet    the no-finite-error regions
+##   categories.parquet  per-result figures split by input class: normal,
+##                     zero & subnormal, out of support, Inf & NaN
 ##
 ## One file per *table*, covering every function -- not one per function. The
 ## overview page summarises all functions at once, so splitting by function
@@ -1112,6 +1114,27 @@ cmd_export <- function(opt) {
     stop("no results to export for that filter", call. = FALSE)
   }
 
+  ## Each cell's support, resolved from its params and flags exactly as the
+  ## sweep resolved it. Carried on the summary, so a reader can shade the part
+  ## of the axis that is off the support without asking the harness.
+  cells <- g[match(unique(res$cell_id), g$cell_id), , drop = FALSE]
+  bounds <- lapply(seq_len(nrow(cells)), function(i) {
+    row <- cells[i, ]
+    spec <- specs[[row$spec]]
+    if (is.null(spec$support)) {
+      return(c(-Inf, Inf))
+    }
+    cf <- cell_functions(spec, row)
+    spec$support(cf$params, cf$flags)
+  })
+  support <- data.frame(
+    cell_id = cells$cell_id,
+    support_lo = vapply(bounds, `[`, 0, 1L),
+    support_hi = vapply(bounds, `[`, 0, 2L)
+  )
+  res$support_lo <- support$support_lo[match(res$cell_id, support$cell_id)]
+  res$support_hi <- support$support_hi[match(res$cell_id, support$cell_id)]
+
   out <- normalizePath(opt$out, mustWork = FALSE)
   dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
@@ -1143,12 +1166,23 @@ cmd_export <- function(opt) {
   nanoparquet::write_parquet(res[order(res$cell_id, res$output), , drop = FALSE], file.path(out, "summary.parquet"))
 
   counts <- c(runs = nrow(runs), summary = nrow(res))
+  kept <- list()
   for (tbl in c("detail", "bands", "hist", "ranges")) {
     x <- pick(tbl)
     if (is.null(x) || !nrow(x)) {
       next
     }
+    kept[[tbl]] <- x
     counts[tbl] <- write_by_cell(x, file.path(out, paste0(tbl, ".parquet")))
+  }
+
+  ## Per-result figures split by input class (see input_class()). A few rows
+  ## per result, so the overview can show normal-input accuracy without ever
+  ## fetching `bands`.
+  if (!is.null(kept$bands) && !is.null(kept$detail)) {
+    cats <- category_table(kept$bands, kept$detail, support)
+    nanoparquet::write_parquet(cats, file.path(out, "categories.parquet"))
+    counts["categories"] <- nrow(cats)
   }
 
   manifest <- list(

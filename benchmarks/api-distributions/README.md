@@ -311,6 +311,8 @@ detail.parquet    the worst inputs, per binade
 bands.parquet     the per-binade profile (unmerged; merged on render)
 hist.parquet      the error distribution
 ranges.parquet    the no-finite-error regions
+categories.parquet  per-result figures by input class (normal, zero & subnormal,
+                  outside the support, ±∞ & NaN), and each cell's support on summary
 ```
 
 One file per **table**, not per function. The overview page summarises every

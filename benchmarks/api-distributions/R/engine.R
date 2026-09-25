@@ -636,6 +636,81 @@ classify_ranges <- function(ranges, support, dtype) {
   cls
 }
 
+## ---- input categories ------------------------------------------------------
+##
+## Relative error is only a meaningful measure for ordinary finite inputs inside
+## the support. Everywhere else the right question is whether the result matches
+## base R exactly, and folding both into one "worst relative error" let an
+## output flushed to zero, or a NaN, stand in for how accurate a function is.
+## So every band is assigned one input class, by its exponent field:
+##
+##   normal          binades 1 .. top-1, inside the support
+##   subnormal       binade 0 -- zero and the subnormals share that field, and
+##                   this backend flushes the subnormals to zero on entry
+##   out_of_support  a finite band lying wholly outside the support, where the
+##                   answer is a fixed limit (0, +-Inf, NaN) to be matched
+##   inf_nan         the top field: both infinities and every NaN
+##
+## The classes are by *input* only. Output classes -- an output underflowing
+## to zero, a spurious overflow -- need per-sample tallies the sweep does not
+## keep yet, so an underflow from a normal input still counts as normal here.
+##
+## Classification is per binade, so a binade straddling a support edge counts
+## as inside it. `x_from`/`x_to` are the smallest and largest values in the
+## band on either sign, so "wholly outside" is exact.
+
+input_class <- function(bands, lo, hi) {
+  cls <- rep("normal", nrow(bands))
+  cls[bands$binade == 0L] <- "subnormal"
+  outside <- !bands$special & bands$binade != 0L & (bands$x_to < lo | bands$x_from > hi)
+  cls[outside %in% TRUE] <- "out_of_support"
+  cls[bands$special] <- "inf_nan"
+  cls
+}
+
+## One row per (run, cell, output, input class): sample counts summed from the
+## bands, and the worst sample from `detail`. The detail table keeps the top-K
+## *per binade*, so it always holds each binade's worst, and the worst of a
+## class is the worst of its binades' -- exact, not a sample of it.
+category_table <- function(bands, detail, support) {
+  lo <- support$support_lo[match(bands$cell_id, support$cell_id)]
+  hi <- support$support_hi[match(bands$cell_id, support$cell_id)]
+  bands$input_class <- input_class(bands, lo, hi)
+
+  grp <- paste(bands$run_id, bands$cell_id, bands$output, bands$input_class, sep = "\r")
+  counts <- rowsum(
+    cbind(
+      n = bands$n_identical + bands$n_differ + bands$n_nonfinite,
+      n_identical = bands$n_identical,
+      n_differ = bands$n_differ,
+      n_nonfinite = bands$n_nonfinite
+    ),
+    grp,
+    reorder = FALSE
+  )
+  first <- !duplicated(grp)
+  out <- bands[first, c("run_id", "cell_id", "output", "input_class")]
+  out <- cbind(out, counts[grp[first], , drop = FALSE])
+
+  bkey <- paste(bands$run_id, bands$cell_id, bands$output, bands$sign, bands$binade, sep = "\r")
+  dkey <- paste(detail$run_id, detail$cell_id, detail$output, detail$sign, detail$binade, sep = "\r")
+  dgrp <- paste(detail$run_id, detail$cell_id, detail$output,
+    bands$input_class[match(dkey, bkey)], sep = "\r")
+  o <- order(dgrp, -detail$rel_err)
+  top <- o[!duplicated(dgrp[o])]
+  m <- match(grp[first], dgrp[top])
+  w <- detail[top[m], , drop = FALSE]
+  ## No finite, non-zero error in the class: every sample was identical or had
+  ## no finite error at all. Scored 0, as the summary does; the counts say which.
+  out$worst_rel_err <- ifelse(is.na(m), 0, w$rel_err)
+  out$worst_x <- w$x
+  out$worst_bits <- w$bits
+  out$worst_value <- w$value
+  out$worst_reference <- w$reference
+  rownames(out) <- NULL
+  out[order(out$cell_id, out$output, out$input_class), , drop = FALSE]
+}
+
 ## ---- expectations ----------------------------------------------------------
 
 ## The relative error above which a result is never accepted automatically.
