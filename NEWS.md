@@ -259,6 +259,9 @@
 
 ## Bug fixes
 
+* A bare R integer start index of `prim_dynamic_slice()` /
+  `prim_dynamic_update_slice()` takes the data type of the other start indices,
+  so `prim_dynamic_slice(x, nv_scalar(1L, "i64"), 1L, ...)` no longer fails.
 * `nv_rnorm()` with a scalar `shape` and a non-scalar `mean` or `sd` returned
   one draw shifted/scaled to the shape of `mean`/`sd`; it is now an error, as
   any shape other than a scalar or `shape` already was.
