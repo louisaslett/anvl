@@ -140,20 +140,32 @@ float_neighbours <- function(x, dtype) {
 
 ## ---- ulp spacing -----------------------------------------------------------
 
-## The distance to the next representable neighbour at |x|, which is the unit
-## the ulp error metric is measured in. Subnormals share the spacing of the
-## smallest normal binade, hence the floor on the exponent.
+## The spacing of representable values in the binade holding |x|: the unit
+## the ulp error metric is measured in, and the unit the reference-dispute
+## thresholds are built from. Subnormals and zero share the spacing of the
+## smallest normal binade, hence the floor on the exponent. For an f32 spacing
+## at a double that is not itself an f32, the binade is the double's.
 ##
-## At an exact power of two the spacing below x is half the spacing above it;
-## this returns the spacing above. That one-binade asymmetry is immaterial for
-## a diagnostic that is read on a log scale, and taking the larger of the two
-## keeps the metric from overstating an error.
+## The exponent is floor(log2|x|) *corrected*: log2 rounds up to the next
+## integer for values just below a power of two (the largest double below 2^e
+## gives exactly e), which doubled the spacing there. 2^e is exact, so one
+## comparison each way fixes it. At a power of two itself this is the spacing
+## above x, the larger of the two neighbouring gaps.
+##
+## Non-finite x has no spacing and gets NaN, so it can never enter a
+## threshold silently; score_pair() routes non-finite values before dividing.
 ulp_size <- function(x, dtype) {
   p <- if (dtype == "f32") 23L else 52L
   emin <- if (dtype == "f32") -126L else -1022L
-  e <- pmax(floor(log2(abs(x))), emin)
-  e[!is.finite(x) | x == 0] <- emin
-  2^(e - p)
+  a <- abs(x)
+  e <- floor(log2(a))
+  ok <- is.finite(e)
+  e[ok] <- e[ok] - (2^e[ok] > a[ok]) + (2^(e[ok] + 1) <= a[ok])
+  e <- pmax(e, emin)
+  e[x %in% 0] <- emin
+  out <- 2^(e - p)
+  out[!is.finite(x)] <- NaN
+  out
 }
 
 ## ---- formatting ------------------------------------------------------------

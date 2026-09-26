@@ -361,6 +361,272 @@ sample_facts <- function(x, fx, gx, s, ctx, o) {
   )
 }
 
+## ---- 2c. disputes with the reference ---------------------------------------
+##
+## base R is the reference, and it is sometimes the weaker implementation:
+## punif(q, 0, 1, lower.tail = FALSE, log.p = TRUE) forms 1 - q before the log
+## and returns 0 at q = 1e-100, where the answer is log1p(-q) = -1e-100. Every
+## error figure stays against base R regardless. A spec may additionally
+## declare `ref_stable`, an accurate evaluation of the same function, and each
+## sample is then tested against it. A sample is a *candidate* base R dispute
+## only if all three hold:
+##
+##   base R is off        |g - s| > T_R    = 4 ulp_f64(s)   + B
+##   anvl is accurate     |f - s| <= T_anvl = 2 ulp_dtype(s) + B
+##   anvl is no further   |f - s| <= |g - s|
+##
+## where s is the stable value and B the stable reference's own declared error
+## bound, converted from double ulps at s to absolute units, so both thresholds
+## carry the same uncertainty. The multipliers are provisional exclusion
+## thresholds, not accuracy criteria: failing them only means a sample stays
+## counted against base R.
+##
+## Where no ulp comparison is meaningful, the rule is exact: if s is +-0 or
+## +-Inf, or finite but beyond the f32 range in an f32 cell, anvl must equal s
+## at the cell's precision (down to the sign of zero) and base R must not. A
+## NaN on any side is never a dispute: that is a domain question, not accuracy.
+##
+## A candidate is not an exclusion. It becomes one only when the stable
+## reference has passed validation under a matching identity (stage two);
+## until then the candidate-filtered figures are recorded but never shown as
+## anything but candidates.
+##
+## The same test also finds the opposite case, which disagreement-only
+## evaluation would miss: anvl and base R agreeing with each other, and both
+## beyond anvl's tolerance against s ("shared").
+
+DISPUTE_K <- c(anvl = 2, base = 4)
+F32_OVERFLOW <- 2^128 - 2^103
+
+dispute_facts <- function(fx, gx, sx, dtype, bound_ulp64) {
+  ## The ordinary rule, over every sample at once: ulp_size() is NaN for a
+  ## non-finite s, so those fall out as FALSE and are settled below.
+  da <- abs(fx - sx)
+  dr <- abs(gx - sx)
+  ## One spacing computation serves both precisions: an f32 spacing is the
+  ## double one times 2^29 down to the f32 subnormal spacing, below which it
+  ## stays there (checked in selftest against ulp_size(, "f32")).
+  u64 <- ulp_size(sx, "f64")
+  ud <- if (dtype == "f32") pmax(u64 * 2^29, SUBNORMAL_MIN[["f32"]]) else u64
+  b <- bound_ulp64 * u64
+  ta <- DISPUTE_K[["anvl"]] * ud + b
+  tr <- DISPUTE_K[["base"]] * u64 + b
+  a_ok <- da <= ta
+  a_ok[is.na(a_ok)] <- FALSE
+  cand <- a_ok & dr > tr & da <= dr
+  cand[is.na(cand)] <- FALSE
+
+  ## The exact rule, where no ulp comparison is meaningful.
+  exact <- sx == 0 | is.infinite(sx)
+  if (dtype == "f32") exact <- exact | abs(sx) >= F32_OVERFLOW
+  exact <- which(exact) # NA (a NaN s) drops out
+  if (length(exact)) {
+    target <- if (dtype == "f32") as_f32(sx[exact]) else sx[exact]
+    a_ok[exact] <- same_value(fx[exact], target)
+    cand[exact] <- a_ok[exact] & !same_value(gx[exact], sx[exact]) & !is.na(gx[exact])
+    ta[exact] <- tr[exact] <- NA_real_
+  }
+
+  ## Shared: anvl beyond its tolerance, and base R returning the same value.
+  ## Usually a small subset, so tested there alone.
+  shared <- logical(length(fx))
+  j <- which(!a_ok & !is.na(sx) & !is.na(fx))
+  if (length(j)) shared[j] <- same_value(fx[j], gx[j])
+  list(candidate = cand, shared = shared, d_anvl = da, d_base = dr, t_anvl = ta, t_base = tr)
+}
+
+## The identity a validation must match before a candidate may become an
+## exclusion. Anything that changes which samples are candidates must change
+## it, so it is taken from the code that actually runs, not from a list:
+##
+##   - the stable reference, the classifier (dispute_facts) and the spacing
+##     (ulp_size), each with every function it calls and every value it reads
+##     that is not base R's -- followed recursively, so a change to
+##     same_value(), as_f32() or a constant such as DISPUTE_K is seen, and so
+##     is a constant captured in the stable reference's closure;
+##   - a package function by package and version, not by code;
+##   - the declared bound, the exact reference parameters (hex), the flags,
+##     the dtype, the parameter policy and the R build.
+##
+## Code is deparsed without source references and with exact (hex) numbers,
+## so the identity does not depend on how a session was started.
+STABLE_PARAM_POLICY <- "reference parameters at the cell precision (as_f32 for f32 cells)"
+BASE_ENVS <- c("base", "stats", "utils", "methods", "graphics", "grDevices")
+DEPARSE <- c("keepNA", "keepInteger", "niceNames", "showAttributes", "hexNumeric")
+
+## Calls whose target is chosen at run time -- by name, by environment, by
+## dispatch -- so no reading of the code can say what runs. A function that
+## uses one cannot have an identity: code_identity() refuses it, and a result
+## without an identity can never be validated (fail closed). Base R's own
+## functions are not traversed (their behaviour is pinned by the R build), so
+## this applies to the harness and spec code a stable reference reaches.
+DYNAMIC_CALLS <- c(
+  "get", "get0", "mget", "exists", "match.fun", "do.call", "eval", "evalq", "eval.parent",
+  "sys.function", "sys.call", "parent.frame", "environment", "environment<-", "assign",
+  "<<-", "library", "require", "requireNamespace", "loadNamespace", "attachNamespace",
+  "getExportedValue", "source", "sys.source", "body<-", "formals<-", "UseMethod",
+  "NextMethod", "standardGeneric", "Recall", "import"
+)
+
+## Functions that take a function argument, where a character string would
+## name the function to call -- sapply(x, "get") -- which no reading of the code
+## can follow either.
+FUN_TAKERS <- c(
+  "lapply", "sapply", "vapply", "mapply", "Map", "Reduce", "Filter", "Find", "Position",
+  "apply", "tapply", "outer", "Vectorize", "ave", "aggregate", "rapply", "eapply", "by"
+)
+
+## The calls in an expression, including `pkg::fn` and `pkg:::fn`, which
+## codetools reports only as a call to `::`.
+calls_in <- function(e) {
+  out <- list()
+  walk <- function(x) {
+    if (is.call(x)) {
+      h <- x[[1L]]
+      fn <- NULL
+      if (is.call(h) && (identical(h[[1L]], as.name("::")) || identical(h[[1L]], as.name(":::")))) {
+        fn <- as.character(h[[3L]])
+        out[[length(out) + 1L]] <<- list(ns = as.character(h[[2L]]), fn = fn, strings = FALSE)
+      } else if (is.name(h)) {
+        fn <- as.character(h)
+        out[[length(out) + 1L]] <<- list(ns = NA_character_, fn = fn, strings = FALSE)
+      }
+      ## a string among the arguments of a function-taking call
+      if (!is.null(fn) && fn %in% FUN_TAKERS && any(vapply(as.list(x)[-1L], is.character, TRUE))) {
+        out[[length(out) + 1L]] <<- list(ns = NA_character_, fn = fn, strings = TRUE)
+      }
+      for (a in as.list(x)) walk(a)
+    } else if (is.function(x)) {
+      walk(body(x))
+    } else if (is.pairlist(x) || is.list(x)) {
+      for (a in x) if (!missing(a)) walk(a)
+    }
+  }
+  walk(e)
+  out
+}
+
+code_identity <- function(roots) {
+  seen <- character(0)
+  out <- character(0)
+  where <- function(name, env) {
+    while (!identical(env, emptyenv())) {
+      if (exists(name, envir = env, inherits = FALSE)) return(env)
+      env <- parent.env(env)
+    }
+    NULL
+  }
+  pkg <- function(ns) {
+    v <- tryCatch(as.character(utils::packageVersion(ns)), error = function(e) "not installed")
+    sprintf("## package %s %s", ns, v)
+  }
+  visit <- function(f, name) {
+    out <<- c(out, paste0("## function ", name), deparse(f, control = DEPARSE))
+    env <- environment(f)
+    ## explicit namespace calls, by package and version; and the dynamic
+    ## forms that make the code unreadable, refused
+    for (cl in c(calls_in(formals(f)), calls_in(body(f)))) {
+      if (isTRUE(cl$strings)) {
+        stop(sprintf("`%s` passes a function name as a string to %s(), which the identity cannot follow", name, cl$fn),
+          call. = FALSE)
+      }
+      ## however it is qualified: base::get is get
+      if (cl$fn %in% DYNAMIC_CALLS) {
+        stop(sprintf("`%s` calls %s%s(), which the identity cannot follow", name,
+          if (is.na(cl$ns)) "" else paste0(cl$ns, "::"), cl$fn), call. = FALSE)
+      }
+      if (!is.na(cl$ns)) out <<- c(out, paste(pkg(cl$ns), "::", cl$fn))
+    }
+    g <- codetools::findGlobals(f, merge = FALSE)
+    for (v in sort(c(g$functions, g$variables))) {
+      if (v %in% c("::", ":::")) next
+      e <- where(v, env)
+      if (is.null(e)) next
+      en <- environmentName(e)
+      if (en %in% BASE_ENVS || identical(e, baseenv())) next
+      key <- paste(en, format(e), v)
+      if (key %in% seen) next
+      seen <<- c(seen, key)
+      val <- get(v, envir = e, inherits = FALSE)
+      if (isNamespace(e) || en %in% loadedNamespaces()) {
+        out <<- c(out, paste(pkg(en), "::", v))
+      } else if (is.primitive(val)) {
+        ## a primitive bound to a name outside base -- `helper <- abs` in a
+        ## closure -- is recorded by which primitive it is
+        out <<- c(out, sprintf("## primitive %s = %s", v, deparse(val)))
+      } else if (is.function(val)) {
+        visit(val, v)
+      } else {
+        out <<- c(out, paste0("## value ", v), deparse(val, control = DEPARSE))
+      }
+    }
+  }
+  for (nm in names(roots)) visit(roots[[nm]], nm)
+  out
+}
+
+hex_params <- function(params) {
+  num <- vapply(params, is.numeric, TRUE)
+  paste(
+    sprintf("%s=%s", names(params)[num], vapply(params[num], function(v) paste(sprintf("%a", v), collapse = "|"), "")),
+    collapse = ";"
+  )
+}
+
+## NA, with the reason as attribute "unsupported", when the code uses a form
+## the identity cannot follow: such a reference can never be validated.
+reference_identity <- function(roots, extra) {
+  code <- tryCatch(
+    code_identity(roots),
+    error = function(e) structure(NA_character_, unsupported = conditionMessage(e))
+  )
+  if (length(code) == 1L && is.na(code)) {
+    return(code)
+  }
+  f <- tempfile()
+  on.exit(unlink(f))
+  writeLines(c(code, extra, STABLE_PARAM_POLICY, R.version.string), f)
+  unname(tools::md5sum(f))
+}
+
+identity_extra <- function(bound_ulp64, ref_params, flags, dtype) {
+  c(
+    sprintf("bound_ulp64 = %a", bound_ulp64),
+    sprintf("ref_params = %s", hex_params(ref_params)),
+    sprintf("flags = %s", paste(names(flags), unlist(flags), sep = "=", collapse = ",")),
+    sprintf("dtype = %s", dtype)
+  )
+}
+
+## A stable reference is identified together with the classifier and spacing
+## code that decide candidacy.
+stable_identity <- function(fun, bound_ulp64, ref_params = list(), flags = list(), dtype = "") {
+  reference_identity(
+    list(ref_stable = fun, dispute_facts = dispute_facts, ulp_size = ulp_size),
+    identity_extra(bound_ulp64, ref_params, flags, dtype)
+  )
+}
+
+## A gradient reference by its own code and declared bound: validating it
+## gates no exclusion, but says whether it is trustworthy.
+grad_identity <- function(fun, bound_ulp64, ref_params = list(), flags = list(), dtype = "") {
+  reference_identity(list(ref_grad = fun), identity_extra(bound_ulp64 %||% NA_real_, ref_params, flags, dtype))
+}
+
+## The inverse of hex_params(): the exact parameter values back as doubles.
+parse_hex_params <- function(s) {
+  if (is.na(s) || !nzchar(s)) {
+    return(list())
+  }
+  kv <- strsplit(strsplit(s, ";", fixed = TRUE)[[1L]], "=", fixed = TRUE)
+  out <- lapply(kv, function(p) as.numeric(strsplit(p[2L], "|", fixed = TRUE)[[1L]]))
+  names(out) <- vapply(kv, `[`, "", 1L)
+  if (!identical(hex_params(out), s)) {
+    stop("stored parameters do not round-trip: ", s, call. = FALSE)
+  }
+  out
+}
+
 ## ---- 3. reducers -----------------------------------------------------------
 ##
 ## Each is a stateful accumulator fed one chunk at a time and drained once at
@@ -488,6 +754,8 @@ reducer_runs <- function(stride) {
   cause <- integer(0)
   pairs <- list()
   list(
+    ## `cause_code` may carry a candidate-dispute flag as +100, so a region
+    ## never mixes candidate and non-candidate samples.
     add = function(idx, bad, cause_code, x, fx, gx, pair) {
       i <- which(bad)
       if (!length(i)) {
@@ -504,7 +772,8 @@ reducer_runs <- function(stride) {
         a <- i[st[q]]
         b <- i[en[q]]
         seg <- i[st[q]:en[q]]
-        tally <- tabulate(pair[seg], nbins = N_KINDS^2)
+        ## a double: one region can exceed 2^31 samples in a full f32 sweep
+        tally <- as.numeric(tabulate(pair[seg], nbins = N_KINDS^2))
         m <- length(lo)
         ## contiguous with the previous chunk's last region, with the same cause
         if (m && idx[a] == hi[m] + stride && cc[st[q]] == cause[m]) {
@@ -541,7 +810,8 @@ reducer_runs <- function(stride) {
       data.frame(
         lo = lo,
         hi = hi,
-        cause = CAUSES[cause],
+        cause = CAUSES[cause %% 100L],
+        ref_candidate = cause >= 100L,
         n_failing = n,
         x_first = x_first,
         x_last = x_last,
@@ -553,6 +823,69 @@ reducer_runs <- function(stride) {
         pairs = vapply(pairs, describe, ""),
         stringsAsFactors = FALSE
       )
+    }
+  )
+}
+
+## -- 3b'. the evidence for each dispute, K per binade and kind --
+## Candidate disputes are kept by how far base R is beyond its tolerance
+## (d_base / t_base), shared disagreements by how far anvl is beyond its own --
+## ratios, because an absolute distance ranks by the output's magnitude and
+## would bury a base R 0 against -1e-100. An exact-rule case has no tolerance
+## and ranks first. each with all three values, both
+## distances and both thresholds, so every exclusion can be inspected sample by
+## sample. Zero has its own slot, as everywhere else.
+reducer_disputes <- function(dtype, k = 10L) {
+  span <- if (dtype == "f32") 2^23 else 2^20
+  store <- new.env(parent = emptyenv())
+  cut <- new.env(parent = emptyenv())
+  keep <- function(kind, i, by, ch, fx, gx, sx, d, sgn) {
+    if (!length(i)) return()
+    ## indices arrive in order, so each binade's samples are one contiguous
+    ## slice; zero, keyed -1, is the first of its chunk
+    b <- floor(ch$idx[i] / span)
+    b[ch$x[i] %in% 0] <- -1
+    g <- group_slices(b)
+    for (q in seq_along(g$key)) {
+      j <- i[g$from[q]:g$to[q]]
+      key <- paste(kind, sgn, g$key[q])
+      c0 <- cut[[key]]
+      if (!is.null(c0)) j <- j[by[j] > c0]
+      if (!length(j)) next
+      if (length(j) > k) j <- j[order(by[j], decreasing = TRUE)[seq_len(k)]]
+      cand <- data.frame(
+        kind = kind, sign = sgn, binade = max(g$key[q], 0), x = ch$x[j], value = fx[j],
+        reference = gx[j], stable = sx[j], d_anvl = d$d_anvl[j], d_base = d$d_base[j],
+        t_anvl = d$t_anvl[j], t_base = d$t_base[j], by = by[j]
+      )
+      all <- rbind(store[[key]], cand)
+      all <- utils::head(all[order(all$by, decreasing = TRUE), , drop = FALSE], k)
+      store[[key]] <- all
+      if (nrow(all) == k) cut[[key]] <- all$by[k]
+    }
+  }
+  list(
+    add = function(ch, d, fx, gx, sx, sgn) {
+      over <- function(dist, tol) {
+        r <- dist / tol
+        r[is.na(r)] <- Inf
+        r
+      }
+      i <- which(d$candidate)
+      if (length(i)) keep("candidate", i, over(d$d_base, d$t_base), ch, fx, gx, sx, d, sgn)
+      i <- which(d$shared)
+      if (length(i)) keep("shared", i, over(d$d_anvl, d$t_anvl), ch, fx, gx, sx, d, sgn)
+    },
+    get = function() {
+      keys <- ls(store)
+      if (!length(keys)) {
+        return(NULL)
+      }
+      out <- do.call(rbind, mget(keys, envir = store))
+      names(out)[names(out) == "by"] <- "beyond_tolerance"
+      out$bits <- bits_of(out$x, dtype)
+      rownames(out) <- NULL
+      out[order(out$kind, -out$beyond_tolerance), , drop = FALSE]
     }
   )
 }
@@ -622,8 +955,23 @@ reducer_bands <- function(dtype) {
       ## nexp x 2 x N_KINDS^2, flattened
       kinds = numeric(nexp * 2L * N_KINDS^2),
       worst = rep(0, nslot),
+      ## the worst ulp error, accumulated in its own right: the worst relative
+      ## error and the worst ulp error need not be the same sample (|g| varies
+      ## two-fold within a binade while its spacing does not), so the ulp
+      ## maximum cannot be read off a shortlist ranked by relative error
+      worst_ulp = rep(0, nslot),
       m_worst = rep(NA_real_, nslot),
-      m_best = rep(NA_real_, nslot)
+      m_best = rep(NA_real_, nslot),
+      ## candidate base R disputes (see dispute_facts()), and the figures with
+      ## them left out; recorded only where the spec has a stable reference
+      ref_candidate = rep(0, nslot),
+      ref_candidate_nonfinite = rep(0, nslot),
+      ref_shared = rep(0, nslot),
+      worst_excl = rep(0, nslot),
+      out_normal_worst_excl = rep(0, nslot),
+      out_normal_excl_x = rep(NA_real_, nslot),
+      out_normal_excl_value = rep(NA_real_, nslot),
+      out_normal_excl_reference = rep(NA_real_, nslot)
     )
   }
   acc <- list(mk(), mk()) # [[1]] positive, [[2]] negative
@@ -675,9 +1023,27 @@ reducer_bands <- function(dtype) {
         lo <- group_extreme(g, rp, which.min)
         j <- g$key
         a$worst[j] <- pmax(a$worst[j], rp[hi])
+        up <- s$ulp[pos]
+        a$worst_ulp[j] <- pmax(a$worst_ulp[j], up[group_extreme(g, up, which.max)])
         a$m_worst[j] <- pmin(a$m_worst[j], floor(-log10(rp[hi])), na.rm = TRUE)
         a$m_best[j] <- pmax(a$m_best[j], floor(-log10(rp[lo])), na.rm = TRUE)
       }
+
+      ## The candidate-filtered figures: the same maxima over the samples that
+      ## are not candidate disputes. Only worth a pass when there are any.
+      if (any(s$ref_candidate)) {
+        a$ref_candidate <- a$ref_candidate + tab(s$ref_candidate)
+        a$ref_candidate_nonfinite <- a$ref_candidate_nonfinite + tab(s$ref_candidate & !fin)
+        px <- which(fin & !same & !s$ref_candidate)
+        if (length(px)) {
+          g <- group_slices(e[px])
+          a$worst_excl[g$key] <- pmax(a$worst_excl[g$key], rel[px[group_extreme(g, rel[px], which.max)]])
+        }
+      } else if (length(pos)) {
+        g <- group_slices(e[pos])
+        a$worst_excl[g$key] <- pmax(a$worst_excl[g$key], rel[pos][group_extreme(g, rel[pos], which.max)])
+      }
+      if (any(s$ref_shared)) a$ref_shared <- a$ref_shared + tab(s$ref_shared)
 
       ## Samples whose reference is a normal float: counts, and the worst
       ## with the sample that produced it.
@@ -698,6 +1064,21 @@ reducer_bands <- function(dtype) {
             a$out_normal_x[j] <- x[w]
             a$out_normal_value[j] <- fx[w]
             a$out_normal_reference[j] <- gx[w]
+          }
+          fe <- if (any(s$ref_candidate)) fo[!s$ref_candidate[fo]] else fo
+          if (length(fe)) {
+            g <- group_slices(e[fe])
+            w <- fe[group_extreme(g, rel[fe], which.max)]
+            j <- g$key
+            better <- rel[w] > a$out_normal_worst_excl[j]
+            if (any(better)) {
+              w <- w[better]
+              j <- j[better]
+              a$out_normal_worst_excl[j] <- rel[w]
+              a$out_normal_excl_x[j] <- x[w]
+              a$out_normal_excl_value[j] <- fx[w]
+              a$out_normal_excl_reference[j] <- gx[w]
+            }
           }
         }
       }
@@ -799,9 +1180,18 @@ binade_profile <- function(bands, dtype) {
       worst_out_normal_x = a$out_normal_x[ix],
       worst_out_normal_value = a$out_normal_value[ix],
       worst_out_normal_reference = a$out_normal_reference[ix],
+      n_ref_candidate = a$ref_candidate[ix],
+      n_ref_candidate_nonfinite = a$ref_candidate_nonfinite[ix],
+      n_ref_shared = a$ref_shared[ix],
+      worst_rel_err_excl = a$worst_excl[ix],
+      worst_out_normal_excl = a$out_normal_worst_excl[ix],
+      worst_out_normal_excl_x = a$out_normal_excl_x[ix],
+      worst_out_normal_excl_value = a$out_normal_excl_value[ix],
+      worst_out_normal_excl_reference = a$out_normal_excl_reference[ix],
       m_worst = a$m_worst[ix],
       m_best = a$m_best[ix],
-      worst_rel_err = a$worst[ix]
+      worst_rel_err = a$worst[ix],
+      worst_ulp_err = a$worst_ulp[ix]
     )
   })
 
@@ -828,9 +1218,18 @@ binade_profile <- function(bands, dtype) {
       worst_out_normal_x = numeric(0),
       worst_out_normal_value = numeric(0),
       worst_out_normal_reference = numeric(0),
+      n_ref_candidate = numeric(0),
+      n_ref_candidate_nonfinite = numeric(0),
+      n_ref_shared = numeric(0),
+      worst_rel_err_excl = numeric(0),
+      worst_out_normal_excl = numeric(0),
+      worst_out_normal_excl_x = numeric(0),
+      worst_out_normal_excl_value = numeric(0),
+      worst_out_normal_excl_reference = numeric(0),
       m_worst = numeric(0),
       m_best = numeric(0),
-      worst_rel_err = numeric(0)
+      worst_rel_err = numeric(0),
+      worst_ulp_err = numeric(0)
     ))
   }
   out[order(out$special, out$sign, out$binade, !out$zero), , drop = FALSE]
@@ -875,8 +1274,13 @@ kinds_table <- function(bands) {
 HIST_LO <- -20L
 HIST_HI <- 4L
 
+## `count_ref_candidate` is how many of each decade's samples are candidate
+## base R disputes, so the candidate-filtered histogram is count minus it.
+## Counters are doubles: a full f32 sweep puts up to 2^32 samples in a cell,
+## past an integer's 2^31 - 1, where R's integer addition returns NA.
 reducer_hist <- function() {
-  counts <- integer(HIST_HI - HIST_LO + 1L)
+  counts <- numeric(HIST_HI - HIST_LO + 1L)
+  cand <- numeric(HIST_HI - HIST_LO + 1L)
   n_exact <- 0
   n_inf <- 0
   n_rounded <- 0
@@ -885,17 +1289,22 @@ reducer_hist <- function() {
       n_exact <<- n_exact + sum(s$rel == 0)
       n_inf <<- n_inf + sum(is.infinite(s$rel))
       n_rounded <<- n_rounded + sum(s$rounded)
-      e <- s$rel[s$rel > 0 & is.finite(s$rel)]
+      keep <- s$rel > 0 & is.finite(s$rel)
+      e <- s$rel[keep]
       if (!length(e)) {
         return(invisible(NULL))
       }
       b <- pmin(pmax(floor(log10(e)), HIST_LO), HIST_HI) - HIST_LO + 1L
       counts <<- counts + tabulate(b, nbins = length(counts))
+      if (any(s$ref_candidate)) {
+        cand <<- cand + tabulate(b[s$ref_candidate[keep]], nbins = length(cand))
+      }
     },
     get = function() {
       data.frame(
         decade = HIST_LO:HIST_HI,
-        count = counts
+        count = counts,
+        count_ref_candidate = cand
       )
     },
     totals = function() list(n_exact = n_exact, n_inf = n_inf, n_rounded = n_rounded)
@@ -966,15 +1375,17 @@ exact_points <- function(dtype, domain = c(-Inf, Inf), support = NULL, branch = 
 ## A points table with no rows, for results that have none (a failed cell).
 NO_POINTS <- data.frame(
   label = character(0), x = numeric(0), rel_err = numeric(0), identical = logical(0),
-  zero_sign = logical(0), rounded = logical(0), failure = logical(0), category = character(0)
+  zero_sign = logical(0), rounded = logical(0), failure = logical(0), category = character(0),
+  ref_candidate = logical(0), ref_shared = logical(0)
 )
 
 ## Returns the points' results with, as attribute "context", the context the
 ## sweep needs: the points include +-0, so one evaluation serves both, and a
 ## backend that compiles per input shape compiles one extra shape, not two.
-run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf)) {
+run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf), stable = NULL) {
   fx <- fun(pts$x)
   gx <- ref(pts$x)
+  sx <- if (is.null(stable)) NULL else stable$fun(pts$x)
   pz <- which(pts$x == 0 & 1 / pts$x > 0)[1L]
   nz <- which(pts$x == 0 & 1 / pts$x < 0)[1L]
   ctx <- context_from(
@@ -984,6 +1395,8 @@ run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf)) {
     s <- score_pair(fx[[o]], gx[[o]], dtype)
     f <- sample_facts(pts$x, fx[[o]], gx[[o]], s, ctx, o)
     cause <- ifelse(s$bad, CAUSES[pmax(f$cause, 1L)], NA_character_)
+    d <- if (is.null(sx[[o]])) NULL else dispute_facts(fx[[o]], gx[[o]], sx[[o]], dtype, stable$bound_ulp64)
+    na <- rep(NA, length(pts$x))
     data.frame(
       output = o,
       label = pts$label,
@@ -1005,6 +1418,9 @@ run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf)) {
       failure = s$bad,
       cause = cause,
       category = unname(CAUSE_CATEGORY[cause]),
+      stable = if (is.null(d)) as.numeric(na) else sx[[o]],
+      ref_candidate = if (is.null(d)) na else d$candidate,
+      ref_shared = if (is.null(d)) na else d$shared,
       stringsAsFactors = FALSE
     )
   })
@@ -1019,8 +1435,11 @@ run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf)) {
 ## re-sweeping once per argument is a straight 3x saving on what is by far the
 ## largest part of the grid. One sweep, one set of reducers per output.
 
+## `stable`, when given, is list(fun, bound_ulp64): a stable reference for
+## some outputs (a named list like `ref`'s, possibly covering fewer), tested
+## against every sample of those outputs -- see dispute_facts().
 run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 10L,
-                      domain = c(-Inf, Inf), ctx = NULL) {
+                      domain = c(-Inf, Inf), ctx = NULL, stable = NULL) {
   plan <- sweep_plan(dtype, depth)
   ## The behaviour at +-0 is taken before seeding, so it cannot shift the
   ## random stream that the f64 samples are drawn from. A caller that has
@@ -1033,7 +1452,8 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
       topk = reducer_topk(dtype, topk),
       hist = reducer_hist(),
       bands = reducer_bands(dtype),
-      runs = list(reducer_runs(plan$stride), reducer_runs(plan$stride))
+      runs = list(reducer_runs(plan$stride), reducer_runs(plan$stride)),
+      disputes = reducer_disputes(dtype, topk)
     )
   })
   names(acc) <- outputs
@@ -1055,14 +1475,22 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
       }
       fx <- fun(ch$x)
       gx <- ref(ch$x)
+      sx <- if (is.null(stable)) NULL else stable$fun(ch$x)
       for (o in outputs) {
         s <- score_pair(fx[[o]], gx[[o]], dtype)
         s <- c(s, sample_facts(ch$x, fx[[o]], gx[[o]], s, ctx, o))
+        if (!is.null(sx[[o]])) {
+          d <- dispute_facts(fx[[o]], gx[[o]], sx[[o]], dtype, stable$bound_ulp64)
+          s$ref_candidate <- d$candidate
+          s$ref_shared <- d$shared
+          acc[[o]]$disputes$add(ch, d, fx[[o]], gx[[o]], sx[[o]], sgn)
+        }
         a <- acc[[o]]
         a$topk$add(ch, s, fx[[o]], gx[[o]], sgn)
         a$hist$add(s)
         a$bands$add(ch$idx, s, sgn, ch$x, fx[[o]], gx[[o]])
-        a$runs[[if (sgn > 0) 1L else 2L]]$add(ch$idx, s$bad, s$cause, ch$x, fx[[o]], gx[[o]], s$pair)
+        code <- if (is.null(s$ref_candidate)) s$cause else s$cause + 100L * s$ref_candidate
+        a$runs[[if (sgn > 0) 1L else 2L]]$add(ch$idx, s$bad, code, ch$x, fx[[o]], gx[[o]], s$pair)
       }
       if (progress) cli::cli_progress_update()
     }
@@ -1072,7 +1500,12 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
     cli::cli_progress_done()
   }
 
-  lapply(acc, function(a) {
+  lapply(stats::setNames(outputs, outputs), function(o) {
+    a <- acc[[o]]
+    ## candidate-filtered figures exist only where a stable reference covered
+    ## this output; elsewhere they are NA, not a copy of the unfiltered ones
+    has_stable <- !is.null(stable) && o %in% stable$outputs
+    na_unless <- function(v) if (has_stable) v else NA_real_
     tot <- a$hist$totals()
     ranges <- decode_runs(a$runs, dtype)
     detail <- a$topk$get()
@@ -1085,6 +1518,7 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
       bands = bands,
       kinds = kinds_table(a$bands),
       ranges = ranges,
+      disputes = a$disputes$get(),
       summary = data.frame(
         n_samples = plan$n_samples,
         n_exact = tot$n_exact,
@@ -1100,9 +1534,17 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
         n_out_normal = sum(bands$n_out_normal),
         n_out_normal_identical = sum(bands$n_out_normal_identical),
         worst_out_normal = if (nrow(bands)) max(bands$worst_out_normal) else 0,
+        ## Candidate base R disputes and the figures without them. Candidates
+        ## until a validation of the stable reference says otherwise: nothing
+        ## here is an exclusion yet, and the unfiltered figures stand beside.
+        n_ref_candidate = na_unless(sum(bands$n_ref_candidate)),
+        n_ref_candidate_nonfinite = na_unless(sum(bands$n_ref_candidate_nonfinite)),
+        n_ref_shared = na_unless(sum(bands$n_ref_shared)),
+        worst_rel_err_excl = na_unless(if (nrow(bands)) max(bands$worst_rel_err_excl) else 0),
+        worst_out_normal_excl = na_unless(if (nrow(bands)) max(bands$worst_out_normal_excl) else 0),
         n_inf_runs = nrow(ranges),
         worst_rel_err = if (have) detail$rel_err[1] else 0,
-        worst_ulp_err = if (have) max(detail$ulp_err) else 0,
+        worst_ulp_err = if (nrow(bands)) max(bands$worst_ulp_err) else 0,
         ## The input that produced the worst error, carried on the summary row
         ## so that "how bad is it" and "at what input" can be read together.
         ## Without it every headline number needs a second lookup to mean
@@ -1160,6 +1602,8 @@ decode_runs <- function(runs, dtype) {
       binade_to = floor(r$hi / span),
       cause = r$cause,
       category = unname(CAUSE_CATEGORY[r$cause]),
+      ## a candidate base R dispute; not an exclusion until validated
+      ref_candidate = r$ref_candidate,
       value_kind = r$value_kind,
       reference_kind = r$reference_kind,
       pairs = r$pairs,
@@ -1177,7 +1621,7 @@ decode_runs <- function(runs, dtype) {
       n_patterns = numeric(0), bounds_are_samples = logical(0), sampled_from = numeric(0),
       sampled_to = numeric(0), sampled_bits_from = character(0), sampled_bits_to = character(0),
       n_failing = numeric(0), sign = numeric(0), binade_from = numeric(0), binade_to = numeric(0),
-      cause = character(0), category = character(0), value_kind = character(0),
+      cause = character(0), category = character(0), ref_candidate = logical(0), value_kind = character(0),
       reference_kind = character(0), pairs = character(0), rep_x = numeric(0),
       rep_bits = character(0), rep_value = numeric(0), rep_reference = numeric(0),
       stringsAsFactors = FALSE
@@ -1193,6 +1637,9 @@ decode_runs <- function(runs, dtype) {
 ##
 ##   failure             numerical or behavioural failure on valid inputs --
 ##                       what "unexplained" counts
+##   reference_limitation  a candidate base R dispute whose stable reference
+##                       has passed validation (set at resolution, never by
+##                       the sweep; see apply_reference_validation())
 ##   backend_limitation  the platform, not the function: input flushing
 ##   boundary            behaviour at an endpoint of the valid input domain,
 ##                       which needs an explicit convention or limiting value
@@ -1219,10 +1666,14 @@ region_summary <- function(ranges) {
     n_regions_backend = cat_n("backend_limitation"),
     n_regions_boundary = cat_n("boundary"),
     n_regions_domain = cat_n("undefined_domain"),
+    n_regions_reference = cat_n("reference_limitation"),
     n_failing_failure = cat_s("failure"),
     n_failing_backend = cat_s("backend_limitation"),
     n_failing_boundary = cat_s("boundary"),
     n_failing_domain = cat_s("undefined_domain"),
+    n_failing_reference = cat_s("reference_limitation"),
+    ## regions of candidate base R disputes, whatever their category
+    n_regions_ref_candidate = sum(ranges$ref_candidate %in% TRUE),
     unexplained_from = if (length(f)) ranges$x_from[f[1L]] else NA_real_,
     unexplained_to = if (length(f)) ranges$x_to[f[1L]] else NA_real_
   )
@@ -1249,9 +1700,18 @@ point_summary <- function(points) {
     n_points_backend = cat_n("backend_limitation"),
     n_points_boundary = cat_n("boundary"),
     n_points_domain = cat_n("undefined_domain"),
+    n_points_reference = cat_n("reference_limitation"),
     worst_point_rel_err = if (is.na(w)) 0 else points$rel_err[w],
     worst_point_label = if (is.na(w)) NA_character_ else points$label[w],
     worst_point_x = if (is.na(w)) NA_real_ else points$x[w],
+    n_points_ref_candidate = sum(points$ref_candidate %in% TRUE),
+    ## the worst finite point error among points that are not candidate
+    ## disputes, for results whose candidates are verified exclusions
+    worst_point_rel_err_excl = {
+      fe <- fin & !(points$ref_candidate %in% TRUE)
+      if (any(fe)) max(points$rel_err[fe]) else 0
+    },
+    n_points_ref_shared = sum(points$ref_shared %in% TRUE),
     first_point_failure = if (length(f)) points$label[f[1L]] else NA_character_,
     first_point_failure_x = if (length(f)) points$x[f[1L]] else NA_real_
   )
@@ -1382,7 +1842,10 @@ category_table <- function(bands, detail, bounds) {
       n_flushed = col("n_flushed"),
       n_flushed_zero_error = col("n_flushed_zero_error"),
       n_out_normal = col("n_out_normal"),
-      n_out_normal_identical = col("n_out_normal_identical")
+      n_out_normal_identical = col("n_out_normal_identical"),
+      n_ref_candidate = col("n_ref_candidate"),
+      n_ref_candidate_nonfinite = col("n_ref_candidate_nonfinite"),
+      n_ref_shared = col("n_ref_shared")
     ),
     grp,
     reorder = FALSE
@@ -1407,6 +1870,14 @@ category_table <- function(bands, detail, bounds) {
   ## it. 0 means no finite non-zero error in the class -- every sample was
   ## identical or had no finite error at all; the counts say which.
   out$worst_rel_err <- unname(tapply(bands$worst_rel_err, grp, max)[grp[first]])
+  if (!is.null(bands$worst_ulp_err)) {
+    out$worst_ulp_err <- unname(tapply(bands$worst_ulp_err, grp, max)[grp[first]])
+  }
+  ## the same without candidate base R disputes; NA where a result has no
+  ## stable reference (its summary row says so), or for an older store
+  if (!is.null(bands$worst_rel_err_excl)) {
+    out$worst_rel_err_excl <- unname(tapply(bands$worst_rel_err_excl, grp, max)[grp[first]])
+  }
   ## a retained sample that is not the class's worst would mislead: drop it
   stale <- is.na(m) | w$rel_err != out$worst_rel_err
   w[stale, c("x", "value", "reference")] <- NA_real_
@@ -1427,6 +1898,15 @@ category_table <- function(bands, detail, bounds) {
     out$worst_out_normal_x <- wb$worst_out_normal_x
     out$worst_out_normal_value <- wb$worst_out_normal_value
     out$worst_out_normal_reference <- wb$worst_out_normal_reference
+  }
+  if (!is.null(bands$worst_out_normal_excl)) {
+    ob <- order(grp, -bands$worst_out_normal_excl)
+    tb <- ob[!duplicated(grp[ob])]
+    wb <- bands[tb[match(grp[first], grp[tb])], , drop = FALSE]
+    out$worst_out_normal_excl <- wb$worst_out_normal_excl
+    out$worst_out_normal_excl_x <- wb$worst_out_normal_excl_x
+    out$worst_out_normal_excl_value <- wb$worst_out_normal_excl_value
+    out$worst_out_normal_excl_reference <- wb$worst_out_normal_excl_reference
   }
   rownames(out) <- NULL
   out[order(out$cell_id, out$output, out$input_class), , drop = FALSE]

@@ -50,6 +50,51 @@ punif_grad_ref <- function(q, p, f) {
   lapply(z, function(v) ifelse(is.nan(q), NaN, ifelse(interior, v, 0)))
 }
 
+## A stable reference for the log-scale CDF. base R's punif() forms the
+## probability and then takes its log (log(1 - t) for the upper tail), so where
+## the probability is within an ulp of 1 the log is lost: at q = 1e-100 on
+## [0, 1], upper tail, it returns 0 where the answer is log1p(-1e-100). This
+## takes the small tail directly on each side:
+##
+##   u = (q - min)/w,  v = (max - q)/w
+##   log F = log(u)      if u <= 1/2,  else log1p(-v)
+##   log S = log(v)      if v <= 1/2,  else log1p(-u)
+##
+## so near either endpoint the quantity that is small is the one computed, and
+## the cancellation base R suffers never happens. Endpoints and beyond are the
+## constants 0 / -Inf, with the >= / <= comparisons base R uses.
+##
+## This is the same branch structure as nv_punif() itself (R/api-distributions.R).
+## It is evaluated in double, 29 bits beyond an f32 result, but for f64 cells
+## it shares anvl's formula at anvl's precision -- which is why its bound is
+## checked against high precision rather than trusted.
+##
+## Error bound, declared in double ulps at the result and to be validated: w,
+## q - min and max - q each round by at most 1/2 ulp, so u and v carry at most
+## ~1.5 ulp relative error; log(u) with u <= 1/2 has |log u| >= log 2 and turns
+## that into <= ~2.2 ulp, log1p(-v) with v <= 1/2 into <= ~3 ulp, plus 1 ulp
+## for log/log1p themselves. 8 leaves margin over that ~4.
+punif_log_stable <- function(q, p, f) {
+  a <- p$min
+  b <- p$max
+  w <- b - a
+  lower <- isTRUE(f$lower_tail)
+  out <- rep(NaN, length(q))
+  lo <- !is.na(q) & q <= a
+  hi <- !is.na(q) & q >= b
+  out[lo] <- if (lower) -Inf else 0
+  out[hi] <- if (lower) 0 else -Inf
+  i <- which(!is.na(q) & !lo & !hi)
+  if (length(i)) {
+    u <- (q[i] - a) / w
+    v <- (b - q[i]) / w
+    small <- if (lower) u else v
+    other <- if (lower) v else u
+    out[i] <- ifelse(small <= 0.5, log(pmax(small, 0)), log1p(-other))
+  }
+  out
+}
+
 grad_punif <- anvl::jit(
   anvl::gradient(
     \(q, min, max, lower_tail = TRUE, log_p = FALSE) {
@@ -92,6 +137,34 @@ sweep_spec(
   ref_value = function(x, p, f) {
     punif(x, min = p$min, max = p$max, lower.tail = f$lower_tail, log.p = f$log_p)
   },
+  ref_stable = punif_log_stable,
+  ref_stable_mpfr = function(x, p, f) {
+    q <- mp_num(x)
+    a <- mp_num(p$min)
+    b <- mp_num(p$max)
+    lower <- isTRUE(f$lower_tail)
+    w <- p$max - p$min
+    out <- x
+    out[!is.nan(q) & q <= a] <- if (lower) -Inf else 0
+    out[!is.nan(q) & q >= b] <- if (lower) 0 else -Inf
+    ## the tail that is small, directly, even at 256 bits: 1 - 4e-78 is
+    ## exactly 1 there, so log(1 - u) would lose the answer just as base R does
+    i <- which(!is.nan(q) & q > a & q < b)
+    if (length(i)) {
+      u <- (x[i] - p$min) / w
+      v <- (p$max - x[i]) / w
+      small <- if (lower) u else v
+      other <- if (lower) v else u
+      half <- mp_num(small) <= 0.5
+      r <- log1p(-other)
+      if (any(half)) r[half] <- log(small[half])
+      out[i] <- r
+    }
+    out
+  },
+  ref_stable_bound_ulp64 = 8,
+  ref_stable_covers = function(f) isTRUE(f$log_p),
+  ref_stable_note = "base R takes the log of the probability, so it loses the log where the probability rounds to 1 (e.g. 0 instead of log1p(-q) near an endpoint)",
 
   grad_wrt = c("q", "min", "max"),
   grad = function(x, dtype, p, f) {
@@ -106,6 +179,30 @@ sweep_spec(
     lapply(list(q = d$q, min = d$min, max = d$max), as.double)
   },
   ref_grad = punif_grad_ref,
+  ref_grad_bound_ulp64 = 4,
+  ## The interior derivatives exactly, and punif_grad_ref's convention (0)
+  ## everywhere else.
+  ref_grad_mpfr = function(x, p, f) {
+    q <- mp_num(x)
+    a <- p$min
+    b <- p$max
+    w <- b - a
+    lower <- isTRUE(f$lower_tail)
+    z <- if (!isTRUE(f$log_p)) {
+      sg <- if (lower) -1 else 1
+      list(q = -sg / w * mp_fill(x, 1), min = sg * (b - x) / (w * w), max = sg * (x - a) / (w * w))
+    } else if (lower) {
+      list(q = 1 / (x - a), min = -(b - x) / (w * (x - a)), max = -1 / w * mp_fill(x, 1))
+    } else {
+      list(q = -1 / (b - x), min = 1 / w * mp_fill(x, 1), max = (x - a) / (w * (b - x)))
+    }
+    interior <- !is.nan(q) & q > mp_num(a) & q < mp_num(b)
+    lapply(z, function(v) {
+      v[!interior] <- 0
+      v[is.nan(q)] <- NaN
+      v
+    })
+  },
 
   ## jax.scipy.stats.uniform offers only `cdf` -- no logcdf and no survival
   ## function -- so only the lower-tail, non-log variants have a twin.

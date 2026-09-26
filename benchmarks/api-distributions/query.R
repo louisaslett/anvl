@@ -33,7 +33,7 @@ local({
   HERE <<- if (length(f)) dirname(normalizePath(f[1L])) else normalizePath(".")
 })
 here <- function() HERE
-for (f in c("util.R", "engine.R", "cells.R", "render.R", "provenance.R", "store.R")) {
+for (f in c("util.R", "engine.R", "cells.R", "render.R", "provenance.R", "store.R", "validate.R")) {
   source(file.path(HERE, "R", f))
 }
 

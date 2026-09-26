@@ -373,7 +373,16 @@ print_bands <- function(bands) {
   cat("  place where one of those genuinely changes.\n")
 }
 
-report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, points = NULL) {
+CATEGORY_LABEL <- c(
+  failure = "FAILURE",
+  backend_limitation = "backend limitation",
+  boundary = "domain boundary",
+  undefined_domain = "undefined-domain convention",
+  reference_limitation = "verified base R limitation"
+)
+
+report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, points = NULL, disputes = NULL,
+                        validations = NULL) {
   what <- if (row$kind == "value") "value" else sprintf("gradient d/d%s", res$output)
   cat(strrep("\u2500", 72), "\n", sep = "")
   cat(sprintf("%s  \u00b7  %s\n", row$spec, spec$blurb))
@@ -439,16 +448,23 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, poin
     }
   }
   if (!is.na(res$worst_x) && res$worst_rel_err > 0) {
+    ## the ulp error of *this* input; the worst ulp error over the sweep may
+    ## belong to another input, and is shown on its own line
+    here_ulp <- if (!is.null(detail) && nrow(detail)) detail$ulp_err[which.max(detail$rel_err)] else NA_real_
     cat(sprintf(
       "\n  worst   %s relative  (%s ulp)  at x = %s\n",
       fmt_num(res$worst_rel_err),
-      fmt_num(res$worst_ulp_err),
+      fmt_num(here_ulp),
       exact_num(res$worst_x)
     ))
     cat(sprintf("          %s\n", res$worst_bits))
     cat(sprintf("          anvl    %.17g\n", res$worst_value))
     cat(sprintf("          base R  %.17g\n", res$worst_reference))
+    cat(sprintf("  worst ulp error over every sample: %s\n", fmt_num(res$worst_ulp_err)))
   }
+
+  print_disputes(res, disputes)
+  print_validation(res, validations)
 
   print_bands(bands)
 
@@ -463,12 +479,7 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, poin
       ranges$cause <- ranges$class
       ranges$pairs <- ""
     }
-    lab <- c(
-      failure = "FAILURE",
-      backend_limitation = "backend limitation",
-      boundary = "domain boundary",
-      undefined_domain = "undefined-domain convention"
-    )
+    lab <- CATEGORY_LABEL
     r <- ranges[order(ranges$category != "failure"), , drop = FALSE]
     rng <- function(a, b) {
       if (is.nan(a) && is.nan(b)) {
@@ -517,6 +528,9 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, poin
         ))
       }
       if (!is.null(r$evidence) && !is.na(r$evidence[i])) cat(sprintf("  %-28s evidence: %s\n", "", r$evidence[i]))
+      if (isTRUE(r$ref_candidate[i]) && !identical(r$category[i], "reference_limitation")) {
+        cat(sprintf("  %-28s base R disputed by the stable reference (candidate: %s)\n", "", res$ref_stable_status %||% "not validated"))
+      }
     }
   }
 
@@ -553,12 +567,7 @@ print_points <- function(points) {
   if (!nrow(p)) {
     return(invisible(NULL))
   }
-  lab <- c(
-    failure = "FAILURE",
-    backend_limitation = "backend limitation",
-    boundary = "domain boundary",
-    undefined_domain = "undefined-domain convention"
-  )
+  lab <- CATEGORY_LABEL
   p <- p[order(!p$failure, p$category != "failure", -p$rel_err), , drop = FALSE]
   what <- ifelse(
     p$failure,
@@ -573,5 +582,83 @@ print_points <- function(points) {
       what[i]
     ))
     cat(sprintf("  %-30s %s  %.17g vs base R %.17g\n", "", p$bits[i], p$value[i], p$reference[i]))
+  }
+}
+
+## Candidate base R disputes, where the spec has a stable reference. Shown as
+## candidates: the figures without them sit beside the unfiltered ones, never
+## in their place, and nothing is excluded until the stable reference passes
+## validation.
+print_disputes <- function(res, disputes) {
+  if (is.null(res$n_ref_candidate) || is.na(res$n_ref_candidate)) {
+    return(invisible(NULL))
+  }
+  status <- res$ref_stable_status %||% "not validated"
+  verified <- identical(status, "validated")
+  cat(if (verified) {
+    "\nBASE R DISPUTES \u2014 verified reference limitations: the stable reference passed validation\n"
+  } else {
+    sprintf("\nBASE R DISPUTES \u2014 candidates, not exclusions: the stable reference is %s\n", status)
+  })
+  cat(sprintf("  why     %s\n", res$ref_stable_note))
+  cat(sprintf(
+    "  candidates %s  (%s with no finite error)   base R and anvl agree, both off: %s\n",
+    human_int(res$n_ref_candidate),
+    human_int(res$n_ref_candidate_nonfinite),
+    human_int(res$n_ref_shared)
+  ))
+  without <- if (verified) "excluding verified limitations" else "without candidates"
+  cat(sprintf(
+    "  worst rel err         all %-10s %s %s\n",
+    fmt_num(res$worst_rel_err),
+    without,
+    fmt_num(res$worst_rel_err_excl)
+  ))
+  cat(sprintf(
+    "  normal outputs        all %-10s %s %s\n",
+    fmt_num(res$worst_out_normal),
+    without,
+    fmt_num(res$worst_out_normal_excl)
+  ))
+  if (is.null(disputes) || !nrow(disputes)) {
+    return(invisible(NULL))
+  }
+  for (kind in c("candidate", "shared")) {
+    d <- disputes[disputes$kind == kind, , drop = FALSE]
+    if (!nrow(d)) next
+    d <- utils::head(d[order(-d$beyond_tolerance), , drop = FALSE], 3L)
+    cat(sprintf("  e.g. (%s)\n", kind))
+    for (i in seq_len(nrow(d))) {
+      cat(sprintf(
+        "    x = %-24s %s\n      anvl %.17g  base R %.17g  stable %.17g\n      |anvl - s| %s <= %s   |base R - s| %s vs %s\n",
+        exact_num(d$x[i]), d$bits[i], d$value[i], d$reference[i], d$stable[i],
+        fmt_num(d$d_anvl[i]), fmt_num(d$t_anvl[i]), fmt_num(d$d_base[i]), fmt_num(d$t_base[i])
+      ))
+    }
+  }
+}
+
+## The latest validation of each reference this result was scored with or
+## disputed by, as recorded: what was checked, how, and what it found.
+print_validation <- function(res, validations) {
+  ids <- c(stable = res$ref_stable_id %||% NA, gradient = res$ref_grad_id %||% NA)
+  st <- c(stable = res$ref_stable_status %||% NA, gradient = res$ref_grad_status %||% NA)
+  if (all(is.na(st))) {
+    return(invisible(NULL))
+  }
+  cat("\nREFERENCE VALIDATION against high precision\n")
+  for (k in names(st)[!is.na(st)]) {
+    v <- if (is.null(validations)) NULL else validations[validations$reference == k & validations$ref_id %in% ids[[k]] &
+      (k == "stable" | validations$output == res$output), , drop = FALSE]
+    cat(sprintf("  %-8s %s\n", k, st[[k]]))
+    if (is.null(v) || !nrow(v)) next
+    last <- v[which.max(as.POSIXct(v$validated_at, format = "%Y-%m-%dT%H:%M:%S%z")), ]
+    older <- nrow(v) - sum(v$truth_id == last$truth_id)
+    cat(sprintf(
+      "           %s at %d bits, %s samples: max %s ulp against a bound of %s%s\n",
+      last$validated_at, last$precision, human_int(last$n_samples), fmt_num(last$max_err_ulp64),
+      last$bound_ulp64, if (nzchar(last$reason %||% "")) paste0("\n           ", last$reason) else ""
+    ))
+    if (older > 0) cat(sprintf("           (%d earlier validation(s) under a superseded truth)\n", older))
   }
 }

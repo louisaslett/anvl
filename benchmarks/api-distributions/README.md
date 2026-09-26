@@ -327,6 +327,159 @@ zero). Their error magnitudes stay in the histogram and worst inputs.
 
 This is measurement, not judgement: it says what the numbers are and why.
 
+### When base R is the weaker side: candidate disputes
+
+`punif(1e-100, 0, 1, lower.tail = FALSE, log.p = TRUE)` is 0; the answer is
+`log1p(-1e-100)` = −1e−100, which anvl returns. Every figure above stays
+against base R regardless — nothing replaces it. A spec may additionally
+declare a **stable reference** (`ref_stable`), an accurate evaluation of the
+same function with the same parameters, and each sample is then tested
+against it. A sample is a **candidate base R dispute** only when all three
+hold, with *s* the stable value and *B* its declared error bound in absolute
+units (`ref_stable_bound_ulp64` double ulps at *s*):
+
+| condition | test |
+|---|---|
+| base R is off | \|g − s\| > 4 ulp_f64(s) + B |
+| anvl is accurate | \|f − s\| ≤ 2 ulp_dtype(s) + B |
+| anvl is no further | \|f − s\| ≤ \|g − s\| |
+
+Where no ulp comparison is meaningful — *s* is ±0 or ±∞, or beyond the f32
+range in an f32 cell — anvl must equal *s* at the cell's precision, sign of
+zero included, and base R must not. A NaN on any side is never a dispute. The
+multipliers are provisional thresholds for exclusion, not accuracy criteria:
+failing them only leaves a sample counted against base R. The same test
+records the opposite case too — anvl and base R returning the same value,
+both beyond anvl's tolerance (`n_ref_shared`) — which a comparison against
+base R alone can never see.
+
+**A candidate is not an exclusion.** The sweep records, beside the unfiltered
+figures and never in their place: candidate counts, the worst error without
+candidates (`worst_rel_err_excl`, `worst_out_normal_excl`, per band, class and
+result), a histogram column, a `ref_candidate` flag on regions and exact points
+(their cause and category are left alone), and a `disputes` table keeping, per
+binade, the samples furthest beyond tolerance with all three values, both
+distances and both thresholds. Candidates become exclusions only once the
+stable reference passes validation against high precision under a matching
+identity, and until then no screen excludes anything. The `ref_stable_id` on
+each result hashes the code that decides candidacy as it actually runs: the
+stable reference, the classifier and the spacing function, each followed
+recursively through every function it calls and every value it reads that is
+not base R's (so a change to `same_value()`, to `DISPUTE_K`, or to a constant
+captured in the stable reference's closure changes it), packages by version;
+plus the declared bound, the exact reference parameters, the flags, the dtype,
+the parameter policy and the R build. Each result also carries `ref_params`,
+the exact parameters its reference received as hex doubles, so a later
+validation reproduces them without re-running the sweep and without trusting
+that a parameter-set name still means the same values. A stable reference is checked, not trusted: `nv_punif`'s
+takes the small tail directly on each side, which is anvl's own algorithm, so
+in f64 only the high-precision validation makes it independent evidence.
+
+It costs ~60% more on a covered cell, ~2% on a full run, since only
+`nv_punif`'s log-scale value cells declare one.
+
+### `validate-refs` — checking the references against high precision
+
+```bash
+Rscript run.R validate-refs                      # every result in the store
+Rscript run.R validate-refs --filter spec=nv_punif --prec 512
+```
+
+It needs Rmpfr, and nothing else does: run it wherever Rmpfr is installed,
+after the sweep, without re-running it. For every result with a stable
+reference (the evidence in a base R dispute) or a gradient reference (what
+every gradient is scored against), it:
+
+1. **re-derives the reference's identity** from the current code and the exact
+   parameters the sweep stored (`ref_params`, hex). If that is not the identity
+   the sweep recorded — the reference, anything it calls, its bound or its
+   parameters changed — it fails without evaluating anything. A reference or a
+   truth that cannot be identified — it calls `get()`, `do.call()`, `eval()` or
+   similar however qualified (`base::get` is `get`), or names a function by a
+   string to `sapply()` and friends, none of which a reading of the code can
+   follow — can never pass; a truth without an identity fails before it is
+   evaluated;
+2. **samples** the result's exact points, its retained disputes, the two worst
+   retained inputs of each binade, every earlier failing sample for the same
+   cell and output (whatever the reference or truth version, so a change must
+   revisit the known counterexamples), `--per-binade` random inputs (default 1) in every exponent
+   field of both signs, `--focus-per-binade` more (default 8) in every binade
+   holding a dispute (stable) or an error within 1e3 of the result's worst
+   (gradient), and `--random` (default 512)
+   uniform over all bit patterns — deterministically seeded per cell;
+3. **compares** each with the spec's MPFR truth (`ref_stable_mpfr`,
+   `ref_grad_mpfr`) at `--prec` bits (default 256), in double ulps at the
+   truth, **with the difference, the division and the comparison with the bound
+   all in MPFR** — converting the difference to a double first loses every
+   fraction of a subnormal ulp (4.49 became 4, and passed a bound of 4). An
+   exactly-zero truth needs a zero reference, and a NaN, infinite, or
+   out-of-range-once-rounded truth an identical one. It passes only if no
+   sample exceeds the declared bound — which is never raised afterwards;
+4. **records** each validation in the store (`validations`: identity, truth
+   identity, precision, seed, how samples were chosen, how many, the worst
+   error and where, pass/fail and why; `validation_samples`: the worst samples
+   and every failing one), and exports both beside the results they justify.
+   Each record carries the **truth's identity** — the spec's own MPFR function
+   and everything it calls, with the output selected recorded separately;
+   nothing about the run — and the **validation method's identity** (the
+   sampler, the comparator and the procedure). Validations by any other method
+   count for nothing, so a change to how validation is done voids every earlier
+   record rather than inheriting its verdicts.
+
+A sampled validation is evidence, not a proof of a global bound, and is
+recorded as such. Each truth mirrors its reference's conventions (endpoint
+values, out-of-domain zeros) and differs only in evaluating the mathematics
+exactly — which takes the same care as the reference: at 256 bits
+1 − 4e−78 is exactly 1, so a truth written as log(1 − u) loses the answer just
+as base R does, and the truths use the small-tail forms (`log1p`, `expm1`,
+log Φ as `log1p(−Q)` for positive z). The normal family's deep tails use a
+continued fraction and a log-space log Φ, since MPFR's own `exp()` underflows
+at |z| ≈ 4e6.
+
+**The status of a reference identity fails closed:** *validated* only if a
+validation of exactly that identity passed and none failed; *failed* if any
+did — a later pass does not undo it; otherwise *not validated*, or *no
+identity*. It is judged against the most recent MPFR truth used for that
+identity: a validation is evidence about the pair (reference, truth), so once
+the truth's own code changes, older validations are superseded — kept, and
+counted as such in `report`.
+
+**Only then are candidates excluded.** A candidate dispute whose result's
+stable reference is *validated* becomes a **verified base R limitation**
+(category `reference_limitation`), at resolution time and in every reader
+alike. Its figures against base R are unchanged; the worst error with the
+limitations set aside is shown beside them, `status` lists these results in a
+section of their own, and a result differing only by conventions and verified
+limitations is counted on its own line. Every other candidate stays exactly
+what the sweep recorded. A gradient reference's status gates nothing, but
+`status` shows how many are validated, failed or unchecked, and `report`
+shows each one's latest validation.
+
+### The gradient references are checked too
+
+A gradient's reference is an analytic formula written here, not base R, and
+being analytic does not make its floating-point evaluation trustworthy. The
+normal family's are built to avoid the ways the obvious evaluation fails:
+
+- `z = (x - mean)/sd` is carried as a double-double (`std_z()`), because a
+  rounded z costs `exp(-z^2/2)` about z² ulp — 85 ulp at z ≈ 8 on the shifted
+  parameters — and anvl and base R round z the same way, so a reference that
+  did too would share their error instead of measuring it;
+- `m · φ(z)` and `m / φ(z)` go through `phi_times()` / `phi_recip()`, which
+  split z so its square is exact and scale so nothing under- or overflows
+  before the answer does: φ underflows at |z| ≈ 37.5 while `(z² − 1)φ(z)` is
+  still 1.7e−321 at z = 38.6, and for huge z the bracket overflows while the
+  answer is 0;
+- `(z² − 1)/sd` as `(z − 1) · ((z + 1)/sd)`, finite where z² overflows;
+- the inverse Mills ratio as a direct ratio above z = −20 and a continued
+  fraction below, not a difference of two logs of ~−z²/2.
+
+Checked against 256-bit MPFR on ~8,700 inputs per output across both
+parameter sets (both tails, the underflow region, ±∞, up to 1e200), every
+normal-family gradient reference is within 8 f64 ulp; the remainder is mostly
+base R's own `pnorm` (up to 4 ulp) inside the log-scale ones. `selftest`
+pins the cases that used to be 0, NaN or Inf to their MPFR values.
+
 ### Exact points, beside every sweep
 
 The f64 sweep draws its low 32 bits at random, so it essentially never lands on
@@ -364,7 +517,8 @@ the sweep and the points together. A result is called **bit-identical** only if
 every sampled input and every exact point matches base R down to the sign of
 zero; results that differ *only* by undefined-domain conventions are counted on
 a line of their own, as set aside. `diff` compares every one of these counts,
-not just the worst error.
+not just the worst error. Candidate base R disputes are counted on a line of
+their own and excluded from nothing.
 
 ### The reference sees the parameters the implementation sees
 
@@ -571,6 +725,10 @@ sweep_spec(
 
   value     = function(x, dtype, p, f) as.double(anvl::nv_dnorm(...)),
   ref_value = function(x, p, f) dnorm(x, p$mean, p$sd, log = f$log),
+  ref_stable = function(x, p, f) ...,                # optional; see "base R disputes"
+  ref_stable_bound_ulp64 = 8,                        #   its error bound, double ulps
+  ref_stable_note = "why base R is weaker here",     #   required with ref_stable
+  ref_stable_covers = function(f) isTRUE(f$log_p),   #   optional; which flags
 
   grad_wrt  = c("x", "mean", "sd"),
   grad      = function(x, dtype, p, f) list(x = ..., mean = ..., sd = ...),

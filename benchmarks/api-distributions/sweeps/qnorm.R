@@ -17,25 +17,32 @@ source(file.path(here(), "sweeps", "_normal.R"), local = TRUE)
 ##   d/dp  sd * dz/dp      d/dmean  1      d/dsd  z
 ##
 ## and dz/dp is the reciprocal of the density at z, negated for the upper tail
-## and multiplied by p itself on the log scale. Both reciprocals are formed as
-## a single exp() of a difference of logs rather than as a division: in the far
-## tail the density underflows while the reciprocal is merely large, and a
-## division would return Inf where the true value is finite.
+## and multiplied by p itself on the log scale. On the probability scale the
+## reciprocal goes through phi_recip() (_normal.R): a plain division returns
+## Inf once the density underflows although the reciprocal is still finite,
+## and exp(-log phi) turns the rounding of a log of ~-450 into ~5e-14 relative
+## error.
 qnorm_grad_ref <- function(pr, p, f) {
   lower <- isTRUE(f$lower_tail)
-  z <- suppressWarnings(qnorm(pr, 0, 1, lower.tail = lower, log.p = f$log_p))
   s <- if (lower) 1 else -1
-  ## dz/dp is 1/phi(z); on the log scale it is p/phi(z), which is exactly the
-  ## reciprocal of the inverse Mills ratio and must be formed that way -- the
-  ## naive exp(log p - log phi) cancels in the far tail for the same reason it
-  ## does in pnorm. See inv_mills() in _normal.R.
-  dzdp <- if (isTRUE(f$log_p)) {
-    s / inv_mills(s * z)
+  ## the quantile as hi + lo: base R's qnorm() is a few ulp out, which the
+  ## derivative multiplies by |z| (see std_q() in _normal.R)
+  q <- std_q(pr, lower, isTRUE(f$log_p))
+  z <- q$hi
+  zl <- q$lo
+  ## dz/dp is 1/phi(z); on the log scale it is p/phi(z), the reciprocal of
+  ## the inverse Mills ratio, never exp(log p - log phi), which cancels in the
+  ## far tail. m(z + lo) = m(z) (1 - (z + m) lo) from m' = -m (z + m).
+  d_p <- if (isTRUE(f$log_p)) {
+    zs <- s * z
+    ls <- s * zl
+    m0 <- inv_mills(zs)
+    p$sd * s / ifelse(ls == 0, m0, m0 * (1 - (zs + m0) * ls))
   } else {
-    s * exp(-dnorm(z, log = TRUE))
+    phi_recip(z, rep(s * p$sd, length(z)), zl)
   }
   in_range <- if (isTRUE(f$log_p)) !is.nan(pr) & pr <= 0 else !is.nan(pr) & pr >= 0 & pr <= 1
-  z0 <- list(p = p$sd * dzdp, mean = rep(1, length(pr)), sd = z)
+  z0 <- list(p = d_p, mean = rep(1, length(pr)), sd = z + zl)
   lapply(z0, function(v) ifelse(is.nan(pr), NaN, ifelse(in_range, v, 0)))
 }
 
@@ -95,6 +102,21 @@ sweep_spec(
     lapply(list(p = d$p, mean = d$mean, sd = d$sd), as.double)
   },
   ref_grad = qnorm_grad_ref,
+  ref_grad_bound_ulp64 = 16,
+  ref_grad_mpfr = function(x, p, f) {
+    pr <- mp_num(x) # exact: x came from a double
+    lower <- isTRUE(f$lower_tail)
+    s <- if (lower) 1 else -1
+    z <- mp_qnorm(pr, lower, isTRUE(f$log_p), mp_prec(x))
+    d_p <- if (isTRUE(f$log_p)) p$sd * s / mp_imills(s * z) else p$sd * s / mp_phi(z)
+    in_range <- if (isTRUE(f$log_p)) !is.nan(pr) & pr <= 0 else !is.nan(pr) & pr >= 0 & pr <= 1
+    out <- list(p = d_p, mean = mp_fill(x, 1), sd = z)
+    lapply(out, function(v) {
+      v[!in_range & !is.nan(pr)] <- 0
+      v[is.nan(pr)] <- NaN
+      v
+    })
+  },
 
   ## jax.scipy.stats.norm has ppf (lower tail) and isf (upper tail), both on
   ## the probability scale only -- there is no log_p quantile anywhere in JAX,

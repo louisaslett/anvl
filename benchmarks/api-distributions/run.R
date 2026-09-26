@@ -7,6 +7,7 @@
 ##   Rscript run.R run --filter spec=nv_punif,dtype=f64 --depth full
 ##   Rscript run.R status                     what has run, where, and what fails
 ##   Rscript run.R selftest                   prove the engine still detects errors
+##   Rscript run.R validate-refs              check the references against MPFR
 ##   Rscript run.R merge --from <dir>         fold another machine's store in
 ##
 ## Everything it writes goes to the store (NV_SWEEP_STORE), never into the
@@ -25,7 +26,7 @@ suppressWarnings(suppressMessages({
 }))
 here <- function() HERE
 
-for (f in c("util.R", "engine.R", "cells.R", "render.R", "provenance.R", "store.R")) {
+for (f in c("util.R", "engine.R", "cells.R", "render.R", "provenance.R", "store.R", "validate.R")) {
   source(file.path(HERE, "R", f))
 }
 
@@ -56,7 +57,14 @@ parse_args <- function(argv) {
     ## How many full report pages to print before summarising instead. Four is
     ## about what fits on a screen at a glance.
     pages = 4L,
-    quiet = FALSE
+    quiet = FALSE,
+    ## validate-refs: MPFR precision, random samples per binade, extra samples
+    ## per binade of interest, uniform random samples, and one run only
+    prec = NULL,
+    per_binade = NULL,
+    focus_per_binade = NULL,
+    random = NULL,
+    run = NULL
   )
   i <- 1L
   while (i <= length(argv)) {
@@ -104,6 +112,26 @@ parse_args <- function(argv) {
       },
       shards = {
         o$shards <- as.integer(val())
+        i <- i + 1L
+      },
+      prec = {
+        o$prec <- as.integer(val())
+        i <- i + 1L
+      },
+      `per-binade` = {
+        o$per_binade <- as.integer(val())
+        i <- i + 1L
+      },
+      `focus-per-binade` = {
+        o$focus_per_binade <- as.integer(val())
+        i <- i + 1L
+      },
+      random = {
+        o$random <- as.integer(val())
+        i <- i + 1L
+      },
+      run = {
+        o$run <- val()
         i <- i + 1L
       },
       backends = {
@@ -159,9 +187,22 @@ cell_functions <- function(spec, row) {
 
   if (row$kind == "value") {
     fn <- if (row$backend == "jax") spec$jax_value else spec$value
+    ## A stable reference, where the spec declares one for these flags: it
+    ## sees exactly the parameters base R sees, and never replaces it.
+    stable <- if (!is.null(spec$ref_stable) &&
+      (is.null(spec$ref_stable_covers) || isTRUE(spec$ref_stable_covers(flags)))) {
+      list(
+        fun = function(x) list(value = spec$ref_stable(x, rparams, flags)),
+        outputs = "value",
+        bound_ulp64 = spec$ref_stable_bound_ulp64,
+        id = stable_identity(spec$ref_stable, spec$ref_stable_bound_ulp64, rparams, flags, row$dtype),
+        note = spec$ref_stable_note %||% NA_character_
+      )
+    }
     list(
       fun = function(x) list(value = fn(x, row$dtype, params, flags)),
       ref = function(x) list(value = spec$ref_value(x, rparams, flags)),
+      stable = stable,
       outputs = "value",
       params = params,
       ref_params = rparams,
@@ -172,6 +213,7 @@ cell_functions <- function(spec, row) {
     list(
       fun = function(x) fn(x, row$dtype, params, flags),
       ref = function(x) spec$ref_grad(x, rparams, flags),
+      ref_id = grad_identity(spec$ref_grad, spec$ref_grad_bound_ulp64, rparams, flags, row$dtype),
       outputs = spec$grad_wrt,
       params = params,
       ref_params = rparams,
@@ -197,7 +239,7 @@ run_cell <- function(spec, row, opt, pv, dir) {
   t0 <- Sys.time()
   out <- tryCatch(
     {
-      pr <- run_points(cf$fun, cf$ref, row$dtype, cf$outputs, pts, domain)
+      pr <- run_points(cf$fun, cf$ref, row$dtype, cf$outputs, pts, domain, stable = cf$stable)
       sw <- run_sweep(
         cf$fun,
         cf$ref,
@@ -207,7 +249,8 @@ run_cell <- function(spec, row, opt, pv, dir) {
         progress = !opt$quiet,
         topk = opt$topk,
         domain = domain,
-        ctx = attr(pr, "context")
+        ctx = attr(pr, "context"),
+        stable = cf$stable
       )
       attr(pr, "context") <- NULL
       attr(sw, "points") <- pr
@@ -236,11 +279,24 @@ run_cell <- function(spec, row, opt, pv, dir) {
         n_out_normal = NA_real_,
         n_out_normal_identical = NA_real_,
         worst_out_normal = NA_real_,
+        n_ref_candidate = NA_real_,
+        n_ref_candidate_nonfinite = NA_real_,
+        n_ref_shared = NA_real_,
+        worst_rel_err_excl = NA_real_,
+        worst_out_normal_excl = NA_real_,
+        ref_stable_id = NA_character_,
+        ref_stable_bound_ulp64 = NA_real_,
+        ref_params = NA_character_,
+        ref_stable_unsupported = NA_character_,
+        ref_grad_id = NA_character_,
+        ref_grad_unsupported = NA_character_,
+        ref_stable_note = NA_character_,
         n_inf_runs = NA_integer_,
         n_runs_unclassified = 0L,
         n_regions_backend = 0L,
         n_regions_boundary = 0L,
         n_regions_domain = 0L,
+        n_regions_ref_candidate = 0L,
         n_failing_failure = 0,
         n_failing_backend = 0,
         n_failing_boundary = 0,
@@ -283,6 +339,15 @@ run_cell <- function(spec, row, opt, pv, dir) {
         pv$run_id,
         paste0(key, "-", o),
         cbind(data.frame(run_id = pv$run_id, cell_id = row$cell_id, output = o), r$kinds)
+      )
+    }
+    if (!is.null(r$disputes) && nrow(r$disputes)) {
+      store_write(
+        dir,
+        "disputes",
+        pv$run_id,
+        paste0(key, "-", o),
+        cbind(data.frame(run_id = pv$run_id, cell_id = row$cell_id, output = o), r$disputes)
       )
     }
     if (nrow(r$ranges)) {
@@ -346,12 +411,35 @@ run_cell <- function(spec, row, opt, pv, dir) {
         n_out_normal = r$summary$n_out_normal,
         n_out_normal_identical = r$summary$n_out_normal_identical,
         worst_out_normal = r$summary$worst_out_normal,
+        n_ref_candidate = r$summary$n_ref_candidate,
+        n_ref_candidate_nonfinite = r$summary$n_ref_candidate_nonfinite,
+        n_ref_shared = r$summary$n_ref_shared,
+        worst_rel_err_excl = r$summary$worst_rel_err_excl,
+        worst_out_normal_excl = r$summary$worst_out_normal_excl,
+        ## what a validation must match before any candidate is excluded
+        ref_stable_id = if (!is.null(cf$stable) && o %in% cf$stable$outputs) as.character(cf$stable$id) else NA_character_,
+        ref_stable_bound_ulp64 = if (!is.null(cf$stable) && o %in% cf$stable$outputs) cf$stable$bound_ulp64 else NA_real_,
+        ref_stable_note = if (!is.null(cf$stable) && o %in% cf$stable$outputs) cf$stable$note else NA_character_,
+        ## the exact parameters the reference received, as hex doubles, so a
+        ## later validation (or anyone) can reproduce them without re-running
+        ## and without trusting that a parameter-set name still means the same
+        ref_params = hex_params(cf$ref_params),
+        ## why a stable or gradient reference has no identity, if it has none:
+        ## such a reference can never be validated
+        ref_stable_unsupported = if (!is.null(cf$stable) && o %in% cf$stable$outputs) {
+          attr(cf$stable$id, "unsupported") %||% NA_character_
+        } else {
+          NA_character_
+        },
+        ref_grad_id = if (row$kind == "grad") as.character(cf$ref_id) else NA_character_,
+        ref_grad_unsupported = if (row$kind == "grad") attr(cf$ref_id, "unsupported") %||% NA_character_ else NA_character_,
         n_inf_runs = r$summary$n_inf_runs,
         ## regions whose category is "failure" -- the name predates categories
         n_runs_unclassified = rs$n_runs_unclassified,
         n_regions_backend = rs$n_regions_backend,
         n_regions_boundary = rs$n_regions_boundary,
         n_regions_domain = rs$n_regions_domain,
+        n_regions_ref_candidate = rs$n_regions_ref_candidate,
         n_failing_failure = rs$n_failing_failure,
         n_failing_backend = rs$n_failing_backend,
         n_failing_boundary = rs$n_failing_boundary,
@@ -620,6 +708,24 @@ cmd_status <- function(opt) {
     ),
     show_counts("n_regions_backend", "n_points_backend")
   )
+  section(
+    res[st$reference, , drop = FALSE],
+    sprintf("VERIFIED BASE R LIMITATIONS (%d)", sum(st$reference)),
+    paste0(
+      "Candidate disputes whose stable reference passed validation: base R is off,\n",
+      "anvl is accurate, both against a reference checked at high precision. Set\n",
+      "aside, and shown; the figures against base R are unchanged."
+    ),
+    function(r, i) {
+      sprintf(
+        "%s samples, %d exact point(s); worst rel %s -> %s set aside",
+        human_int(r$n_ref_candidate[i]),
+        as.integer(r$n_points_ref_candidate[i] %||% 0),
+        fmt_num(r$worst_any[i]),
+        fmt_num(result_state(r[i, , drop = FALSE])$worst_any_set_aside)
+      )
+    }
+  )
   f <- res[!st$failing & st$worst_any > 0, , drop = FALSE]
   section(
     f,
@@ -636,14 +742,48 @@ cmd_status <- function(opt) {
     sum(st$identical),
     nrow(res)
   ))
+  more <- st$identical_but_set_aside & !st$identical_but_conventions
+  if (any(more)) {
+    cat(sprintf(
+      "  %d more differ only by verified base R limitations (and conventions), set aside.\n",
+      sum(more)
+    ))
+  }
   if (any(st$identical_but_conventions)) {
     cat(sprintf(
       "  %d more differ only by undefined-domain conventions, which are set aside.\n",
       sum(st$identical_but_conventions)
     ))
   }
+  nc <- sum((res$n_ref_candidate %||% 0) > 0 & !st$reference, na.rm = TRUE)
+  if (nc) {
+    cat(sprintf(
+      "  %d result(s) have candidate base R disputes whose stable reference is not\n  validated or failed validation; none of those is excluded (see report).\n",
+      nc
+    ))
+  }
+
   nz <- sum(res$n_zero_sign > 0 | (res$n_points_zero_sign %||% 0) > 0, na.rm = TRUE)
   if (nz) cat(sprintf("  %d result(s) return a zero of the opposite sign somewhere.\n", nz))
+  ## ---- the references themselves ----------------------------------------
+  rule("REFERENCES")
+  cat("Each reference against 256-bit MPFR (Rscript run.R validate-refs). A failed or\n")
+  cat("unvalidated stable reference excludes nothing; a gradient reference that is\n")
+  cat("not validated is still used, and its figures are only as good as it is.\n\n")
+  tally <- function(v) {
+    v <- v[!is.na(v)]
+    if (!length(v)) return("none")
+    t <- table(factor(v, levels = c("validated", "failed", "not validated", "no identity")))
+    paste(sprintf("%d %s", t[t > 0], names(t)[t > 0]), collapse = ", ")
+  }
+  cat(sprintf("  stable references    %s\n", tally(res$ref_stable_status)))
+  cat(sprintf("  gradient references  %s\n", tally(res$ref_grad_status)))
+  bad <- res[(res$ref_stable_status %in% c("failed", "no identity")) | (res$ref_grad_status %in% c("failed", "no identity")), , drop = FALSE]
+  for (i in seq_len(min(nrow(bad), 10L))) {
+    cat(sprintf("    %-8s %s %s\n", if (bad$ref_stable_status[i] %in% c("failed", "no identity")) bad$ref_stable_status[i] else bad$ref_grad_status[i],
+      bad$cell_id[i], if (bad$output[i] != "value") paste0("d/d", bad$output[i]) else ""))
+  }
+  if (nrow(bad) > 10L) cat(sprintf("    ... and %d more.\n", nrow(bad) - 10L))
 
   ## ---- what to do next -----------------------------------------------------
   rule("NEXT")
@@ -681,6 +821,8 @@ cmd_report <- function(opt) {
   detail <- store_read(dir, "detail")
   ranges <- resolved_ranges(dir)
   points <- resolved_points(dir)
+  disputes <- store_read(dir, "disputes")
+  validations <- store_read(dir, "validations")
   hist <- store_read(dir, "hist")
   bands <- store_read(dir, "bands")
   key <- function(tbl, r) {
@@ -725,7 +867,9 @@ cmd_report <- function(opt) {
       key(ranges, r),
       key(hist, r),
       key(bands, r),
-      key(points, r)
+      key(points, r),
+      key(disputes, r),
+      validations
     )
   }
   cat(sprintf("%d cell result(s).\n", nrow(res)))
@@ -761,6 +905,8 @@ cmd_browse <- function(opt) {
   detail <- store_read(dir, "detail")
   ranges <- resolved_ranges(dir)
   points <- resolved_points(dir)
+  disputes <- store_read(dir, "disputes")
+  validations <- store_read(dir, "validations")
   hist <- store_read(dir, "hist")
   bands <- store_read(dir, "bands")
   keyf <- function(tbl, r) {
@@ -811,7 +957,9 @@ cmd_browse <- function(opt) {
         keyf(ranges, leaf),
         keyf(hist, leaf),
         keyf(bands, leaf),
-        keyf(points, leaf)
+        keyf(points, leaf),
+        keyf(disputes, leaf),
+        validations
       )
 
       ## The store keeps the worst 1000 inputs; `d` walks through them.
@@ -1085,7 +1233,7 @@ cmd_selftest <- function(opt) {
     check("every cell stored its exact points, +-0 among them",
       nrow(pts) > 0 && all(tapply(pts$x %in% 0, paste(pts$cell_id, pts$output), sum) == 2)),
     check("the clean selftest cells pass every exact point",
-      !any(pts$failure[grepl("broken=FALSE", pts$cell_id) & !grepl("/pinhole/", pts$cell_id)])),
+      !any(pts$failure[grepl("broken=FALSE", pts$cell_id) & !grepl("/(pinhole|weakref)/", pts$cell_id)])),
     check("the f32 break at +Inf is recorded as an infinite-input failure, returning 0 against Inf", {
       r <- rng[rng$cell_id == sprintf("selftest/anvl/f32/value/clean/broken=TRUE"), , drop = FALSE]
       nrow(r) == 1 && r$cause == "inf_input" && r$category == "failure" && grepl("+0 vs +inf", r$pairs, fixed = TRUE)
@@ -1161,8 +1309,267 @@ cmd_selftest <- function(opt) {
     })
   )
 
+  ## Base R disputes: each of the three conditions, and the exact rules.
+  cat("\nbase R disputes:\n")
+  df <- function(f, g, st, dtype = "f64", b = 0) dispute_facts(f, g, st, dtype, b)
+  u32 <- 2^-23
+  dp <- c(
+    check("the ulp spacing just below a power of two is that binade's, not the next",
+      all(ulp_size(2^(-3:3) * (1 - 2^-53), "f64") == 2^((-3:3) - 53)) && is.nan(ulp_size(Inf, "f64"))),
+    check("the f32 spacing derived from the f64 one matches ulp_size(, \"f32\") everywhere", {
+      v <- c(10^seq(-50, 38, length.out = 4001), 2^(-150:127), 2^(-150:127) * (1 - 2^-53), 1e-46)
+      identical(pmax(ulp_size(v, "f64") * 2^29, SUBNORMAL_MIN[["f32"]]), ulp_size(v, "f32"))
+    }),
+    check("base R 0 where log1p(-1e-100) = -1e-100 and anvl has it: a candidate",
+      df(-1e-100, 0, -1e-100)$candidate),
+    check("anvl and base R equally wrong is never a candidate, and is recorded as shared", {
+      d <- df(0, 0, -1e-100); !d$candidate && d$shared
+    }),
+    check("anvl beyond its tolerance is not a candidate, however wrong base R is",
+      !df(as_f32(1 + 3 * u32), 5, 1, "f32")$candidate),
+    check("anvl within tolerance but further than base R is not a candidate",
+      !df(as_f32(1 + u32), 1 + 1e-12, 1, "f32")$candidate && df(as_f32(1 + u32), 1 + 1e-6, 1, "f32")$candidate),
+    check("NaN on any side is never a dispute",
+      !any(df(c(NaN, 1, 1), c(1, NaN, 2), c(1, 1, NaN))$candidate)),
+    check("a stable +-Inf or +-0 needs anvl to match exactly, down to the sign", {
+      d <- df(c(Inf, NEG_ZERO, 0), c(1e300, 1, 1), c(Inf, 0, 0)); identical(d$candidate, c(TRUE, FALSE, TRUE))
+    }),
+    check("an f32 cell's stable value beyond the f32 range needs anvl to be its rounding, +-Inf", {
+      d <- df(c(Inf, as_f32(3.4e38), Inf), c(0, 0, 1e39), c(1e39, 1e39, 1e39), "f32")
+      identical(d$candidate, c(TRUE, FALSE, FALSE))
+    }),
+    check("the stable reference's identity changes with its bound", {
+      f <- function(x, p, fl) abs(x); stable_identity(f, 1) != stable_identity(f, 2)
+    }),
+    {
+      wr <- one(sprintf(p, "f64", "value", "weakref", "FALSE"))
+      check("a sweep records a wrong reference as candidates, with the filtered figures beside",
+        nrow(wr) == 1 && wr$n_ref_candidate > 0 && wr$n_ref_candidate_nonfinite > 0 &&
+          wr$worst_rel_err > 0 && wr$worst_rel_err_excl == 0 && !is.na(wr$ref_stable_id) &&
+          wr$n_ref_shared == 0)
+    },
+    check("... and flags its no-finite-error region as a candidate, leaving its category alone", {
+      r <- rng[grepl("/f64/value/weakref/broken=FALSE", rng$cell_id), , drop = FALSE]
+      nrow(r) > 0 && all(r$ref_candidate) && all(r$category == "failure")
+    }),
+    check("... and keeps the evidence for each candidate: all three values and both distances", {
+      d <- store_read(store_dir(opt$store), "disputes")
+      d <- d[d$run_id == run_id & grepl("/f64/value/weakref/broken=FALSE", d$cell_id), , drop = FALSE]
+      nrow(d) > 0 && all(d$kind == "candidate") && all(d$d_anvl <= d$t_anvl) && all(d$d_base > d$t_base) &&
+        all(d$beyond_tolerance > 1)
+    }),
+    check("a candidate is an exclusion only under a validated stable reference; failed or absent keeps it", {
+      r <- rng[grepl("/f64/value/weakref/broken=FALSE", rng$cell_id), , drop = FALSE]
+      at <- function(status) {
+        res1 <- data.frame(run_id = r$run_id[1], cell_id = r$cell_id[1], output = "value", ref_stable_status = status)
+        apply_reference_validation(r, res1)$category
+      }
+      all(at("not validated") == "failure") && all(at("failed") == "failure") &&
+        all(at(NA_character_) == "failure") && all(at("validated") == "reference_limitation")
+    }),
+    check("validation status fails closed: any failure of the latest truth wins, a changed truth supersedes", {
+      v <- function(truth, pass, t) data.frame(reference = "stable", ref_id = "A", output = "value", truth_id = truth,
+        pass = pass, identity_matches = TRUE, validated_at = sprintf("2026-09-26T10:%02d:00+0000", t),
+        method_id = validation_method_id())
+      st <- function(...) reference_status("A", NA, "stable", rbind(...))
+      st(v("t1", TRUE, 1)) == "validated" && st(v("t1", TRUE, 1), v("t1", FALSE, 2)) == "failed" &&
+        st(v("t1", FALSE, 1), v("t1", TRUE, 2)) == "failed" && st(v("t1", FALSE, 1), v("t2", TRUE, 2)) == "validated" &&
+        reference_status(NA, "uses get()", "stable", v("t1", TRUE, 1)) == "no identity" &&
+        reference_status("B", NA, "stable", v("t1", TRUE, 1)) == "not validated" &&
+        st(data.frame(reference = "stable", ref_id = "A", output = "value", truth_id = "t1", pass = TRUE,
+          identity_matches = FALSE, validated_at = "2026-09-26T10:00:00+0000",
+          method_id = validation_method_id())) == "not validated"
+    }),
+    check("cells without a stable reference have no candidate figures, not copies",
+      all(is.na(lr$worst_rel_err_excl[lr$kind == "grad"])))
+  )
+
+  ## What a stage-two validation relies on, and two measurement reductions.
+  cat("\nidentity, parameters and reductions:\n")
+  pp <- list(min = -pi, max = 2 * pi)
+  fl <- list(log_p = TRUE)
+  cl <- local({
+    c0 <- 1
+    function(x, p, f) x * c0
+  })
+  id0 <- stable_identity(cl, 8, pp, fl, "f64")
+  sv <- same_value
+  assign("same_value", function(a, b) a == b, envir = globalenv())
+  id_sv <- stable_identity(cl, 8, pp, fl, "f64")
+  assign("same_value", sv, envir = globalenv())
+  environment(cl)$c0 <- 2
+  id_c0 <- stable_identity(cl, 8, pp, fl, "f64")
+  environment(cl)$c0 <- 1
+  wr <- one(sprintf(p, "f64", "value", "weakref", "FALSE"))
+  hx <- one(sprintf(p, "f32", "value", "nudged", "FALSE"))$ref_params
+  ## a hist counter at 2^31 - 1 must count on, not become NA (bin 16 is the
+  ## decade [1e-5, 1e-4)). Subnormal expected values below are written as
+  ## multiples of 2^-1074: R parses a subnormal hex literal such as
+  ## 0x1.5ap-1066 as 0.
+  hh <- reducer_hist()
+  environment(hh$add)$counts[16] <- 2^31 - 1
+  environment(hh$add)$cand[16] <- 2^31 - 1
+  hh$add(list(rel = 1e-5, rounded = FALSE, ref_candidate = TRUE))
+  ## the worst ulp error is not the worst relative error's sample: in [1, 2)
+  ## 3 ulp at g = 1 is the larger relative error, 4 ulp at g = 1.99 the larger
+  ## ulp error, and a one-deep shortlist ranked by relative error keeps only
+  ## the first
+  ug <- c(1, 1.99)
+  uf <- ug + c(3, 4) * 2^-52
+  us <- score_pair(uf, ug, "f64")
+  us <- c(us, sample_facts(ug, uf, ug, us, context_from(list(v = c(1, 1)), list(v = c(1, 1)), "f64", "v", c(-Inf, Inf)), "v"))
+  ub <- reducer_bands("f64")
+  ut <- reducer_topk("f64", 1L)
+  uidx <- floor(ug * 0) + 1023 * 2^20 + c(0, 1)
+  ub$add(uidx, us, 1, ug, uf, ug)
+  ut$add(list(idx = uidx, x = ug), us, uf, ug, 1)
+  idr <- c(
+    check("the stable identity sees a change in a helper the classifier calls (same_value)", id_sv != id0),
+    check("... and a constant captured in the stable reference's closure", id_c0 != id0),
+    check("... and a one-ulp change in a reference parameter",
+      stable_identity(cl, 8, list(min = -pi, max = 2 * pi * (1 + 2^-52)), fl, "f64") != id0),
+    check("... and a captured primitive changed from abs to sqrt", {
+      f1 <- local({
+        helper <- abs
+        function(x, p, f) helper(x)
+      })
+      f2 <- local({
+        helper <- sqrt
+        function(x, p, f) helper(x)
+      })
+      stable_identity(f1, 8, pp, fl, "f64") != stable_identity(f2, 8, pp, fl, "f64")
+    }),
+    check("... and records the package and version behind a pkg::fn call", {
+      m <- code_identity(list(g = function(x, p, f) tools::md5sum(x)))
+      any(grepl(sprintf("## package tools %s :: md5sum", utils::packageVersion("tools")), m, fixed = TRUE))
+    }),
+    check("a reference whose dependencies cannot be read has no identity, so can never validate", {
+      a <- stable_identity(function(x, p, f) do.call("abs", list(x)), 8, pp, fl, "f64")
+      b <- stable_identity(function(x, p, f) get("abs")(x), 8, pp, fl, "f64")
+      is.na(a) && is.na(b) && grepl("do.call", attr(a, "unsupported")) &&
+        reference_status(a, attr(a, "unsupported"), "stable", NULL) == "no identity"
+    }),
+    check("stored parameters round-trip exactly from hex",
+      identical(parse_hex_params(hex_params(list(min = -pi, max = 2 * pi))), list(min = -pi, max = 2 * pi))),
+    check("each result carries its reference's exact parameters, as hex doubles",
+      identical(hx, "err=0x1p+0") && nrow(wr) == 1 && identical(wr$ref_params, "err=-0x1p+1")),
+    check("histogram counters count past 2^31 instead of turning NA",
+      identical(hh$get()$count[16], 2^31) && identical(hh$get()$count_ref_candidate[16], 2^31)),
+    check("the worst ulp error has its own maximum, not the relative-error shortlist's", {
+      identical(max(binade_profile(ub, "f64")$worst_ulp_err), 4) && identical(ut$get()$ulp_err, 3)
+    })
+  )
+
+  ## The analytic gradient references, at inputs where the obvious evaluation
+  ## order under- or overflows early; expected values from 256-bit MPFR.
+  cat("\ngradient references:\n")
+  sp_all <- load_specs()
+  near <- function(a, b, n = 4) isTRUE(abs(a - b) <= n * ulp_size(b, "f64"))
+  ## inv_mills() lives in the normal specs' own environment; the standard
+  ## lower-tail log pnorm gradient d/dq is exactly it
+  inv_mills_ref <- function(z) {
+    sp_all$nv_pnorm$ref_grad(z, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = TRUE))$q
+  }
+  gr <- c(
+    check("dnorm d/dsd at x = 38.6 is the subnormal 1.709467e-321, not 0",
+      near(sp_all$nv_dnorm$ref_grad(38.6, list(mean = 0, sd = 1), list(log = FALSE))$sd, 346 * 2^-1074)),
+    check("dnorm d/dsd at x = 1e155 is 0, not NaN",
+      identical(sp_all$nv_dnorm$ref_grad(1e155, list(mean = 0, sd = 1), list(log = FALSE))$sd, 0)),
+    check("log dnorm d/dsd at x = 1e155, mean = -pi, sd = 2 pi is 4.031442e307, not Inf",
+      near(sp_all$nv_dnorm$ref_grad(1e155, list(mean = -pi, sd = 2 * pi), list(log = TRUE))$sd, 0x1.cb46efba3778dp+1021)),
+    check("pnorm d/dsd at q = 38.6 is the subnormal -4.446591e-323, not 0",
+      near(sp_all$nv_pnorm$ref_grad(38.6, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))$sd, -9 * 2^-1074)),
+    check("qnorm d/dp at p = 1e-100 uses the true quantile, not base R's rounded one", {
+      near(sp_all$nv_qnorm$ref_grad(1e-100, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))$p,
+        4.6903754148377423e98, 2)
+    }),
+    check("qnorm at a subnormal p: d/dp at 4.04e-310 and z at the smallest subnormal, from the true quantile", {
+      qs <- function(pr) sp_all$nv_qnorm$ref_grad(pr, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))
+      near(qs(4.0392245102948702e-310)$p, 0x1.7688e4ee278cep+1022) &&
+        near(qs(4.9406564584124654e-324)$sd, -0x1.33bd3f27fcd03p+5)
+    }),
+    check("no normal-family gradient reference is NaN at x = +-Inf", {
+      pp2 <- list(list(mean = 0, sd = 1), list(mean = -pi, sd = 2 * pi))
+      fl2 <- list(
+        list(sp_all$nv_dnorm, list(log = FALSE)), list(sp_all$nv_dnorm, list(log = TRUE)),
+        list(sp_all$nv_pnorm, list(lower_tail = TRUE, log_p = FALSE)),
+        list(sp_all$nv_pnorm, list(lower_tail = TRUE, log_p = TRUE)),
+        list(sp_all$nv_pnorm, list(lower_tail = FALSE, log_p = FALSE)),
+        list(sp_all$nv_pnorm, list(lower_tail = FALSE, log_p = TRUE))
+      )
+      !any(vapply(fl2, function(sf) any(vapply(pp2, function(q) anyNA(unlist(sf[[1]]$ref_grad(c(-Inf, Inf), q, sf[[2]]))), TRUE)), TRUE))
+    }),
+    check("the inverse Mills ratio is within a few ulp at z = -50 and -100",
+      near(inv_mills_ref(-50), 0x1.9028ed635bd0cp+5) && near(inv_mills_ref(-100), 0x1.900a3cea7d44dp+6))
+  )
+
+  ## The validator itself: what it identifies, and how it compares.
+  cat("\nvalidation:\n")
+  sq <- sp_all$nv_qnorm
+  truth_now <- truth_identity(sq$ref_grad_mpfr, "p")
+  qe <- environment(sq$ref_grad_mpfr)
+  mq <- qe$mp_qnorm
+  qe$mp_qnorm <- function(pr, lower, log_p, prec) mq(pr, lower, log_p, prec) * 1
+  truth_changed <- truth_identity(sq$ref_grad_mpfr, "p")
+  qe$mp_qnorm <- mq
+  gq <- build_grid(list(nv_qnorm = sq), "anvl")
+  rowq <- gq[gq$kind == "grad", , drop = FALSE][1L, , drop = FALSE]
+  rq <- data.frame(run_id = "A", cell_id = rowq$cell_id, output = "p", ref_params = hex_params(list(mean = 0, sd = 1)),
+    ref_grad_id = "X", ref_grad_unsupported = NA_character_)
+  ru_a <- reference_under_test(sq, rowq, rq)
+  rq$run_id <- "B"
+  ru_b <- reference_under_test(sq, rowq, rq)
+  bad_truth <- list(reference = "gradient", stored = "X", now = "X", unsupported = NA, fun = identity,
+    truth = function(x, p, f) base::get("abs")(x), output = "p", bound = 4, params = list(), flags = list())
+  vb <- validate_reference(bad_truth, rq, data.frame(x = numeric(0), source = character(0)), integer(0), VALIDATION_DEFAULTS)
+  vl <- c(
+    check("a truth's identity is its own function and dependencies, not the run that asked", {
+      identical(truth_identity(ru_a$truth, ru_a$output), truth_identity(ru_b$truth, ru_b$output)) &&
+        identical(truth_identity(ru_a$truth, ru_a$output), truth_now)
+    }),
+    check("... and changes when a helper it calls changes (mp_qnorm)", truth_changed != truth_now),
+    check("a truth that cannot be identified fails validation before anything is evaluated",
+      !vb$record$pass && is.na(vb$record$truth_id) && grepl("truth has no identity", vb$record$reason)),
+    check("namespace qualification does not get past the dynamic-call refusal", {
+      i1 <- stable_identity(function(x, p, f) base::get("abs")(x), 8, pp, fl, "f64")
+      i2 <- stable_identity(function(x, p, f) sapply(x, "abs"), 8, pp, fl, "f64")
+      is.na(i1) && is.na(i2)
+    }),
+    check("validations by another validation method count for nothing", {
+      v <- data.frame(reference = "stable", ref_id = "A", output = "value", truth_id = "t1", pass = TRUE,
+        identity_matches = TRUE, validated_at = "2026-09-26T10:00:00+0000", method_id = "old")
+      reference_status("A", NA, "stable", v) == "not validated" &&
+        { v$method_id <- validation_method_id(); reference_status("A", NA, "stable", v) == "validated" }
+    }),
+    check("earlier samples are replayed unless known to have passed: NA or a missing column is not a pass", {
+      pv <- data.frame(x = 1:4, err_ulp64 = c(9, 9, 0.5, Inf), pass = c(FALSE, NA, TRUE, TRUE))
+      old <- pv[c("x", "err_ulp64")]
+      identical(replay_counterexamples(pv)$x, c(1L, 2L, 4L)) && identical(replay_counterexamples(old)$x, 1:4)
+    }),
+    check("qunif d/dp at log p = -745.2 and -732.1773 (wide, lower) keeps w exp(p) from underflowing early", {
+      r <- sp_all$nv_qunif$ref_grad(c(-745.2, -732.17730000000006), list(min = -pi, max = 2 * pi),
+        list(lower_tail = TRUE, log_p = TRUE))$p
+      identical(r, c(4, 1994919) * 2^-1074)
+    }),
+    if (requireNamespace("Rmpfr", quietly = TRUE)) {
+      check("the comparator keeps fractions of a subnormal ulp, and applies the exact-zero rule", {
+        u <- Rmpfr::mpfr(2, 256)^-1074
+        tr <- c(4.4, 4.49, 0.4, 0) * u
+        ## a reference of 0 against 4.4, 4.49 and 0.4 subnormal units, and of 4
+        ## units against an exact zero
+        c1 <- compare_to_truth(c(0, 0, 0, 4) * 2^-1074, tr, 4)
+        c2 <- compare_to_truth(0, tr[3], 0.3)
+        identical(c1$pass, c(FALSE, FALSE, TRUE, FALSE)) && abs(c1$err[1] - 4.4) < 1e-9 &&
+          abs(c1$err[2] - 4.49) < 1e-9 && abs(c1$err[3] - 0.4) < 1e-9 && !c2$pass
+      })
+    } else {
+      cat("  skip the comparator checks: Rmpfr is not installed\n")
+      TRUE
+    }
+  )
+
   cat("\nassertions:\n")
-  ok <- c(sp, ca0, ca, zv, ec, sw, stt,
+  ok <- c(sp, ca0, ca, zv, ec, sw, stt, dp, idr, gr, vl,
     check(
       "clean f64 value reproduces the reference exactly",
       get(sprintf(p, "f64", "value", "clean", "FALSE"))$worst_rel_err == 0
@@ -1600,14 +2007,29 @@ cmd_export <- function(opt) {
   }
 
   kept <- list()
-  for (tbl in c("detail", "bands", "hist", "ranges", "kinds", "points")) {
+  for (tbl in c("detail", "bands", "hist", "ranges", "kinds", "points", "disputes")) {
     x <- pick(tbl)
     if (!is.null(x) && nrow(x)) kept[[tbl]] <- x
+  }
+  ## Every validation of a reference identity these results carry, and its
+  ## recorded samples: what justifies each exclusion travels with it.
+  ids <- unique(stats::na.omit(c(res$ref_stable_id, res$ref_grad_id)))
+  vtabs <- list()
+  for (tbl in c("validations", "validation_samples")) {
+    x <- store_read(dir, tbl)
+    if (!is.null(x) && nrow(x)) {
+      x <- x[x$ref_id %in% ids, , drop = FALSE]
+      if (nrow(x)) vtabs[[tbl]] <- x
+    }
   }
 
   nanoparquet::write_parquet(runs, file.path(out, "runs.parquet"))
   nanoparquet::write_parquet(res[order(res$cell_id, res$output), , drop = FALSE], file.path(out, "summary.parquet"))
   counts <- c(runs = nrow(runs), summary = nrow(res))
+  for (tbl in names(vtabs)) {
+    nanoparquet::write_parquet(vtabs[[tbl]], file.path(out, paste0(tbl, ".parquet")))
+    counts[tbl] <- nrow(vtabs[[tbl]])
+  }
   for (tbl in names(kept)) {
     counts[tbl] <- write_by_cell(kept[[tbl]], file.path(out, paste0(tbl, ".parquet")))
   }
@@ -1680,10 +2102,11 @@ main <- function() {
     diff = cmd_diff(a$opt),
     export = cmd_export(a$opt),
     merge = cmd_merge(a$opt),
+    `validate-refs` = cmd_validate_refs(a$opt),
     stop(
       "unknown command '",
       a$cmd,
-      "'; expected list, run, report, browse, diff, export, status, selftest or merge",
+      "'; expected list, run, report, browse, diff, export, status, selftest, validate-refs or merge",
       call. = FALSE
     )
   )

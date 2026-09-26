@@ -27,7 +27,14 @@ qunif_grad_ref <- function(pr, p, f) {
     in_range <- !is.nan(pr) & pr <= 0
     u <- if (lower) exp(pr) else -expm1(pr)
     u1 <- if (lower) -expm1(pr) else exp(pr)
-    dp <- if (lower) w * exp(pr) else -w * exp(pr)
+    ## w * exp(p) without exp(p) underflowing first: below p = -700, exp(p) is
+    ## subnormal or 0 while w * exp(p) may still be representable, so it is
+    ## (w e^-700) e^(p + 700), with p + 700 exact (Sterbenz) for p >= -1400;
+    ## below that the product is under half the smallest subnormal anyway.
+    e_w <- w * exp(pr)
+    lo <- which(!is.nan(pr) & pr < -700)
+    if (length(lo)) e_w[lo] <- ifelse(pr[lo] >= -1400, (w * exp(-700)) * exp(pr[lo] + 700), 0)
+    dp <- if (lower) e_w else -e_w
   } else {
     in_range <- !is.nan(pr) & pr >= 0 & pr <= 1
     u <- if (lower) pr else 1 - pr
@@ -87,6 +94,31 @@ sweep_spec(
     lapply(list(p = d$p, min = d$min, max = d$max), as.double)
   },
   ref_grad = qunif_grad_ref,
+  ref_grad_bound_ulp64 = 4,
+  ref_grad_mpfr = function(x, p, f) {
+    pr <- mp_num(x)
+    w <- p$max - p$min
+    lower <- isTRUE(f$lower_tail)
+    if (isTRUE(f$log_p)) {
+      in_range <- !is.nan(pr) & pr <= 0
+      ## 1 - exp(x) as -expm1(x): at 256 bits exp(-1e-100) is exactly 1
+      e <- exp(x)
+      c1 <- -expm1(x)
+      u <- if (lower) e else c1
+      u1 <- if (lower) c1 else e
+      dp <- if (lower) w * e else -w * e
+    } else {
+      in_range <- !is.nan(pr) & pr >= 0 & pr <= 1
+      u <- if (lower) x else 1 - x
+      u1 <- if (lower) 1 - x else x
+      dp <- (if (lower) w else -w) * mp_fill(x, 1)
+    }
+    lapply(list(p = dp, min = u1, max = u), function(v) {
+      v[!in_range] <- 0
+      v[is.nan(pr)] <- NaN
+      v
+    })
+  },
 
   ## jax.scipy.stats.uniform has ppf on the probability scale only.
   jax_covers = function(f, kind) isTRUE(f$lower_tail) && !isTRUE(f$log_p),

@@ -38,7 +38,29 @@ SPEC_FIELDS_OPTIONAL <- list(
   ref_grad = NULL,
   jax_value = NULL,
   jax_grad = NULL,
-  jax_covers = NULL # function(flags, kind) -> TRUE if JAX has this variant
+  jax_covers = NULL, # function(flags, kind) -> TRUE if JAX has this variant
+  ## A *stable reference* for the value, beside base R and never instead of
+  ## it: function(x, params, flags) -> numeric, evaluated with the parameters
+  ## base R receives. Samples where base R is off, anvl is accurate and no
+  ## further from it are recorded as candidate base R disputes (see
+  ## dispute_facts()). It needs an error bound, in double ulps at its value,
+  ## that validation against high precision checks; a note saying why base R
+  ## is weaker here; and optionally which flags it covers.
+  ref_stable = NULL,
+  ref_stable_bound_ulp64 = NULL,
+  ref_stable_note = NULL,
+  ref_stable_covers = NULL, # function(flags) -> TRUE where ref_stable applies
+  ## High-precision truths, used only by `validate-refs` (they need Rmpfr and
+  ## are never called by a sweep): function(x, params, flags) with x and the
+  ## parameters as mpfr numbers, returning mpfr -- a vector for the stable
+  ## reference, a named list like ref_grad's for the gradients. Each mirrors
+  ## its reference's conventions (endpoint values, out-of-domain zeros) and
+  ## differs from it only in evaluating the mathematics exactly. The gradient
+  ## references' error bound, in double ulps, is declared here and checked,
+  ## never raised after the fact.
+  ref_stable_mpfr = NULL,
+  ref_grad_mpfr = NULL,
+  ref_grad_bound_ulp64 = NULL
 )
 
 ## Build and validate a spec. An unknown field name is an error rather than a
@@ -69,6 +91,13 @@ sweep_spec <- function(...) {
   ## spec declared. The selftest caught exactly that.
   for (nm in names(SPEC_FIELDS_OPTIONAL)) {
     if (is.null(s[[nm]])) s[nm] <- SPEC_FIELDS_OPTIONAL[nm]
+  }
+  if (!is.null(s$ref_stable) && (!is.numeric(s$ref_stable_bound_ulp64) || is.null(s$ref_stable_note))) {
+    stop("spec '", s$name, "' declares ref_stable without ref_stable_bound_ulp64 and ref_stable_note",
+      call. = FALSE)
+  }
+  if (!is.null(s$ref_grad_mpfr) && !is.numeric(s$ref_grad_bound_ulp64)) {
+    stop("spec '", s$name, "' declares ref_grad_mpfr without ref_grad_bound_ulp64", call. = FALSE)
   }
   if (length(s$grad_wrt) && (is.null(s$grad) || is.null(s$ref_grad))) {
     stop("spec '", s$name, "' declares grad_wrt but no grad/ref_grad", call. = FALSE)

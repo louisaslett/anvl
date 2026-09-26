@@ -23,7 +23,10 @@
 
 ## Every table a run writes. merge() copies exactly these, so a table missing
 ## here would be silently left behind when shards come back from a cluster.
-TABLES <- c("runs", "results", "detail", "ranges", "hist", "bands", "kinds", "points")
+TABLES <- c(
+  "runs", "results", "detail", "ranges", "hist", "bands", "kinds", "points", "disputes",
+  "validations", "validation_samples"
+)
 
 ## Bumped whenever the shape of an exported artifact changes in a way a reader
 ## must know about. It travels in the manifest so a website can refuse, or
@@ -36,7 +39,24 @@ TABLES <- c("runs", "results", "detail", "ranges", "hist", "bands", "kinds", "po
 ##    categories a `zero` input class; ranges and points carry `evidence`;
 ##    summary carries exact-point figures and failing-sample counts per
 ##    category; n_flushed_zero_error beside n_flushed.
-SCHEMA_VERSION <- 3L
+## 4: candidate base R disputes against a spec's stable reference: a
+##    `disputes` table, `ref_candidate` on ranges and points, candidate counts
+##    and candidate-filtered worst errors on bands, hist, categories and
+##    summary, and the stable reference's identity on summary. Candidates are
+##    not exclusions until validated.
+## 5: summary carries `ref_params` (the exact reference parameters, hex);
+##    bands and categories carry `worst_ulp_err` from its own accumulator, and
+##    summary's worst_ulp_err is its maximum rather than the relative-error
+##    shortlist's; hist counts are doubles.
+## 6: `reference_limitation` category (candidates whose stable reference passed
+##    validation); summary carries ref_stable_status / ref_grad_status and the
+##    gradient reference identity; `validations` and `validation_samples`
+##    tables travel with the results they justify.
+## 7: validations carry `method_id` (records by any other validation method
+##    count for nothing -- every record before the MPFR-only comparator) and a
+##    truth identity of the spec's own truth function; validation_samples
+##    carry each sample's `pass`.
+SCHEMA_VERSION <- 7L
 
 ## Where the store lives. Out of the package tree by default, so a result file
 ## can never be committed by accident and the package stays what upstream
@@ -164,7 +184,24 @@ latest_results <- function(dir) {
   res <- res[!duplicated(k), , drop = FALSE]
   rownames(res) <- NULL
 
-  resummarise(res, resolved_ranges(dir), resolved_points(dir))
+  st <- with_reference_status(res, store_read(dir, "validations"))
+  resummarise(st, resolved_ranges(dir), resolved_points(dir))
+}
+
+## Each result's stable- and gradient-reference status (see
+## reference_status()), from every validation in the store.
+with_reference_status <- function(res, validations) {
+  if (is.null(res)) {
+    return(res)
+  }
+  res$ref_stable_status <- reference_status(
+    res$ref_stable_id %||% rep(NA_character_, nrow(res)),
+    res$ref_stable_unsupported %||% rep(NA_character_, nrow(res)),
+    "stable",
+    validations
+  )
+  res$ref_grad_status <- grad_reference_status(res, validations)
+  res
 }
 
 ## Region and point counts as every screen must show them: with outside-domain
@@ -197,17 +234,31 @@ resummarise <- function(res, ranges, points) {
 ## through here, and it always resolves against the whole store: the evidence
 ## is chosen by the run rule, never by what a caller happens to be showing.
 ## A store written before causes were recorded is returned as is.
+##
+## Candidate base R disputes then become verified reference limitations where,
+## and only where, the result's stable reference has passed validation under
+## the identity the sweep recorded (apply_reference_validation()).
 resolved_ranges <- function(dir) {
   r <- store_read(dir, "ranges")
   if (is.null(r) || is.null(r$cause)) {
     return(r)
   }
-  resolve_domain_conventions(r, store_read(dir, "kinds"))
+  r <- resolve_domain_conventions(r, store_read(dir, "kinds"))
+  apply_reference_validation(r, stable_statuses(dir))
 }
 
-## The exact points, resolved the same way (see resolve_point_conventions()).
+## The exact points, resolved the same way.
 resolved_points <- function(dir) {
-  resolve_point_conventions(store_read(dir, "points"))
+  p <- resolve_point_conventions(store_read(dir, "points"))
+  apply_reference_validation(p, stable_statuses(dir))
+}
+
+stable_statuses <- function(dir) {
+  res <- store_read(dir, "results")
+  if (is.null(res)) {
+    return(NULL)
+  }
+  with_reference_status(res, store_read(dir, "validations"))
 }
 
 ## What a result's figures add up to, without judging any of it. Every flag is
@@ -223,12 +274,19 @@ resolved_points <- function(dir) {
 ##   identical_but_conventions
 ##                not identical, but every sample and point that differs is an
 ##                undefined-domain convention
+##   reference    has verified reference limitations: candidate base R
+##                disputes whose stable reference passed validation
+##   identical_but_set_aside
+##                not identical, but every sample and point that differs is an
+##                undefined-domain convention or a verified reference
+##                limitation -- the two things set aside, each shown
 result_state <- function(res) {
   col <- function(nm, d = 0) {
     v <- res[[nm]]
     if (is.null(v)) rep(d, nrow(res)) else ifelse(is.na(v), d, v)
   }
   pts_ok <- col("n_points_identical") == col("n_points")
+  verified <- (res$ref_stable_status %||% rep(NA_character_, nrow(res))) %in% "validated"
   differ <- col("n_samples") - col("n_exact")
   data.frame(
     failing = col("n_runs_unclassified") > 0 | col("n_points_failure") > 0,
@@ -238,6 +296,16 @@ result_state <- function(res) {
     identical_but_conventions = differ > 0 & differ == col("n_failing_domain") &
       col("n_zero_sign") == 0 &
       col("n_points_identical") + col("n_points_domain") == col("n_points"),
+    reference = verified & (col("n_ref_candidate") > 0 | col("n_points_ref_candidate") > 0),
+    identical_but_set_aside = differ > 0 & col("n_zero_sign") == 0 &
+      differ == col("n_failing_domain") + ifelse(verified, col("n_ref_candidate"), 0) &
+      col("n_points_identical") + col("n_points_domain") + ifelse(verified, col("n_points_ref_candidate"), 0) == col("n_points"),
+    ## the same worst error with verified reference limitations left out
+    worst_any_set_aside = ifelse(
+      verified,
+      pmax(col("worst_rel_err_excl"), col("worst_point_rel_err_excl")),
+      pmax(col("worst_rel_err"), col("worst_point_rel_err"))
+    ),
     ## the larger of the sweep's worst finite error and the points'
     worst_any = pmax(col("worst_rel_err"), col("worst_point_rel_err"))
   )

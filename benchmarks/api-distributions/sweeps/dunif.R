@@ -74,6 +74,23 @@ sweep_spec(
     lapply(list(x = d$x, min = d$min, max = d$max), as.double)
   },
   ref_grad = dunif_grad_ref,
+  ref_grad_bound_ulp64 = 4,
+  ref_grad_mpfr = function(x, p, f) {
+    xn <- mp_num(x)
+    w <- p$max - p$min
+    on <- !is.nan(xn) & xn >= mp_num(p$min) & xn <= mp_num(p$max)
+    zero <- mp_fill(x, 0)
+    d <- list(
+      x = zero,
+      min = zero + (if (isTRUE(f$log)) 1 / w else 1 / (w * w)),
+      max = zero + (if (isTRUE(f$log)) -1 / w else -1 / (w * w))
+    )
+    lapply(d, function(v) {
+      v[!on] <- 0
+      v[is.nan(xn)] <- NaN
+      v
+    })
+  },
 
   ## jax.scipy.stats.uniform is parameterised by (loc, scale) = (min, max - min)
   ## and covers both the density and its log, so every variant has a twin. The
