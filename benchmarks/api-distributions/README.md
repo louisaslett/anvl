@@ -383,7 +383,14 @@ It costs ~60% more on a covered cell, ~2% on a full run, since only
 ```bash
 Rscript run.R validate-refs                      # every result in the store
 Rscript run.R validate-refs --filter spec=nv_punif --prec 512
+Rscript run.R validate-refs --shard 3 --shards 32   # one share, for a cluster array
 ```
+
+It validates every backend the store holds unless `--backends` says otherwise.
+Work is split into *reference units* — distinct reference identities — so an
+anvl cell and its JAX twin, which share a reference, are validated once from
+both cells' inputs, and `--shard i --shards n` takes the same units on every
+machine. Each run writes its own record, so shards need no merging.
 
 It needs Rmpfr, and nothing else does: run it wherever Rmpfr is installed,
 after the sweep, without re-running it. For every result with a stable

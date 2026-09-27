@@ -1541,6 +1541,12 @@ cmd_selftest <- function(opt) {
       reference_status("A", NA, "stable", v) == "not validated" &&
         { v$method_id <- validation_method_id(); reference_status("A", NA, "stable", v) == "validated" }
     }),
+    check("validation shards partition the reference units: disjoint, complete, and the same everywhere", {
+      k <- c(sprintf("gradient id%02d x", 1:10), "gradient id03 x", "stable s1 value")
+      parts <- lapply(1:3, function(i) validation_units(k, i, 3L))
+      all_u <- unlist(parts)
+      !anyDuplicated(all_u) && setequal(all_u, unique(k)) && identical(validation_units(k), sort(unique(k)))
+    }),
     check("earlier samples are replayed unless known to have passed: NA or a missing column is not a pass", {
       pv <- data.frame(x = 1:4, err_ulp64 = c(9, 9, 0.5, Inf), pass = c(FALSE, NA, TRUE, TRUE))
       old <- pv[c("x", "err_ulp64")]
