@@ -46,24 +46,42 @@ next_axis <- function(res) {
 }
 
 ## One row per group, with f32 and f64 side by side. The two numbers that
-## matter for deciding where to look next are the worst finite relative error
-## (over the sweep and the exact points) and the count of results with a
-## failure (a failure region or a failing exact point), so those are what a
-## row carries.
+## matter for deciding where to look next are the headline -- the worst
+## relative error for normal inputs with normal outputs, as the site reports
+## it, marked where verified base R limitations are set aside -- and the count
+## of results with a failure (a failure region or a failing exact point).
+## A result whose headline was not computed (no bands) falls back to its worst
+## finite error over everything. Counts from runs that predate a column read
+## as NA and are treated as unknown, never as a failure.
+## Above the backend level (the function list), the figures are the primary
+## backend's alone -- anvl's -- as on the site: a comparator's result is never
+## counted as one of anvl's, and appears once a function is chosen.
+primary_only <- function(res, axis) {
+  bs <- unique(res$backend)
+  if (length(bs) < 2L || match(axis, DRILL) >= match("backend", DRILL)) {
+    return(res)
+  }
+  res[res$backend == (if ("anvl" %in% bs) "anvl" else sort(bs)[1L]), , drop = FALSE]
+}
+
 summarise_by <- function(res, axis) {
+  res <- primary_only(res, axis)
   st <- result_state(res)
-  res$worst_any <- st$worst_any
+  res$worst_h <- ifelse(is.na(st$headline), st$worst_any, st$headline)
+  res$set_aside <- st$headline_set_aside
   res$failing <- st$failing
   keys <- sort(unique(res[[axis]]))
   do.call(
     rbind,
     lapply(keys, function(k) {
-      g <- res[res[[axis]] == k, , drop = FALSE]
+      g <- res[res[[axis]] %in% k, , drop = FALSE]
       row <- data.frame(key = k, n = nrow(g))
       for (dt in c("f32", "f64")) {
         d <- g[g$dtype == dt, , drop = FALSE]
-        row[[paste0(dt, "_worst")]] <- if (nrow(d)) max(d$worst_any, na.rm = TRUE) else NA_real_
-        row[[paste0(dt, "_unexp")]] <- if (nrow(d)) sum(d$failing) else NA_integer_
+        w <- if (nrow(d) && any(!is.na(d$worst_h))) which.max(d$worst_h) else integer(0)
+        row[[paste0(dt, "_worst")]] <- if (length(w)) d$worst_h[w] else NA_real_
+        row[[paste0(dt, "_aside")]] <- length(w) > 0 && isTRUE(d$set_aside[w])
+        row[[paste0(dt, "_unexp")]] <- if (nrow(d)) sum(d$failing, na.rm = TRUE) else NA_integer_
         row[[paste0(dt, "_n")]] <- nrow(d)
       }
       row
@@ -73,27 +91,32 @@ summarise_by <- function(res, axis) {
 
 print_summary <- function(res, axis, indent = "  ") {
   sm <- summarise_by(res, axis)
+  mark <- function(v, aside) paste0(fmt_num(v), if (isTRUE(aside)) "\u2020" else "")
 
   ## At the precision level the f32/f64 columns would repeat the rows, so show
   ## a plain list instead. This is the last step before a single result.
   if (axis == "dtype") {
-    cat(sprintf("%s%-10s %12s %12s %s\n", indent, "precision", "worst rel", "worst ulp", "failures"))
+    cat(sprintf("%s%-10s %14s %12s %12s %s\n", indent, "precision", "normal out", "worst any", "worst ulp", "failures"))
     for (i in seq_len(nrow(sm))) {
       d <- res[res$dtype == sm$key[i], , drop = FALSE][1L, , drop = FALSE]
-      np <- d$n_points_failure %||% 0
+      st <- result_state(d)
+      nr <- d$n_runs_unclassified %||% NA
+      np <- d$n_points_failure %||% NA
       cat(sprintf(
-        "%s%-10s %12s %12s %s\n",
+        "%s%-10s %14s %12s %12s %s\n",
         indent,
         sm$key[i],
-        fmt_num(result_state(d)$worst_any),
+        mark(st$headline, st$headline_set_aside),
+        fmt_num(st$worst_any),
         fmt_num(d$worst_ulp_err),
-        if (d$n_runs_unclassified > 0 || np > 0) {
-          sprintf("%d region(s), %d exact point(s)", d$n_runs_unclassified, np)
+        if (isTRUE(st$failing)) {
+          sprintf("%s region(s), %s exact point(s)", ifelse(is.na(nr), "?", nr), ifelse(is.na(np), "?", np))
         } else {
           "."
         }
       ))
     }
+    cat(sprintf("\n%s\"normal out\" is the worst relative error for normal inputs with normal outputs;\n%s\u2020 marks one with verified base R limitations set aside.\n", indent, indent))
     return(invisible(sm))
   }
 
@@ -107,14 +130,14 @@ print_summary <- function(res, axis, indent = "  ") {
         return(c("-", "-"))
       }
       c(
-        fmt_num(sm[[paste0(dt, "_worst")]][i]),
+        mark(sm[[paste0(dt, "_worst")]][i], sm[[paste0(dt, "_aside")]][i]),
         if (sm[[paste0(dt, "_unexp")]][i] > 0) sprintf("%d", sm[[paste0(dt, "_unexp")]][i]) else "."
       )
     }
     c(one("f32"), one("f64"))
   })
 
-  H <- c("worst rel", "failing")
+  H <- c("normal out", "failing")
   w <- max(nchar(sm$key), nchar(DRILL_LABEL[[axis]]))
   numw <- max(nchar(H), nchar(unlist(cells)))
   groupw <- 2L * numw + 1L
@@ -155,8 +178,12 @@ print_summary <- function(res, axis, indent = "  ") {
       v[4L]
     ))
   }
+  if (!identical(primary_only(res, axis), res)) {
+    cat(sprintf("\n%sFigures are anvl's; other backends are compared once a function is chosen.", indent))
+  }
   cat(sprintf(
-    "\n%s\"failing\" counts results with a failure region or a failing exact point;\n%s\"worst rel\" is the worst finite error over the sweep and the exact points.\n",
+    "\n%s\"normal out\" is the worst relative error for normal inputs with normal outputs, as\n%sthe site reports it (\u2020: verified base R limitations set aside); \"failing\" counts\n%sresults with a failure region or a failing exact point.\n",
+    indent,
     indent,
     indent
   ))
@@ -378,7 +405,8 @@ CATEGORY_LABEL <- c(
   backend_limitation = "backend limitation",
   boundary = "domain boundary",
   undefined_domain = "undefined-domain convention",
-  reference_limitation = "verified base R limitation"
+  reference_limitation = "verified base R limitation",
+  legacy = "old run, not classified"
 )
 
 report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, points = NULL, disputes = NULL,
@@ -463,6 +491,7 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, poin
     cat(sprintf("  worst ulp error over every sample: %s\n", fmt_num(res$worst_ulp_err)))
   }
 
+  print_classes(spec, row, res, bands)
   print_disputes(res, disputes)
   print_validation(res, validations)
 
@@ -488,7 +517,8 @@ report_cell <- function(spec, row, res, detail, ranges, hist, bands = NULL, poin
       sprintf("%s .. %s", fmt_num(min(a, b)), fmt_num(max(a, b)))
     }
     for (i in seq_len(nrow(r))) {
-      what <- sprintf("%s (%s)", lab[[r$category[i]]] %||% r$category[i], gsub("_", " ", r$cause[i]))
+      cat_lab <- unname(lab[r$category[i]])
+      what <- sprintf("%s (%s)", if (is.na(cat_lab)) r$category[i] else cat_lab, gsub("_", " ", r$cause[i]))
       ## For f32 the bounds are sampled inputs. For f64 they are the bounds of
       ## the 2^32-pattern blocks the failing samples fell in -- not inputs that
       ## were evaluated -- so they are labelled as such and the sampled
@@ -563,7 +593,17 @@ print_points <- function(points) {
   }
   same <- points$identical & !points$zero_sign
   cat(sprintf(" \u2014 %d of %d bit-identical to base R\n", sum(same), nrow(points)))
-  p <- points[!same, , drop = FALSE]
+  ## A sign-of-zero difference alone is one line, as on the site, so two dozen
+  ## of them cannot bury a point that differs in value.
+  sign_only <- points$identical & points$zero_sign
+  if (any(sign_only)) {
+    nm <- gsub("\\+", " \u00b7 ", sub("^\\+", "", points$label[sign_only]))
+    cat(sprintf(
+      "  %d point(s) return a zero of the opposite sign to base R's (%s%s)\n",
+      sum(sign_only), paste(utils::head(nm, 3L), collapse = "; "), if (length(nm) > 3L) "; ..." else ""
+    ))
+  }
+  p <- points[!same & !sign_only, , drop = FALSE]
   if (!nrow(p)) {
     return(invisible(NULL))
   }
@@ -661,4 +701,40 @@ print_validation <- function(res, validations) {
     ))
     if (older > 0) cat(sprintf("           (%d earlier validation(s) under a superseded truth)\n", older))
   }
+}
+
+## The result split by input class, as the site shows it (input_class()): for
+## each class the samples, how many are bit-identical or correctly rounded, and
+## the worst relative error for normal outputs and for any output -- with
+## verified base R limitations set aside beside it, never in its place.
+print_classes <- function(spec, row, res, bands) {
+  if (is.null(bands) || !nrow(bands) || is.null(bands$worst_out_normal)) {
+    return(invisible(NULL))
+  }
+  cf <- cell_functions(spec, row)
+  dom <- if (is.null(spec$domain)) c(-Inf, Inf) else spec$domain(cf$ref_params, cf$flags)
+  cls <- input_class(bands, dom[1L], dom[2L])
+  verified <- identical(res$ref_stable_status, "validated")
+  order <- c(normal = "normal", zero = "\u00b10", subnormal = "subnormal", outside_domain = "outside domain", inf_nan = "\u00b1Inf, NaN")
+  cat("\nBY INPUT CLASS\n")
+  cat(sprintf("  %-15s %12s %9s %9s %13s %11s\n", "", "samples", "identical", "rounded", "worst, normal", "worst, any"))
+  cat(sprintf("  %-15s %12s %9s %9s %13s %11s\n", "", "", "", "", "output", "output"))
+  for (k in names(order)) {
+    b <- bands[cls == k, , drop = FALSE]
+    if (!nrow(b)) next
+    n <- sum(b$n_identical + b$n_differ + b$n_nonfinite)
+    ## NA, shown as such, for bands from a run that predates a column
+    mx <- function(v) if (is.null(v) || all(is.na(v))) NA_real_ else max(v, na.rm = TRUE)
+    wn <- mx(b$worst_out_normal)
+    we <- if (verified) mx(b$worst_out_normal_excl) else wn
+    cat(sprintf(
+      "  %-15s %12s %9s %9s %13s %11s\n",
+      order[[k]], human_int(n), sprintf("%.1f%%", 100 * sum(b$n_identical) / n),
+      if (all(is.na(b$n_rounded %||% NA))) "?" else human_int(sum(b$n_rounded, na.rm = TRUE)),
+      paste0(fmt_num(wn), if (isTRUE(we != wn)) sprintf(" (%s\u2020)", fmt_num(we)) else ""),
+      fmt_num(mx(b$worst_rel_err))
+    ))
+  }
+  if (verified) cat("  \u2020 with verified base R limitations set aside\n")
+  cat("  normal: finite, not subnormal, inside the valid domain; \"normal output\": base R's value is\n  a normal float too -- where a small relative error is the right expectation.\n")
 }

@@ -578,6 +578,13 @@ lists them.
 
 ### What `status` counts
 
+Every screen reads every backend the store holds unless `--backends` names
+some, and ranks by the same headline as the site: the worst relative error for
+**normal inputs with normal outputs** (with verified base R limitations set
+aside, marked †), computed from the results' own bands. Above the backend
+level the figures are anvl's alone, as on the site. Results from runs that
+predate a column show it as unknown, never as zero.
+
 Every category stays on screen, and each counts: **failures**, **domain
 boundary behaviour** and **backend limitations** are separate sections, each
 counting regions and exact points. The largest finite errors are ranked over

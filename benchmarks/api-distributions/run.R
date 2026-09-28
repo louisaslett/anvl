@@ -469,6 +469,53 @@ run_cell <- function(spec, row, opt, pv, dir) {
 
 ## ---- commands --------------------------------------------------------------
 
+## Every backend the store holds, unless --backends names some: `run`'s
+## anvl-only default hid every JAX result from every screen, as it once did
+## from `export`.
+store_backends <- function(opt, res) {
+  if (isTRUE(opt$backends_given) || is.null(res) || !nrow(res)) opt$backends else sort(unique(res$backend))
+}
+
+## The site's headline for each result: the worst relative error for normal
+## inputs with normal outputs -- the `normal` input class (input_class()) and,
+## within it, samples whose reference is a normal float -- with verified base R
+## limitations set aside in `headline_excl`. Computed from the results' own
+## bands, reading only their runs, so the terminal and an export agree.
+with_headlines <- function(dir, res, g, specs) {
+  res$headline <- NA_real_
+  res$headline_excl <- NA_real_
+  if (is.null(res) || !nrow(res)) {
+    return(res)
+  }
+  b <- store_read(dir, "bands", runs = unique(res$run_id))
+  if (is.null(b) || is.null(b$worst_out_normal)) {
+    return(res)
+  }
+  rk <- paste(res$run_id, res$cell_id, res$output, sep = "\r")
+  b <- b[paste(b$run_id, b$cell_id, b$output, sep = "\r") %in% rk, , drop = FALSE]
+  if (!nrow(b)) {
+    return(res)
+  }
+  cells <- unique(b$cell_id)
+  dom <- vapply(cells, function(id) {
+    row <- g[g$cell_id == id, , drop = FALSE]
+    spec <- if (nrow(row)) specs[[row$spec[1L]]] else NULL
+    if (is.null(spec) || is.null(spec$domain)) {
+      return(c(-Inf, Inf))
+    }
+    cf <- cell_functions(spec, row[1L, , drop = FALSE])
+    spec$domain(cf$ref_params, cf$flags)
+  }, numeric(2))
+  m <- match(b$cell_id, cells)
+  nb <- b[input_class(b, dom[1L, m], dom[2L, m]) == "normal", , drop = FALSE]
+  k <- paste(nb$run_id, nb$cell_id, nb$output, sep = "\r")
+  hw <- tapply(nb$worst_out_normal, k, max)
+  he <- if (is.null(nb$worst_out_normal_excl)) hw else tapply(nb$worst_out_normal_excl, k, max)
+  res$headline <- unname(hw[rk])
+  res$headline_excl <- unname(he[rk])
+  res
+}
+
 cmd_list <- function(opt) {
   g <- apply_filter(build_grid(load_specs(), opt$backends), opt$filter)
   cat(sprintf("%d cells, %d result rows\n\n", nrow(g), sum(g$n_outputs)))
@@ -543,7 +590,7 @@ cmd_status <- function(opt) {
   dir <- store_dir(opt$store)
   res <- latest_results(dir)
   specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
-  g <- apply_filter(build_grid(specs, opt$backends), opt$filter, extra = "output")
+  g <- apply_filter(build_grid(specs, store_backends(opt, res)), opt$filter, extra = "output")
 
   if (is.null(res)) {
     cat("The result store is empty.\n  ", dir, "\n\n")
@@ -559,6 +606,7 @@ cmd_status <- function(opt) {
   ## about the best evidence available.
   all_depths <- res
   res <- deepest_per_cell(res, names(DEPTHS))
+  res <- with_headlines(dir, res, g, specs)
 
   cat("\nanvl distribution sweeps \u2014 status\n")
   cat("store: ", dir, "\n", sep = "")
@@ -617,11 +665,14 @@ cmd_status <- function(opt) {
   st <- result_state(res)
   res$worst_any <- st$worst_any
   where_pt <- function(label, x) sprintf("exact point %s (x = %s)", label, exact_num(x))
+  ## with more than one backend in view, each line says whose result it is
+  multi <- length(unique(res$backend)) > 1L
   line <- function(r, i, show) {
     row <- g[g$cell_id == r$cell_id[i], , drop = FALSE][1L, , drop = FALSE]
     what <- if (r$kind[i] == "value") "value" else paste0("d/d", r$output[i])
     cat(sprintf(
-      "  %-9s %-3s %-7s %-22s %s\n",
+      "  %s%-9s %-3s %-7s %-22s %s\n",
+      if (multi) sprintf("%-5s", r$backend[i]) else "",
       r$spec[i],
       r$dtype[i],
       what,
@@ -631,7 +682,7 @@ cmd_status <- function(opt) {
   }
   show_failure <- function(r, i) {
     parts <- character(0)
-    if (r$n_runs_unclassified[i] > 0) {
+    if (isTRUE(r$n_runs_unclassified[i] > 0)) {
       parts <- c(parts, sprintf(
         "%d region(s) from %s .. %s",
         r$n_runs_unclassified[i],
@@ -655,8 +706,8 @@ cmd_status <- function(opt) {
   show_error <- function(r, i) {
     from_pt <- (r$worst_point_rel_err[i] %||% 0) > r$worst_rel_err[i]
     sprintf(
-      "rel %-10s %s",
-      fmt_num(r$worst_any[i]),
+      "%-10s %s",
+      fmt_num(result_state(r[i, , drop = FALSE])$worst_any),
       if (isTRUE(from_pt)) {
         sprintf("at %s", where_pt(r$worst_point_label[i], r$worst_point_x[i]))
       } else {
@@ -726,16 +777,28 @@ cmd_status <- function(opt) {
       )
     }
   )
+  ## Ranked by the site's headline -- normal inputs with normal outputs, set
+  ## aside where verified -- so the two agree on what "largest" means; the
+  ## worst over everything, zero and subnormal outputs included, is beside it.
   f <- res[!st$failing & st$worst_any > 0, , drop = FALSE]
+  fst <- result_state(f)
+  f$worst_any <- ifelse(is.na(fst$headline), fst$worst_any, fst$headline)
   section(
     f,
-    sprintf("LARGEST FINITE ERRORS (%d of %d results differ at all)", sum(st$worst_any > 0), nrow(res)),
+    sprintf("LARGEST ERRORS, NORMAL IN AND OUT (%d of %d results differ at all)", sum(st$worst_any > 0), nrow(res)),
     paste0(
-      "Over the sweep and the exact points. base R is the reference, not the\n",
-      "truth; it is sometimes the weaker implementation, so check which side is\n",
-      "right before acting."
+      "The worst relative error for normal inputs with normal outputs, as the site\n",
+      "reports it (\u2020: verified base R limitations set aside), then the worst over\n",
+      "everything. base R is the reference, not the truth; check which side is right."
     ),
-    show_error
+    function(r, i) {
+      s1 <- result_state(r[i, , drop = FALSE])
+      sprintf(
+        "rel %-11s any %s",
+        paste0(fmt_num(r$worst_any[i]), if (isTRUE(s1$headline_set_aside)) "\u2020" else ""),
+        show_error(r, i)
+      )
+    }
   )
   cat(sprintf(
     "\n  %d of %d results are bit-identical to base R, down to the sign of zero,\n  at every sampled input and every exact point.\n",
@@ -811,12 +874,13 @@ cmd_report <- function(opt) {
     stop("store is empty; run a sweep first", call. = FALSE)
   }
   specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
-  g <- apply_filter(build_grid(specs, opt$backends), opt$filter, extra = "output")
+  g <- apply_filter(build_grid(specs, store_backends(opt, all)), opt$filter, extra = "output")
   res <- deepest_per_cell(all[all$cell_id %in% g$cell_id, , drop = FALSE], names(DEPTHS))
   res <- filter_results(res, opt$filter)
   if (!nrow(res)) {
     stop("no results for that filter; run a sweep first", call. = FALSE)
   }
+  res <- with_headlines(dir, res, g, specs)
 
   detail <- store_read(dir, "detail")
   ranges <- resolved_ranges(dir)
@@ -892,8 +956,9 @@ cmd_browse <- function(opt) {
     stop("store is empty; run a sweep first", call. = FALSE)
   }
   specs <- load_specs()
-  grid <- build_grid(specs, opt$backends)
+  grid <- build_grid(specs, store_backends(opt, all))
   base <- deepest_per_cell(all[all$cell_id %in% grid$cell_id, , drop = FALSE], names(DEPTHS))
+  base <- with_headlines(dir, base, grid, specs)
   if (!nrow(base)) {
     stop("no results yet; run a sweep first", call. = FALSE)
   }
@@ -1656,7 +1721,7 @@ cmd_diff <- function(opt) {
   runs <- runs[order(runs$started_at, decreasing = TRUE), , drop = FALSE]
 
   specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
-  g <- apply_filter(build_grid(specs, opt$backends), opt$filter, extra = "output")
+  g <- apply_filter(build_grid(specs, store_backends(opt, all)), opt$filter, extra = "output")
   matching <- function(id) {
     r <- all[all$run_id == id & all$cell_id %in% g$cell_id, , drop = FALSE]
     filter_results(r, opt$filter)

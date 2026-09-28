@@ -97,12 +97,15 @@ store_write <- function(dir, table, run_id, key, df) {
 
 ## Read one table whole. The store is small enough that this is always fine;
 ## query.R offers DuckDB for anyone who would rather push predicates down.
-store_read <- function(dir, table) {
+store_read <- function(dir, table, runs = NULL) {
   d <- file.path(dir, table)
   if (!dir.exists(d)) {
     return(NULL)
   }
   files <- list.files(d, pattern = "\\.parquet$", recursive = TRUE, full.names = TRUE)
+  ## Only these runs' partitions (run=<id>/), for a large table read for a few
+  ## results rather than for the whole history.
+  if (!is.null(runs)) files <- files[basename(dirname(files)) %in% paste0("run=", runs)]
   if (!length(files)) {
     return(NULL)
   }
@@ -243,8 +246,25 @@ resolved_ranges <- function(dir) {
   if (is.null(r) || is.null(r$cause)) {
     return(r)
   }
+  r <- with_legacy_categories(r)
   r <- resolve_domain_conventions(r, store_read(dir, "kinds"))
   apply_reference_validation(r, stable_statuses(dir))
+}
+
+## A store can hold regions from runs made before causes were recorded, which
+## read back with a positional `class` and no cause or category. They cannot be
+## given a tested cause after the fact; "unclassified" is what failure meant
+## then, and every other old class is labelled as such, shown and never
+## counted as any current category.
+with_legacy_categories <- function(r) {
+  old <- is.na(r$category)
+  if (!any(old)) {
+    return(r)
+  }
+  cls <- if (is.null(r$class)) rep(NA_character_, nrow(r)) else r$class
+  r$category[old] <- ifelse(cls[old] %in% "unclassified", "failure", "legacy")
+  r$cause[old] <- ifelse(is.na(cls[old]), "unrecorded", paste0("old run: ", cls[old]))
+  r
 }
 
 ## The exact points, resolved the same way.
@@ -285,6 +305,11 @@ result_state <- function(res) {
     v <- res[[nm]]
     if (is.null(v)) rep(d, nrow(res)) else ifelse(is.na(v), d, v)
   }
+  ## a column that may be absent, NA where it is: unknown, not zero
+  opt_col <- function(nm) {
+    v <- res[[nm]]
+    if (is.null(v)) rep(NA_real_, nrow(res)) else v
+  }
   pts_ok <- col("n_points_identical") == col("n_points")
   verified <- (res$ref_stable_status %||% rep(NA_character_, nrow(res))) %in% "validated"
   differ <- col("n_samples") - col("n_exact")
@@ -300,6 +325,12 @@ result_state <- function(res) {
     identical_but_set_aside = differ > 0 & col("n_zero_sign") == 0 &
       differ == col("n_failing_domain") + ifelse(verified, col("n_ref_candidate"), 0) &
       col("n_points_identical") + col("n_points_domain") + ifelse(verified, col("n_points_ref_candidate"), 0) == col("n_points"),
+    ## the site's headline (normal inputs, normal outputs; see with_headlines()
+    ## in run.R), with verified base R limitations set aside where there are
+    ## any -- and whether they were -- or NA where it was not computed
+    headline = ifelse(verified & !is.na(opt_col("headline_excl")), opt_col("headline_excl"), opt_col("headline")),
+    headline_set_aside = verified & !is.na(opt_col("headline_excl")) & !is.na(opt_col("headline")) &
+      opt_col("headline_excl") != opt_col("headline"),
     ## the same worst error with verified reference limitations left out
     worst_any_set_aside = ifelse(
       verified,
