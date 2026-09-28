@@ -1,60 +1,101 @@
 # `api-distributions` — bit-pattern sweeps of the distribution API
 
-Every function in `R/api-distributions.R` is swept against base R over the
-float bit patterns themselves, in both precisions, for values and for every
-derivative.
+This harness checks all six distribution functions in `R/api-distributions.R`,
+in f32 and f64. It compares values with base R and first derivatives with
+analytic reference formulas, using bit-pattern sweeps and separate exact-point
+checks.
 
-This is an accuracy benchmark and nothing more. It measures, and it shows you
-what it measured. It does not decide whether a result is acceptable: that
-depends on the function, the precision and what the caller needs, and it
-belongs to the person reading.
+The benchmark measures accuracy; interpreting an error depends on the function,
+precision and application. Algorithm-comparison reports live separately in
+[`../nv_pnorm/`](../nv_pnorm/) and [`../nv_qnorm/`](../nv_qnorm/).
 
-This directory holds **sweeps only**. The algorithm-comparison reports for
-candidate implementations live alongside it in `../nv_pnorm/` and `../nv_qnorm/`
-and are a different kind of artifact; nothing here touches them.
+## Contents
 
-```
-run.R          list · run · report · browse · diff · export · status · selftest · merge
-query.R        reading the store, from R or the shell
-R/util.R       bit patterns, ulp spacing, number formatting
-R/engine.R     enumeration, scoring, reducers, region classification
-R/cells.R      the spec DSL, the grid, cell ids, filtering
-R/render.R     how a set of results is drawn on a terminal
-R/store.R      the write-once Parquet store
-R/provenance.R the environment fingerprint recorded with every run
-sweeps/        one small file per function — this is what you add to
-HPC.md         notes on running this at scale on a cluster
-```
+- [Quick start](#quick-start)
+- [Coverage and result selection](#coverage-and-result-selection)
+- [Inspecting results](#inspecting-results)
+- [Reading what a disagreement means](#reading-what-a-disagreement-means)
+- [Storage and export](#storage-and-export)
+- [Adding a function](#adding-a-function)
+- [Historical measurements and design notes](DESIGN.md)
 
-## The loop
+## Quick start
+
+Run the examples from `benchmarks/api-distributions`:
 
 ```bash
-Rscript run.R run --depth smoke     # 1. measure   (~35 s for everything)
-Rscript run.R status                # 2. the index: what ran, what differs most
-Rscript run.R browse                # 3. drill down and read
-Rscript run.R diff                  # 4. after a code change: what moved?
+Rscript run.R run --depth smoke
+Rscript run.R status
+Rscript run.R browse
+# After editing and reinstalling anvl, rerun the sweep, then compare:
+Rscript run.R diff
 ```
 
-`Rscript run.R selftest` (~30 s) proves the engine still detects errors; run it
-after touching anything in `R/`.
+The harness calls the **installed `anvl` package**: Remember to reinstall after
+changing anvl.
+Provenance records the checkout's SHA separately; it does not verify that the
+installed package matches any checkout or capture uncommitted source changes.
 
-Nothing is written into this directory. Results go to the store (below).
+Install anvl and its sibling dependencies first. The harness requires
+`nanoparquet` and `cli`; JAX cells also need `reticulate` and Python with `jax`.
+Reference validation needs `Rmpfr`, and `sw_sql()` needs `duckdb` and `DBI`.
+The JAX helpers use the venv in `RETICULATE_PYTHON` if it is set.
 
-## The three depths
+Run `Rscript run.R selftest` after changing the harness's `R/` files. It checks
+known injected errors and writes synthetic results to the selected store.
+Sweep results go to the external store by default; `export` writes to `--out`.
 
-A sweep walks a pattern-index space of 2³¹ values per sign with a stride, so a
-shallower depth is the *same* sweep at coarser spacing — it still covers the
-whole number line, subnormals, infinities and NaN included, and can fail
-anywhere the full run can. Only the resolution changes.
+### Terms
 
-Measured on an M1 laptop over the 160 anvl cells. Cost is linear in the sample
-count, so the `full` row is extrapolated from the two that were timed:
+- **Cell:** one function, backend, precision, value/gradient mode, parameter set
+  and flag combination; the unit of work.
+- **Result:** one output of a cell. A value cell produces one result; a gradient
+  cell produces one per differentiated argument.
+- **Binade:** a range of magnitudes between successive powers of two. The
+  harness groups by sign and exponent field, with special handling for zeros,
+  subnormals, infinities and NaNs.
+- **Ulp:** a unit in the last place—the spacing at a value in a given precision.
+  Sweep error uses the result's precision; reference validation uses f64 ulps.
 
-| depth | samples per cell | whole grid, serial | with `--jobs 8` | for |
-|---|---|---|---|---|
-| `smoke` | 524,288 | **35 s** | ~17 s | every code change; the default |
-| `quick` | 33.5 M | ~1 h | ~8 min | before opening a PR |
-| `full` | 4.29 × 10⁹ | ~5 days | ~15 h | overnight per function, or a cluster |
+The current anvl grid has **160 cells and 320 results**. `run.R list` reports
+the grid generated by the current specs.
+
+### Files
+
+```text
+run.R          list, run, status, browse, report, diff, export, merge,
+               selftest, validate-refs
+query.R        read the store from R or the shell
+R/util.R       bit patterns, ulp spacing, number formatting
+R/engine.R     enumeration, scoring, reducers, region classification
+R/cells.R      spec definitions, grid, cell IDs, filtering
+R/render.R     terminal rendering
+R/store.R      Parquet store and result selection
+R/provenance.R environment fingerprint
+R/validate.R   reference validation against MPFR
+sweeps/        function specs and shared helpers
+HPC.md         cluster execution
+DESIGN.md      historical measurements and design rationale
+```
+
+## Coverage and result selection
+
+### The three depths
+
+A sweep walks a pattern-index space of 2³¹ indices per sign. Depth sets the
+stride: coarser sweeps sample across the range but can miss localized failures.
+In f64, random low bits mean that exact zeros and infinities are generally
+absent from the sweep. Separate exact-point checks cover them at every depth.
+
+| depth | stride | samples per cell | intended use |
+|---|---|---|---|
+| `smoke` | 8,192 | 524,288 | default; after changes |
+| `quick` | 128 | 33,554,432 | broader checks |
+| `full` | 1 | 4,294,967,296 | exhaustive f32 or stratified f64 coverage |
+
+These counts exclude exact-point checks. **Time the relevant cells on your
+setup before scheduling a full run!** (Running single core on a modern Intel
+CPU, full depth over Normal and Uniform takes ~865 hours (36 days)).
 
 In `f32`, `full` is genuinely exhaustive: every one of the 2³² float32 values is
 visited exactly once. In `f64`, 2⁶⁴ is out of the question, so `full` takes one
@@ -62,11 +103,11 @@ sample from each of the 2³² contiguous blocks of 2³² — every (sign, expone
 top-20-mantissa-bit) combination, with the low 32 bits drawn from a fixed seed
 so another machine reproduces the same inputs.
 
-`full` over the whole grid is not a laptop job — that is what `HPC.md` is for.
-It is entirely reasonable for *one function*: `--filter spec=nv_qnorm` is 20
-cells, about 4 hours at `--jobs 8`.
+`--filter spec=nv_qnorm` selects **32 anvl cells and 64 results**. Its runtime
+depends on the precision, outputs and machine; the old estimate based on 20
+cells is not applicable. See [HPC.md](HPC.md) for distributing larger runs.
 
-## Selecting what to run
+### Selecting what to run
 
 ```bash
 Rscript run.R list                                    # what cells exist
@@ -77,20 +118,52 @@ Rscript run.R run --backends anvl,jax                 # JAX side too
 Rscript run.R run --dry-run --depth full              # what would run
 ```
 
-`--filter` takes `key=value` terms joined by commas; `|` inside a value means
-"any of". Keys are `spec`, `family`, `backend`, `dtype`, `kind`, `param_set`,
-`flags`, `cell_id` and `output`. An unknown key is an error.
+`--filter` takes comma-separated `key=value` terms; `|` inside a value means
+“any of”. For `run` and `list`, use `spec`, `family`, `backend`, `dtype`, `kind`,
+`param_set`, `flags` or `cell_id`. `flags` and `cell_id` also allow substring
+regular-expression matches.
 
-`--jobs N` forks N workers. Cells are independent and each writes its own file,
-so this needs no coordination and no locking.
+Reporting commands and `validate-refs` additionally accept `output` to select
+an individual result. `run` does not: a gradient cell computes all derivatives
+together. Use `run --dry-run` or `list` to check a selection. Unknown leading
+keys error, but an unrecognized term after a valid key can be interpreted as
+part of that key's value because cell IDs themselves contain commas.
 
-## `browse` — drill down interactively
+`--jobs N` uses forked workers on supported systems. Each cell writes separate
+files. `run`, `list`, `status`, `report`, `browse` and `diff` default to anvl;
+include `--backends anvl,jax` to select JAX too. `export` and `validate-refs`
+default to all backends represented in the store.
 
-320 results is far too much to print, so `browse` and `report` summarise until
-you have narrowed things enough for the pages to be readable. Both show f32 and
-f64 **side by side at every level** rather than making you pick: their errors
-differ by about nine orders of magnitude, so a pooled summary has a meaningless
-maximum, and comparing the two is the commonest thing to want.
+### Which results are selected?
+
+| reader | selection |
+|---|---|
+| `sw_results()`, `sw_worst()` | latest per cell, output, platform and depth |
+| `status`, `report`, `browse`, `export`, `validate-refs` | latest results first, then deepest available per cell/output |
+| `diff` | newest matching run versus the previous matching result per cell, output, platform and depth; `--from`/`--to` select runs |
+| `sw_detail()`, `sw_hist()`, `sw_bands()`, `sw_ranges()`, `sw_points()` | matching historical rows, not just the latest run |
+
+An older full sweep can therefore take precedence over a newer smoke sweep in
+reports and exports. `validate-refs` applies `--run` after latest/deepest
+selection; it does not retrieve arbitrary historical results by run ID.
+
+**Current platform limitation:** `deepest_per_cell()` groups by cell/output
+without platform. In a store containing multiple platforms it retains only
+one platform's result for each cell/output. Keep separate stores per platform
+for these readers. Selection can also combine runs and anvl versions; use a
+fresh store for a version-specific publication. These are selection behaviours,
+not guarantees that the selected data forms a coherent snapshot.
+
+## Inspecting results
+
+The terminal excerpts below illustrate the layout using historical results;
+they are not current accuracy measurements.
+
+### `browse` — drill down interactively
+
+`browse` and `report` summarise large selections and show f32 and f64 in
+separate columns where both are present. Keeping precisions separate makes
+their different error scales easier to compare.
 
 ```
   nv_qnorm  ›  value  ›  lower_tail=TRUE,log_p=TRUE   (4 results)
@@ -106,35 +179,26 @@ maximum, and comparing the two is the commonest thing to want.
    b) back   q) quit
 ```
 
-Pick a number to go deeper, `b` to go back, `q` to leave. Five keystrokes takes
-you from 320 results to one page. The axes narrow in the order
+Pick a number to go deeper, `b` to go back, `q` to leave. The axes narrow in the order
 `function → backend → value/gradient → flags → parameter set → precision`, and
 the last step prints the page itself. At a page, `d` walks through the retained
 worst inputs, 20 at a time, with their bit patterns.
 
-### The worst inputs are kept per binade, not globally
+#### Retaining worst inputs per binade
 
-The store keeps the worst **10 inputs in each binade**. A single global list
-clusters: every one of nv_qunif f32's worst 1000 sat around x = 1/3, so the
-worst input anywhere in the tail had been computed and thrown away. Per binade,
-roughly 250 binades are occupied and ~2,500 inputs kept per result, spanning
-|x| from 1e-41 to 1 — so *"what is the worst input near 1e-8?"* is answerable.
-The overall worst is still just the first row, because retained inputs are
-ranked globally on the way out.
+The store keeps up to **10 inputs with positive finite relative error per sign
+and binade**, with zeros handled separately. `--topk N` changes this limit.
+Inputs are ranked by relative error, so this is not a separate shortlist of
+the largest ulp errors. Non-finite disagreements are retained as regions.
 
-K is small because the cost multiplies by the number of occupied binades rather
-than dividing by it: per-binade top-100 would be about twelve times the store,
-per-binade top-10 is about five (19 MB → 51 MB for the whole grid at smoke).
-`--topk N` changes it.
+Per-binade retention preserves examples across input magnitudes instead of
+letting one small interval fill the entire shortlist. Returned detail rows are
+ranked globally and carry `binade` and `sign` to join onto the behaviour bands.
+See [DESIGN.md](DESIGN.md#retained-inputs) for the historical storage comparison.
 
-Each row carries its `binade` and `sign`, so the detail joins directly onto the
-behaviour bands below.
+The browser uses numbered menus; use `report` for scripted inspection.
 
-Numbered menus rather than arrow keys is deliberate: R has no usable TUI
-library, and raw-mode key capture means driving `stty`, which is brittle across
-terminals and breaks as soon as output is piped.
-
-## `report` — the same pages, non-interactively
+### `report` — the same pages, non-interactively
 
 `report` walks the same tree, but the level is set by how narrow your filter
 already is, so it composes with scripting and needs no terminal:
@@ -201,12 +265,9 @@ hundreds of thousands of alternating one-element runs. The highest exponent
 field gets its own row rather than a range, because it is not an interval — it
 holds ±Inf and every NaN side by side.
 
-Reports are generated from the store on demand and never written to disk.
-Regenerating is instant, and a file would only be a stale copy of queryable
-data — which is exactly how the previous generation of `.txt` artifacts became
-unusable.
+Reports are generated from the store on demand and printed to the terminal.
 
-## `diff` — did the change help?
+### `diff` — did the change help?
 
 ```bash
 Rscript run.R diff                       # newest run vs the previous result per cell
@@ -226,11 +287,10 @@ SUMMARY
      0 had no earlier result to compare against
 ```
 
-**The sweep is deterministic** — fixed seed, fixed stride, the same inputs every
-time — so two runs of the same cell at the same depth on one machine are
-bit-identical unless the code changed. That removes any need for a "meaningfully
-different" threshold: every difference is real, and exact equality is a real *no
-change*. (Verified: re-running unchanged code reports 8 of 8 unchanged.)
+**Input sampling is deterministic** for a fixed harness, seed, dtype and depth.
+Numerical results also depend on the installed packages, runtime and settings.
+`diff` uses exact comparisons of the recorded metrics; a change is evidence to
+investigate, not by itself proof that anvl source changed.
 
 Results pair by cell, output, platform **and depth**. A smoke result and a full
 result sample different inputs, so pairing across depths would report the extra
@@ -254,14 +314,12 @@ entirely; anvl goes through `log1p` and keeps it. The sweep correctly reports a
 disagreement, and the right response is to leave `nv_punif` alone. Always
 establish which side is right before acting on one.
 
-### Every failure has a tested cause, not a location
+### How disagreements are classified
 
-When the two sides disagree and there is no finite relative error — one is NaN,
-the reference is zero or infinite, the result is ±∞ against a finite reference,
-or the error itself overflows — the sample is a *failure*. Every such case is,
-not a list of them. Failures arrive in contiguous blocks, which the sweep
-collapses into regions, one **cause** per region, each established by a test
-rather than read off where the inputs lie:
+A disagreement with no finite relative error is routed to the failure-region
+tracker, unless it matches the reference rounded to the result's precision.
+The tracker groups adjacent failing samples and assigns a cause using the
+tests below. `unidentified` means none of those tests explains the disagreement.
 
 | cause | tested how | category |
 |---|---|---|
@@ -274,9 +332,11 @@ rather than read off where the inputs lie:
 | `inf_input` | ±∞ inside the domain | failure |
 | `unidentified` | none of the above | failure |
 
-The **category** is what a reader weighs, and all four stay visible:
+The initial categories are listed below. Validated reference disputes can
+also become `reference_limitation`, described in the next section:
 
-- **failure** — numerical or behavioural failure on valid inputs.
+- **failure** — an unexplained disagreement, including an incorrect value
+  outside the valid domain where NaN is required.
 - **backend limitation** — the platform, not the function: input flushing.
 - **boundary** — behaviour at a domain endpoint, which needs an explicit
   convention or limiting value; the reference supplies the limiting value.
@@ -286,9 +346,9 @@ The **category** is what a reader weighs, and all four stay visible:
   the reference's is 0). A gradient cell never computes forward values, so this
   is **established** from the matching value cell, which swept the identical
   inputs: only where it found both values NaN for every out-of-domain sample in
-  every binade the region touches. Anything less stays a failure. Only this
-  category is set aside from an accuracy verdict, and setting it aside
-  validates nothing.
+  every binade the region touches. Anything less stays a failure. This
+  category is set aside as an undefined-domain convention; doing so does not
+  validate the derivative.
 
 **The evidence for a convention must come from the same run.** The value cell
 is looked up by the gradient region's own `run_id`, which fixes the platform,
@@ -375,13 +435,13 @@ that a parameter-set name still means the same values. A stable reference is che
 takes the small tail directly on each side, which is anvl's own algorithm, so
 in f64 only the high-precision validation makes it independent evidence.
 
-It costs ~60% more on a covered cell, ~2% on a full run, since only
-`nv_punif`'s log-scale value cells declare one.
+Currently, only `nv_punif`'s log-scale value cells declare a stable reference.
+Evaluating it adds work to those cells; measure that cost on the target system.
 
 ### `validate-refs` — checking the references against high precision
 
 ```bash
-Rscript run.R validate-refs                      # every result in the store
+Rscript run.R validate-refs                      # selected latest/deepest results
 Rscript run.R validate-refs --filter spec=nv_punif --prec 512
 Rscript run.R validate-refs --shard 3 --shards 32   # one share, for a cluster array
 ```
@@ -393,7 +453,7 @@ both cells' inputs, and `--shard i --shards n` takes the same units on every
 machine. Each run writes its own record, so shards need no merging.
 
 It needs Rmpfr, and nothing else does: run it wherever Rmpfr is installed,
-after the sweep, without re-running it. For every result with a stable
+after the sweep, without re-running it. For each selected result with a stable
 reference (the evidence in a base R dispute) or a gradient reference (what
 every gradient is scored against), it:
 
@@ -474,18 +534,19 @@ normal family's are built to avoid the ways the obvious evaluation fails:
   did too would share their error instead of measuring it;
 - `m · φ(z)` and `m / φ(z)` go through `phi_times()` / `phi_recip()`, which
   split z so its square is exact and scale so nothing under- or overflows
-  before the answer does: φ underflows at |z| ≈ 37.5 while `(z² − 1)φ(z)` is
-  still 1.7e−321 at z = 38.6, and for huge z the bracket overflows while the
-  answer is 0;
+  before the answer does: φ becomes subnormal around |z| = 37.6 and rounds
+  to zero by z = 38.6, while `(z² − 1)φ(z)` is still about 1.7e−321 there;
+  for huge z the bracket can overflow even though the answer is 0;
 - `(z² − 1)/sd` as `(z − 1) · ((z + 1)/sd)`, finite where z² overflows;
 - the inverse Mills ratio as a direct ratio above z = −20 and a continued
   fraction below, not a difference of two logs of ~−z²/2.
 
-Checked against 256-bit MPFR on ~8,700 inputs per output across both
-parameter sets (both tails, the underflow region, ±∞, up to 1e200), every
-normal-family gradient reference is within 8 f64 ulp; the remainder is mostly
-base R's own `pnorm` (up to 4 ulp) inside the log-scale ones. `selftest`
-pins the cases that used to be 0, NaN or Inf to their MPFR values.
+The normal-family specs currently declare a **16 f64 ulp** bound for gradient
+reference validation. An earlier sampled check reported a maximum of eight
+ulps; that [historical observation](DESIGN.md#reference-evaluation) is not the
+configured bound or a current verdict. Run `validate-refs` and inspect the
+records for the reference identity in use. `selftest` also checks selected
+regression cases against recorded MPFR values.
 
 ### Exact points, beside every sweep
 
@@ -524,8 +585,9 @@ the sweep and the points together. A result is called **bit-identical** only if
 every sampled input and every exact point matches base R down to the sign of
 zero; results that differ *only* by undefined-domain conventions are counted on
 a line of their own, as set aside. `diff` compares every one of these counts,
-not just the worst error. Candidate base R disputes are counted on a line of
-their own and excluded from nothing.
+not just the worst error. Unvalidated candidate disputes remain included. Once validated, verified
+reference limitations have separate counts and adjusted error summaries beside
+the unchanged comparisons against base R.
 
 ### The reference sees the parameters the implementation sees
 
@@ -560,22 +622,24 @@ machine that runs the sweep.
 
 ### A known platform property: subnormal flush-to-zero
 
-Every arithmetic and comparison operation on this PJRT/XLA CPU backend flushes
-subnormals to zero, in **both** precisions. Storage round-trips correctly, but
-`x >= 0` is `TRUE` for a negative subnormal, because the comparison sees `-0`:
+Earlier PJRT/XLA CPU observations found arithmetic and comparisons flushing
+subnormals to zero in both precisions, while storage preserved them. Those
+observations did not record a runtime version here, so they are not a guarantee
+for every operation or platform. The following examples illustrate the observed
+behaviour; check them against the installed runtime:
 
 ```r
 as.vector(nv_array(-1e-39, dtype = "f32") >= 0)             # TRUE  (R says FALSE)
 as.double(nv_dunif(nv_array(-1e-39, dtype = "f32"), 0, 1))  # 1     (R says 0)
 ```
 
-A subnormal input is therefore evaluated as ±0. That is *tested*, per sample:
-a failure is attributed to input flushing only if the result is bit-identical to
+The harness tests input flushing per sample: a failure is attributed to input flushing only if the result is bit-identical to
 the function's own result at the same-signed zero and that zero result is
 validated (see the cause table above). Flushing that produces a materially
-wrong answer still counts, as `n_flushed`, with its error kept. `Rscript query.R ranges
---cause input_flushing` lists every region; the day the backend stops flushing,
-they become ordinary agreement.
+wrong answer still counts, as `n_flushed`, with its error kept.
+`Rscript query.R ranges --cause input_flushing` lists the attributed regions.
+A runtime change can change that classification; agreement still depends on
+the function result.
 
 **Never write the literal `-0` inside a function in this harness.** R's
 byte-code compiler (R 4.6.1, JIT level 3 — verified) folds it to `+0` in some
@@ -583,12 +647,16 @@ call shapes: `c(0, -0)` in a compiled function returns two positive zeros. Use
 `NEG_ZERO` (`R/util.R`), built from its bit pattern; `selftest` checks that it
 survives.
 
-## `export` — publishing a snapshot
+## Storage and export
 
-The store accumulates: every run appends, and queries take the latest per cell.
-A published artifact must instead be one coherent snapshot — **one artifact per
-(anvl version, platform)**, covering every function and **every backend in the
-store**, so anvl and its JAX twin can be compared side by side.
+### `export` — publishing selected results
+
+Export uses the latest/deepest selection described above. It does **not**
+enforce one version or platform, complete function coverage, or a single run.
+For a coherent publication, sweep into a fresh store for the intended installed
+version and platform, validate its references, then inspect coverage with
+`status` before exporting. Use a fresh output directory so old optional tables
+cannot remain from a previous export.
 
 ```bash
 Rscript run.R export --out ../anvl-bench-darwin-arm64-cpu
@@ -611,7 +679,13 @@ points.parquet    the exact points, resolved
 categories.parquet  per-result figures by input class (normal, zero, subnormal,
                   outside the domain, ±∞ & NaN); each cell's domain and support
                   are on summary
+disputes.parquet  retained candidate disputes and shared reference errors
+validations.parquet  reference-validation records
+validation_samples.parquet  retained validation samples and failures
 ```
+
+Schema version is currently 7. Optional tables are written only when data is
+available; consult `manifest.json` for the actual file inventory.
 
 One file per **table**, not per function. The overview page summarises every
 function at once, so splitting by function would mean fetching all the pieces
@@ -620,73 +694,47 @@ downloads instead of one artifact.
 
 `manifest.json` is deliberately JSON and carries no measurements: it is the
 index, readable without a Parquet reader. The measurements stay in Parquet
-because JSON cannot represent `NaN`, `±Inf` or `-0`, which is most of what makes
-this data interesting.
+to preserve NaN, infinities, signed zero and subnormals. Standard JSON has no
+numeric representation for NaN or infinities, and signed-zero preservation
+depends on the serializer and consumer.
 
 ### Row groups are aligned to cells, so drilling in is cheap
 
-Parquet can only skip whole row groups, and nanoparquet writes **one** group of
-up to ten million rows by default — which would mean reading a whole 46 MB file
-to inspect a single cell. `export` sorts `detail` and `bands` by cell and starts
-a new row group at every cell boundary.
+Export sorts `detail`, `bands`, `hist`, `ranges`, `kinds`, `points` and
+`disputes` by cell/output and starts a row group at each cell boundary. Readers
+that support selective row-group access can fetch a cell without reading the
+whole table. Transfer size depends on the data and reader; historical HTTP
+measurements are in [DESIGN.md](DESIGN.md#browser-export-measurements).
 
-Measured over HTTP, on the full grid at smoke depth (53.7 MB in 7 files):
-
-| operation | fetched | time |
-|---|---|---|
-| manifest + summary (the entire index and overview) | **31.9 kB** | 16 ms |
-| drill into one cell of a 46 MB `detail.parquet` | **0.56 MB — 1.2%** | 111 ms |
-| one column across all 1.28 M rows | 0.51 MB — 1.1% | 166 ms |
-
-Aligning row groups costs about 23% in total size — smaller groups compress less
-well — and buys roughly 80× less data transferred per drill-down.
-
-**Verified readable from a browser.** `hyparquet` (pure JS, ~10 kB, no WASM)
-reads nanoparquet's output bit-exactly: `+0`/`-0` distinguished, `NaN`, `±Inf`,
-min subnormal, max double, `NA`→null, SNAPPY decompressed, HTTP range requests
-via `asyncBufferFromUrl`. DuckDB-WASM was rejected: at ~30 MB it is larger than
-the data it would query.
-
-## The store
+### The store
 
 Results are **Parquet, written once, never mutated** — one file per cell per
 run, in a partitioned directory.
 
-That is the whole concurrency design. Two processes never touch the same bytes,
-so parallel jobs, a second machine and a cluster array are all the same case,
-and merging two machines' results is a file copy. It is also why neither SQLite
-nor DuckDB is the write target: SQLite's locking is documented-unreliable on NFS
-and Lustre, and DuckDB allows only one writer process per database file. DuckDB
-is excellent on the read side, and `sw_sql()` uses it when installed — but
-nothing depends on it.
-
-Parquet earns its place on **type fidelity**, not size: the store is small, but
-it holds NaN, ±Inf, signed zero and subnormals exactly, all of which a CSV
-round-trip would quietly destroy. (Verified: `nanoparquet` round-trips f64
-bit-exactly. It does *not* round-trip 64-bit integers — they come back widened
-to doubles — which is why bit patterns are stored as hex strings.)
+Each cell writes separate files within each table and run partition. Workers
+can write independently, and `merge` copies table files between stores.
+Parquet preserves the numeric values needed here, including NaN, infinities,
+signed zero and subnormals. Bit patterns are stored as hex strings so consumers
+do not need to preserve unsigned 64-bit integers.
 
 ```bash
-export NV_SWEEP_STORE=/path/to/store    # default: R_user_dir("anvl-sweeps","cache")
+export NV_SWEEP_STORE=/path/to/store
 Rscript run.R merge --from /other/machine/store
 ```
 
-The store lives **outside the repo** and is never committed: it is
-machine-specific, it is regenerated by re-running the sweeps, and it grows
-without bound as runs accumulate.
+The default is `file.path(tools::R_user_dir("anvl-sweeps", "cache"), "store")`.
+`NV_SWEEP_STORE` or `run.R --store` can override it; choose a location outside
+the repository. Runs accumulate without replacing earlier results. Reader
+selection differs by command, as described above.
 
-Results **accumulate**; a re-run adds rows rather than replacing them. Queries
-default to the latest per (cell, output, platform, depth), so history is free:
-"which results predate this commit" is a column, not a file timestamp.
+Every run records host, CPU, OS, architecture, device label, R version,
+`default_dtypes()`, package versions and checkout SHAs. SHAs are read directly
+from `.git`, without invoking Git. The anvl SHA comes from the checkout
+containing this harness; it does not verify the installed package's source.
+`NV_SWEEP_DEVICE` supplies the device label (default `cpu`); set it to match the
+runtime actually used. It labels the run and does not select a device.
 
-Every run records an environment fingerprint — host, CPU, OS, architecture,
-device, R version, `default_dtypes()`, and the git SHA of each sibling checkout
-(read straight out of `.git`, so no `git` command is ever invoked and it works
-on a node without git installed). Without this a result from August cannot be
-compared with one from September, which is exactly how the previous generation
-of artifacts became unusable.
-
-## Reading the store directly
+### Reading the store directly
 
 ```bash
 Rscript query.R worst --spec nv_qnorm --n 20
@@ -707,15 +755,22 @@ sw_compare("darwin-arm64-cpu", "linux-x86_64-cuda")
 sw_sql("select spec, dtype, max(worst_rel_err) from results group by 1, 2")
 ```
 
+`sw_detail()`, `sw_hist()` and the other history readers can return rows from
+multiple runs or platforms, and some omit run identifiers in their output. For
+an unambiguous historical query, use `sw_sql()` or read a raw table and filter
+by `run_id`, `cell_id` and `output`.
+
 `sw_detail()` gives the worst individual inputs **with their bit patterns** —
 paste a `bits` value straight into a regression test in
 `tests/testthat/test-api-distributions.R`.
 
 ## Adding a function
 
+Start from an existing spec such as [`sweeps/dnorm.R`](sweeps/dnorm.R).
 Write one file in `sweeps/`. It returns a `sweep_spec()` and is discovered
 automatically; nothing is registered anywhere. Files beginning with `_` are
-shared helpers, not specs.
+shared helpers, except `_selftest.R`, which is loaded only when requested.
+The following sketch shows the fields; replace `...` before running it.
 
 ```r
 source(file.path(here(), "sweeps", "_normal.R"), local = TRUE)
@@ -727,7 +782,7 @@ sweep_spec(
   params    = list(standard = list(mean = 0, sd = 1)),
   flags     = list(log = c(FALSE, TRUE)),
   domain    = function(p, f) c(-Inf, Inf),         # valid input domain
-  support   = function(p, f) c(p$min, p$max),      # optional; reporting only
+  support   = function(p, f) c(-Inf, Inf),         # optional; reporting only
   branch_points = function(p, f, dtype) c(...),    # optional; anvl's own
 
   value     = function(x, dtype, p, f) as.double(anvl::nv_dnorm(...)),
@@ -735,15 +790,18 @@ sweep_spec(
   ref_stable = function(x, p, f) ...,                # optional; see "base R disputes"
   ref_stable_bound_ulp64 = 8,                        #   its error bound, double ulps
   ref_stable_note = "why base R is weaker here",     #   required with ref_stable
-  ref_stable_covers = function(f) isTRUE(f$log_p),   #   optional; which flags
+  ref_stable_covers = function(f) isTRUE(f$log),     #   optional; which flags
 
   grad_wrt  = c("x", "mean", "sd"),
   grad      = function(x, dtype, p, f) list(x = ..., mean = ..., sd = ...),
   ref_grad  = function(x, p, f)       list(x = ..., mean = ..., sd = ...),
+  ref_grad_mpfr = function(x, p, f) ...,       # optional MPFR truth
+  ref_grad_bound_ulp64 = 16,                  # bound checked by validation
+  ref_stable_mpfr = function(x, p, f) ...,     # needed to validate ref_stable
 
   jax_value = function(x, dtype, p, f) ...,          # optional
   jax_grad  = function(x, dtype, p, f) ...,          # optional
-  jax_covers = function(f, kind) !isTRUE(f$log_p)    # where JAX has no twin
+  jax_covers = function(f, kind) TRUE    # where JAX has no twin
 )
 ```
 
@@ -751,19 +809,16 @@ The grid is `params × flags × dtypes × {value, grad} × backends`; an unknown
 field name is an error, so a typo in a config that takes hours to run cannot
 silently do nothing.
 
-**`grad` returns every derivative from one call.** That is not a convenience: a
-reverse pass computes them all together, so scoring them from a single sweep
-rather than re-sweeping once per argument is a straight 3× saving on what is by
-far the largest part of the grid.
+**`grad` returns all declared first derivatives from one call.** A reverse pass
+computes them together, so the harness scores all outputs during the same sweep.
 
 Three things worth knowing before you write a reference:
 
-1. **A wrong reference is indistinguishable from a real finding.** The first
-   version of `pnorm.R` used `exp(log φ − log Φ)` for the log-scale gradient.
-   Both logs are ≈ −5e299 at q = −1e150 and their difference is only ≈ 345, far
-   below the ulp, so the reference returned 1 where the true value is 1e150 and
-   the sweep reported nv_pnorm as wrong by a factor of 1e231. anvl was right.
-   See `inv_mills()` in `sweeps/_normal.R`.
+1. **Evaluate references stably and validate them.** Analytic formulas can
+   still lose accuracy through cancellation, overflow or underflow. See
+   `inv_mills()` in `sweeps/_normal.R` and supply MPFR truths and explicit
+   bounds for reference validation.
+
 2. **Declare the domain honestly, and keep it apart from the support.** The
    *domain* is where the function is defined at all (p in [0, 1] for a
    quantile); outside it the value is NaN by specification. The *support* is
@@ -786,13 +841,3 @@ and `selftest` asserts the engine finds each at the right magnitude. It exists
 because a sweep that silently sweeps nothing looks exactly like a sweep that
 found nothing, and at full depth that is an expensive way to discover a
 misspelled filter.
-
-## Dependencies
-
-`nanoparquet` and `cli` are required; `reticulate` only for `--backends jax`;
-`duckdb` only for `sw_sql()`. The JAX side uses the shared virtualenv at
-`../../../py-benchmarks/.venv` unless `RETICULATE_PYTHON` is already set.
-
-Never run `devtools::install()` in this ecosystem — it resolves anvl's
-`Remotes:` and upgrades the sibling packages from GitHub main. Use
-`R CMD INSTALL <dir>`.
