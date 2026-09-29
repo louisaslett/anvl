@@ -33,10 +33,9 @@ Imports:
     pjrt (>= 0.6.0),
     rlang,
     safetensors (>= 0.2.0),
-    stablehlo (>= 0.5.0),
-    tengen (>= 0.3.0),
+    stablehlo (>= 0.4.0),
     withr,
-    xlamisc (>= 0.4.1)
+    xlamisc (>= 0.4.1.9000)
 Suggests:
     bit64,
     knitr,
@@ -46,7 +45,6 @@ Suggests:
     testthat (>= 3.0.0)
 Remotes:
     r-xla/pjrt,
-    r-xla/tengen,
     r-xla/stablehlo,
     r-xla/xlamisc
 Config/testthat/edition: 3
