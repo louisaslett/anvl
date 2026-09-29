@@ -95,7 +95,7 @@ absent from the sweep. Separate exact-point checks cover them at every depth.
 
 These counts exclude exact-point checks. **Time the relevant cells on your
 setup before scheduling a full run!** (Running single core on a modern Intel
-CPU, full depth over Normal and Uniform takes ~865 hours (36 days)).
+CPU, full depth over Normal and Uniform takes ~36 days).
 
 In `f32`, `full` is genuinely exhaustive: every one of the 2³² float32 values is
 visited exactly once. In `f64`, 2⁶⁴ is out of the question, so `full` takes one
