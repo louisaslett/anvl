@@ -464,6 +464,24 @@ describe("prim_if", {
     expect_equal(g(nv_scalar(FALSE)), nv_scalar(6))
   })
 
+  it("passes an array both branches close over once", {
+    w <- nv_array(c(1, 2), dtype = "f32")
+    graph <- trace_fn(function(p) nv_if(p, \() w * 2, \() w + 1), list(p = nv_scalar(TRUE)))
+    expect_length(graph$constants, 1L)
+    expect_length(graph$statements[[1L]]$inputs, 2L)
+    expect_equal(jit(function(p) nv_if(p, \() w * 2, \() w + 1))(nv_scalar(FALSE)), w + 1)
+  })
+
+  it("captures a value computed from a closed-over array as that value", {
+    # `sin(y)` is computed from the constant `y`, but is not `y`.
+    y <- nv_scalar(3, "f32")
+    f <- jit(function(x) {
+      v <- sin(y)
+      nv_if(nv_scalar(TRUE), \() v + x, \() x)
+    })
+    expect_equal(as.numeric(f(nv_scalar(2, "f32"))), sin(3) + 2, tolerance = 1e-6)
+  })
+
   it("works with literals as predicate", {
     expect_equal(nv_if(TRUE, \() 1, \() 2), nv_scalar(1))
   })
@@ -1735,4 +1753,42 @@ test_that("prim_sort takes a list of arrays, not an array", {
     as.vector(as_array(prim_sort(list(nv_array(c(3, 1, 2))), axis = 1L)[[1L]])),
     c(1, 2, 3)
   )
+})
+
+describe("a reducer or update_fn that closes over a value", {
+  x <- nv_array(c(1, 2, 3), dtype = "f64")
+  w <- nv_scalar(2, "f64")
+
+  it("inlines a scalar array as a literal", {
+    f <- function(x) prim_reduce(x, init = nv_scalar(0, "f64"), axes = 1L, reducer = function(a, b) a + b * w)
+    graph <- trace_fn(f, list(x = x))
+    reducer <- graph$statements[[length(graph$statements)]]$params$reducer
+    expect_length(reducer$constants, 0L)
+    expect_length(reducer$inputs, 2L)
+    expect_equal(as.numeric(jit(f)(x)), 12)
+  })
+
+  it("refuses a traced value", {
+    f <- jit(function(x, w) {
+      prim_reduce(x, init = nv_scalar(0, "f64"), axes = 1L, reducer = function(a, b) a + b * w)
+    })
+    expect_error(f(x, w), "must not close over a traced value")
+    g <- jit(function(x, w) {
+      prim_scatter(
+        x,
+        scatter_indices = nv_array(1L, dtype = "i64", shape = c(1, 1)),
+        update = nv_array(5, dtype = "f64"),
+        update_window_axes = integer(),
+        inserted_window_axes = 1L,
+        x_batching_axes = integer(),
+        scatter_indices_batching_axes = integer(),
+        scatter_axes_to_x_axes = 1L,
+        index_vector_axis = 2L,
+        indices_are_sorted = FALSE,
+        unique_indices = TRUE,
+        update_fn = function(old, new) new * w
+      )
+    })
+    expect_error(g(x, w), "must not close over a traced value")
+  })
 })

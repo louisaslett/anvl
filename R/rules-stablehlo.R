@@ -328,8 +328,8 @@ prim_cummin[["stablehlo"]] <- function(x, axis, output_types) {
   .stablehlo_apply_cum_extreme(x, axis, is_max = FALSE, index_dtype = index_dtype_of(output_types, 2L))
 }
 
-prim_reduce[["stablehlo"]] <- function(x, init, axes, drop, reducer, .env) {
-  red_func <- stablehlo(reducer, id = "", constants_as_inputs = FALSE, env = .env)[[1L]]
+prim_reduce[["stablehlo"]] <- function(x, init, ..., axes, drop, reducer, n_captures) {
+  red_func <- stablehlo(reducer, id = "", captured = list(...))[[1L]]
   out <- hlo_reduce(
     inputs = list(x),
     init_values = list(init),
@@ -346,7 +346,7 @@ prim_reduce[["stablehlo"]] <- function(x, init, axes, drop, reducer, .env) {
 
 .r_reducer_to_hlo_func <- function(fn, dummy_args) {
   graph <- trace_fn(fn, dummy_args, desc = local_descriptor())
-  stablehlo(graph, id = "", constants_as_inputs = FALSE)[[1L]]
+  stablehlo(graph, id = "")[[1L]]
 }
 
 .stablehlo_arg_extreme <- function(x, axis, drop, direction, init_v_fn, index_dtype) {
@@ -731,22 +731,30 @@ prim_print[["stablehlo"]] <- function(x, header, footer) {
 
 # higher order primitives --------------------------------------------------------
 
-prim_if[["stablehlo"]] <- function(pred, true, false, .env) {
-  true_func <- stablehlo(true, id = "", constants_as_inputs = FALSE, env = .env)[[1L]]
-  false_func <- stablehlo(false, id = "", constants_as_inputs = FALSE, env = .env)[[1L]]
+# The operands after `pred` are the branches' inputs. A StableHLO `if` region
+# takes no arguments, so the regions read them by capture.
+prim_if[["stablehlo"]] <- function(pred, ..., true, false, n_captures) {
+  true_func <- stablehlo(true, id = "", captured = list(...))[[1L]]
+  false_func <- stablehlo(false, id = "", captured = list(...))[[1L]]
   hlo_if(pred, true_func, false_func, simplify = FALSE)
 }
 
-prim_while[["stablehlo"]] <- function(..., cond, body, .env) {
-  body_func <- stablehlo(body, id = "", constants_as_inputs = FALSE, env = .env)[[1L]]
-  cond_func <- stablehlo(cond, id = "", constants_as_inputs = FALSE, env = .env)[[1L]]
-  hlo_while(..., cond = cond_func, body = body_func, simplify = FALSE)
+# The regions take the state as arguments and read the captures past it from
+# above.
+prim_while[["stablehlo"]] <- function(..., cond, body, n_captures) {
+  args <- list(...)
+  n_state <- length(args) - n_captures
+  state_idx <- seq_len(n_state)
+  captured <- args[n_state + seq_len(n_captures)]
+  body_func <- stablehlo(body, id = "", captured = captured)[[1L]]
+  cond_func <- stablehlo(cond, id = "", captured = captured)[[1L]]
+  rlang::exec(hlo_while, !!!args[state_idx], cond = cond_func, body = body_func, simplify = FALSE)
 }
 
 # A while loop over the state (i, carry..., out buffers..., xs...). Each
 # iteration slices step i of every xs leaf, runs the traced body inline, and
 # writes its outputs into the buffers at step i; xs ride along unchanged.
-prim_scan[["stablehlo"]] <- function(..., body, steps, reverse, n_carry, n_xs, .env) {
+prim_scan[["stablehlo"]] <- function(..., body, steps, reverse, n_carry, n_xs, n_captures) {
   args <- list(...)
   outer <- args[[1L]]$func
   n <- as.integer(steps)
@@ -815,8 +823,8 @@ prim_scan[["stablehlo"]] <- function(..., body, steps, reverse, n_carry, n_xs, .
     hlo_reshape(sl, as.integer(shp[-1L]))
   })
 
-  env <- HloEnv(parent = .env)
-  ins <- c(carry_in, slices)
+  env <- HloEnv()
+  ins <- c(carry_in, slices, args[n_carry + n_xs + seq_len(n_captures)])
   for (k in seq_along(body$inputs)) {
     env_add(env, body$inputs[[k]], ins[[k]])
   }
@@ -962,9 +970,10 @@ prim_scatter[["stablehlo"]] <- function(
   indices_are_sorted,
   unique_indices,
   update_fn,
-  .env
+  n_captures,
+  ...
 ) {
-  update_func <- stablehlo(update_fn, id = "", constants_as_inputs = FALSE, env = .env)[[1L]]
+  update_func <- stablehlo(update_fn, id = "", captured = list(...))[[1L]]
 
   # StableHLO's ScatterDimensionNumbers() follows the spec naming, so the
   # anvl-side argument names are mapped back here.
