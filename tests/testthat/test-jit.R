@@ -135,7 +135,7 @@ test_that("evaluates each argument exactly once, also under S3 dispatch", {
   double_it <- jit(function(x) prim_add(x, x))
   nv_double <- function(x) UseMethod("nv_double")
   nv_double.AnvlArray <- double_it
-  nv_double.AnvlBox <- double_it
+  nv_double.GraphBox <- double_it
 
   n <- 0L
   expect_equal(nv_double(count(nv_scalar(1))), nv_scalar(2))
@@ -624,7 +624,7 @@ describe("a scoped override inside a jitted body", {
         note(nv_fill(0, 3))
         note(x + 1.5)
         note(nv_eye(2))
-        note(nv_linspace(0, 1, steps = 3L))
+        note(nv_linspace(0, 1, length_out = 3L))
       })
       note(nv_array(1.5))
       x

@@ -19,14 +19,14 @@ API functions shipped with {anvl} must work with **both** the pjrt and quickr ba
 
 - Never name a backend in an API function: no `backend =` arguments, no `with_backend()` calls. The caller chooses the backend.
 - If the function creates a constant inside its body, use the `nv_<op>_like()` variant (see below) so the constant inherits the input's device. Do **not** call `device()` on a traced input -- it fails under `jit()`.
-- Never hardcode `"f32"` / `"i32"` as a default data type; take `dtype = NULL` and resolve it with `default_float()` / `default_int()`, which read the active defaults (see `default_dtypes()`).
+- Never hardcode `"f32"` / `"i32"` as a default data type; take `dtype = NULL` and resolve it with `default_float()` / `default_int()`, which read the active backend's defaults (see `default_dtypes()`).
 
 ### Follow R semantics
 
-- **Naming:** Use R naming conventions. If base R or a common R package already has a function for this operation, match its name. For example: `nv_abs` (not `nv_absolute`), `nv_transpose` (matching `t()`), `nv_seq` (matching `seq()`). Only deviate from R names when there is a good reason (e.g. no R equivalent, or the R name would be ambiguous in the array context).
-- **Semantics:** Match R behavior where it makes sense. For example, `nv_seq(start, end)` mirrors R's `seq()`, reductions like `nv_reduce_sum()` map to `sum()`. When R semantics conflict with array programming conventions (e.g. recycling rules vs. explicit broadcasting), prefer the array convention but document the difference.
+- **Naming:** Use R naming conventions. If base R or a common R package already has a function for this operation, match its name. For example: `nv_abs` (not `nv_absolute`), `nv_aperm` (matching `aperm()`), `nv_seq` (matching `seq()`). Only deviate from R names when there is a good reason (e.g. no R equivalent, or the R name would be ambiguous in the array context).
+- **Semantics:** Match R behavior where it makes sense. For example, `nv_seq(from, to)` mirrors R's `seq()`, reductions like `nv_sum()` map to `sum()`. When R semantics conflict with array programming conventions (e.g. recycling rules vs. explicit broadcasting), prefer the array convention but document the difference.
 - **R generics:** If a base R generic exists for this operation, implement an S3 method. For example:
-  - `t()` → `t.AnvlBox` / `t.AnvlArray` dispatching to `nv_transpose()`
+  - `t()` → `t.AnvlBox` / `t.AnvlArray` dispatching to `nv_aperm()`
   - `abs()` → handled via `Math.AnvlBox` group generic
   - `+`, `-`, `*`, `/` → handled via `Ops.AnvlBox` group generic
   - `sum()`, `prod()`, `min()`, `max()` → handled via `Summary.AnvlBox` group generic
@@ -54,12 +54,15 @@ The exact convenience a wrapper should add varies by operation. **Propose a wrap
 - S3 method registrations go in `R/api-generics.R`.
 
 For simple binary ops, use the factory:
+
 ```r
 nv_<name> <- make_do_binary(prim_<name>)
 ```
+
 This automatically adds type promotion and scalar broadcasting.
 
 For simple unary ops that need no extra convenience, alias the primitive directly:
+
 ```r
 nv_<name> <- prim_<name>
 ```
@@ -69,9 +72,9 @@ For ops needing custom logic, write a function that normalizes its array inputs 
 - `as_anvl_array(x)` for a single array input.
 - `as_anvl_arrays(...)` for multiple array inputs (infers a common device, errors on mismatched backends/devices).
 
-A function whose *result* dtype depends on its arguments must canonicalize with a rule -- `as_anvl_arrays(x = x, y = y, .promote = promotion_common())` -- rather than canonicalize first and `nv_convert()` afterwards. Without a rule an R value materializes at its default (the active float default, `f32` for a double on pjrt) and any later conversion rounds through it. See `?promotion_rule` and `vignette("type-promotion")`; name the arguments so a rule can point at one.
+A function whose _result_ dtype depends on its arguments must canonicalize with a rule -- for example `as_anvl_arrays(x = x, y = y, .promote = promotion_common())` -- rather than canonicalize first and `nv_convert()` afterwards. Without a rule an R value materializes at its default (the active backend's float default, `f32` for a double on pjrt) and any later conversion rounds through it. See `?promotion_rule` and `vignette("type-promotion")`; name the arguments so a rule can point at one.
 
-After conversion, use `shape()`, `naxes()`, and `dtype()` directly -- they work on both concrete `AnvlArray`s and the `GraphBox` tracers that appear under `jit()`. Before conversion, `shape()` and `naxes()` still answer, but `dtype()` does not: a bare R value has none yet, so ask `peek_dtype()` which data type it would take.
+After conversion, use `shape()`, `naxes()`, and `dtype()` directly -- they work on both concrete `AnvlArray`s and the `GraphBox` tracers that appear under `jit()`. Before conversion, `shape()` and `naxes()` still answer, but `dtype()` does not: a bare R value has none yet, so ask `peek_dtype()` what it _would_ materialize at.
 
 ### Constants and the `_like` pattern
 
@@ -83,6 +86,22 @@ Under `jit()` this happens automatically, but in **eager mode** you are responsi
 
 If you are adding a new array-creator function (`nv_foo` that allocates data rather than transforming an input), also add a `nv_foo_like(like, ...)` variant next to it.
 Any dispatch-on-input constants inside other API functions should go through `_like`, not the bare creator.
+
+### Integer literals
+
+Write a whole number with the `L` suffix -- axis numbers, shape entries, indices, counts, and the
+arithmetic and comparisons around them (`naxes(x) == 0L`, `axis + 1L`, `rep(1L, rank)`).
+
+This holds for a literal that meets an array too. It takes that array's dtype, and an R integer
+widens into any category, while a plain `1` is an R *double* that pulls an integer array into the
+float category (`x_i32 - 1` is `f32`). So write `nv_ifelse(mask, 0L, x)` and `nv_fill_like(x, 0L)`
+even when `x` is a float.
+
+Keep the plain spelling only where the value is genuinely a real number that happens to be whole:
+a distribution parameter, a probability bound, a threshold, a coefficient -- `sd = 1`,
+`lower = 0, upper = 1`, `nv_pmax(-d, 1)`. This matters most for an argument default, which may meet
+nothing at all and then settles on the default of its own category: `nv_rnorm(mean = 0, sd = 1)`
+written with `0L` / `1L` returns the sample at the default *integer*.
 
 ### Binary element-wise ops
 
@@ -99,10 +118,10 @@ For full NumPy-style broadcasting (not just scalar-against-array), use `nv_broad
 If the underlying primitive requires all its inputs to share a dtype (e.g. `prim_clamp`, `prim_pad`), say so with a rule at the top rather than converting afterwards:
 
 ```r
-args <- as_anvl_arrays(min_val = min_val, x = x, max_val = max_val, .promote = promotion_like("x"))
+args <- as_anvl_arrays(x = x, min = min, max = max, .promote = promotion_like("x"))
 ```
 
-`promotion_like("x")` *builds* an R bound at `x`'s dtype -- so `nv_clamp(0, x_f64, 1)` keeps every digit, where `nv_convert(0, dtype(x))` would have materialized the literal at `f32` first -- and refuses a typed bound `x`'s dtype cannot hold instead of narrowing it silently. `dtype(x)` is not available here anyway: `x` may still be a bare R value.
+`promotion_like("x")` _builds_ an R bound at `x`'s dtype -- so `nv_clamp(x_f64, 0, 1)` keeps every digit, where `nv_convert(0, dtype(x))` would have materialized the literal at `f32` first -- and refuses a typed bound `x`'s dtype cannot hold instead of narrowing it silently. `dtype(x)` is not available here anyway: `x` may still be a bare R value.
 
 ### Static arguments
 
@@ -118,7 +137,7 @@ nv_foo <- jit(function(x, axis) {
 
 Omit `static` entirely when there are none: `nv_foo <- jit(function(x) { ... })`.
 
-Any argument the function body *inspects* -- branches on, validates with
+Any argument the function body _inspects_ -- branches on, validates with
 `assert_*`, uses to compute shape/axes -- must be named (or positioned) in that
 `static` list.
 Typical candidates: `axes`, `shape`, `axis`, flags, mode strings, dtype specifiers.
@@ -135,7 +154,8 @@ If no proper template for a parameter or the return value exist, write the docum
 #' @title <Short Title>
 #' @description
 #' <One-sentence description.> You can also use `<R operator or generic>()`.
-#' @template param_x                    # or @template params_lhs_rhs, etc.
+#' @templateVar dtypes any data type    # the phrase the operand accepts
+#' @template param_unary_x              # or @template params_lhs_rhs, etc.
 #' @param <custom_param> (<type>)\cr    # for params not covered by templates
 #'   <Description.>
 #' @template return_unary               # or return_binary, return_reduce, etc.
@@ -149,11 +169,8 @@ If no proper template for a parameter or the return value exist, write the docum
 
 - **`@title`**: short, e.g. "Absolute Value", "Addition", "Transpose"
 - **`@description`**: one sentence describing what the function does. If an R operator or generic dispatches to this function, mention it: "You can also use `abs()`.", "You can also use the `+` operator."
-- **`@template`**: use templates for common parameter/return patterns:
-  - `param_x` — single input array
-  - `params_lhs_rhs` — binary operands (includes promotion/broadcasting note)
-  - `param_dtype`, `param_shape`, `param_device` — common params
-  - `return_unary`, `return_binary`, `return_reduce`, `return_reduce_boolean`
+- **`@template`**: use templates for common parameter/return patterns. See the man-roxygen/ folder
+  for available templates.
   - `params_reduce` — axes + drop params for reductions
 - **`@param`**: write inline for parameters not covered by templates
 - **`@seealso`**: always link to the underlying `prim_*` primitive. Optionally link to related `nv_*` functions.

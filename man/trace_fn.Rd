@@ -2,13 +2,12 @@
 % Please edit documentation in R/graph.R
 \name{trace_fn}
 \alias{trace_fn}
-\title{Trace an R function into a Graph}
+\title{Trace an R Function into a Graph}
 \usage{
 trace_fn(
   f,
   args = NULL,
   desc = NULL,
-  mode = NULL,
   args_flat = NULL,
   in_tree = NULL,
   optimize = FALSE
@@ -24,16 +23,6 @@ The (unflattened) arguments to the function. Mutually exclusive with the
 
 \item{desc}{(\code{NULL} | \code{GraphDescriptor})\cr
 Optional descriptor. When \code{NULL} (default), a new descriptor is created.}
-
-\item{mode}{(\code{character(1)})\cr
-How to handle the inputs.
-Options are:
-\itemize{
-\item \code{"toplevel"}: Used for jit(). Default.
-\item \code{"subgraph"}: Use for tracing subgraphs in higher-order primitives like \code{\link[=prim_while]{prim_while()}}.
-\item \code{"inline"}: Use for transformations like jit, where the graph is later inlined
-into the parent graph.
-}}
 
 \item{args_flat}{(\code{list})\cr
 Flattened arguments. Must be accompanied by \code{in_tree}.}
@@ -53,7 +42,8 @@ vector selects a subset by name. The available passes are:
 \code{\link[=jit]{jit()}} always traces with all passes enabled.}
 }
 \value{
-An \code{\link{AnvlGraph}} containing the traced operations.
+(\code{\link{AnvlGraph}})
+Contains the traced operations.
 }
 \description{
 Executes \code{f} with abstract array arguments and records every primitive operation into

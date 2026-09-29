@@ -9,7 +9,6 @@ NULL
 # than as a failure to bring a parameter to its data type.
 promote_distribution_args <- function(...) {
   args <- list(...)
-  stopifnot(!is.null(names(args)), all(nzchar(names(args))))
   operand <- names(args)[[1L]]
   assert_float_dtype(
     peek_dtype(args[[1L]]),
@@ -33,10 +32,11 @@ promote_distribution_args <- function(...) {
 #'   Probabilities at which to evaluate the quantile function. Values outside
 #'   \eqn{[0, 1]} give `NaN`.
 #' @param mean ([`arrayish`])\cr
-#'   Mean of the distribution (scalar or same shape as `x`/`q`/`p`).
+#'   Mean of the distribution. Either a scalar, or an array of exactly the
+#'   shape of `x`/`q`/`p` (or the sample, for `nv_rnorm`).
 #' @param sd ([`arrayish`])\cr
-#'   Standard deviation of the distribution (scalar or same shape as
-#'   `x`/`q`/`p`). Must be positive, otherwise results are invalid.
+#'   Standard deviation of the distribution, shaped like `mean`. Must be
+#'   positive, otherwise results are invalid.
 #' @param log,log_p (`logical(1)`)\cr
 #'   If `TRUE`, the densities/probabilities are given as logarithms. For
 #'   `nv_qnorm` this describes the input `p`.
@@ -48,28 +48,29 @@ promote_distribution_args <- function(...) {
 #' \deqn{f(x) = \frac{1}{\sigma\sqrt{2\pi}}
 #'   \exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)}
 #' where \eqn{\mu} is the mean and \eqn{\sigma} is the standard deviation.
-#' The `mean` and `sd` are converted to the data type of `x`/`q`/`p`.
 #'
 #' `nv_pnorm` uses the asymptotic expansion from
-#' `r xlamisc::cite_bib("abramowitz1964handbook")`, equation 26.2.12, in the
+#' `r cite_bib("abramowitz1964handbook")`, equation 26.2.12, in the
 #' left tail when `log_p = TRUE` to maintain accuracy.
 #'
 #' `nv_qnorm` uses the same minimax rational approximation as
-#' `r xlamisc::cite_bib("moshier1989methods")` (this is `ndtri` in the Cephes
+#' `r cite_bib("moshier1989methods")` (this is `ndtri` in the Cephes
 #' library as used by JAX) for `f64`, and uses a new lower degree Remez minimax
 #' rational approximation on the same intervals for `f32`.
 #'
-#' The thresholds and coefficients of `nv_pnorm()` and `nv_qnorm()` are written
-#' for `f32` and `f64`, so those two are the only data types they accept.
+#' @templateVar dist norm
+#' @templateVar params `mean` or `sd`
+#' @template section_distribution_dtype
 #' @references
-#' `r xlamisc::format_bib("abramowitz1964handbook", "moshier1989methods")`
+#' `r format_bib("abramowitz1964handbook", "moshier1989methods")`
 #' @seealso [nv_rnorm()] for sampling from a normal distribution.
-#' @return
-#' `nv_dnorm()` and `nv_pnorm()` return an [`arrayish`] with the same shape and
-#' data type as `x`/`q`.
+#' @return ([`arrayish`] | named `list` of two [`arrayish`])\cr
+#' `nv_dnorm()`, `nv_pnorm()` and `nv_qnorm()` return an [`arrayish`] with the
+#' shape and data type of `x`/`q`/`p`.
 #'
-#' `nv_rnorm()` returns a `list()` of two [`arrayish`] elements: the updated
-#' RNG state and the sampled values.
+#' `nv_rnorm()` returns a named `list` of two [`arrayish`]: `state`, the updated
+#' RNG state with the input `state`'s data type and shape, and `values`, the
+#' sample of shape `shape` and the data type described under `dtype`.
 #'
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- nv_array(c(-1, 0, 1))
@@ -158,7 +159,7 @@ nv_pnorm <- jit(
 
     # Compute Q(-d) for the asymptotic region, first clamping the value to protect
     # gradient from poisoning later
-    d_asymp <- nv_max(-d, 1)
+    d_asymp <- nv_pmax(-d, 1)
     d2_asymp <- d_asymp * d_asymp
     w <- 1 / d2_asymp
     # Compute just what is required for precision (confirmed if statement compiles
@@ -421,9 +422,9 @@ nv_qnorm <- jit(
 #' @title The Uniform Distribution
 #' @name nv_uniform
 #' @description
-#' Density (`nv_dunif`), distribution function (`nv_punif`), and quantile
-#' function (`nv_qunif`) for the Uniform distribution on the interval from
-#' `min` to `max`.
+#' Density (`nv_dunif`), distribution function (`nv_punif`), quantile
+#' function (`nv_qunif`), and random generation (`nv_runif`) for the Uniform
+#' distribution on the interval from `min` to `max`.
 #' @param x,q ([`arrayish`])\cr
 #'   Quantiles at which to evaluate the density (`x`) or the distribution
 #'   function (`q`).
@@ -432,9 +433,9 @@ nv_qnorm <- jit(
 #'   \eqn{[0, 1]} give `NaN`.
 #' @param min,max ([`arrayish`])\cr
 #'   Lower and upper limits of the distribution. Either scalars, or arrays of
-#'   exactly the same shape as `x`/`q`/`p`, in which case the interval varies
-#'   elementwise and each element of `x`/`q`/`p` is evaluated against its own
-#'   `min`/`max`.
+#'   exactly the same shape as `x`/`q`/`p` (or the sample, for `nv_runif`), in
+#'   which case the interval varies elementwise and each element of `x`/`q`/`p`
+#'   is evaluated against, or each draw made from, its own `min`/`max`.
 #' @param log,log_p (`logical(1)`)\cr
 #'   If `TRUE`, the densities/probabilities are given as logarithms. For
 #'   `nv_qunif` this describes the input `p`.
@@ -445,19 +446,24 @@ nv_qnorm <- jit(
 #' The Uniform distribution has probability density function:
 #' \deqn{f(x) = \frac{1}{b - a}, \quad a \le x \le b}
 #' and zero elsewhere, where \eqn{a} is `min` and \eqn{b} is `max`.
-#' The `min` and `max` are converted to the data type of `x`/`q`/`p`.
 #'
-#' All three are univariate functions evaluated elementwise, returning one
-#' value per element of `x`/`q`/`p`. Non-scalar `min`/`max` therefore give a
+#' All four are univariate functions evaluated elementwise, returning one
+#' value per element of `x`/`q`/`p` (or of the sample). Non-scalar `min`/`max` therefore give a
 #' separate univariate Uniform per element, *not* a multivariate Uniform over
 #' the hyper-rectangle \eqn{\prod_i [a_i, b_i]}. For that, reduce over the
-#' result: `nv_reduce_prod(nv_dunif(x, min, max))`, or
-#' `nv_reduce_sum(nv_dunif(x, min, max, log = TRUE))` on the log scale.
+#' result: `nv_prod(nv_dunif(x, min, max))`, or
+#' `nv_sum(nv_dunif(x, min, max, log = TRUE))` on the log scale.
 #'
-#' @seealso [nv_runif()] for sampling from a uniform distribution.
-#' @return
+#' @templateVar dist unif
+#' @templateVar params `min` or `max`
+#' @template section_distribution_dtype
+#' @return ([`arrayish`] | named `list` of two [`arrayish`])\cr
 #' `nv_dunif()`, `nv_punif()`, and `nv_qunif()` return an [`arrayish`] with the
 #' same shape and data type as `x`/`q`/`p`.
+#'
+#' `nv_runif()` returns a named `list` of two [`arrayish`]: `state`, the updated
+#' RNG state with the input `state`'s data type and shape, and `values`, the
+#' sample of shape `shape` and the data type described under `dtype`.
 #'
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- nv_array(c(-0.5, 0, 0.25, 1, 1.5))
@@ -481,6 +487,15 @@ nv_qnorm <- jit(
 #' nv_qunif(p, min = -1, max = 2)
 #' nv_qunif(p, lower_tail = FALSE)
 #' nv_qunif(nv_array(c(-700, -2, -0.1), dtype = "f64"), log_p = TRUE)
+#'
+#' # `state` is the updated RNG state, `values` the sample
+#' state <- nv_rng_state(42L)
+#' result <- nv_runif(c(2, 3), state)
+#' result$values
+#'
+#' # `min`/`max` may also be arrays of the same shape as the sample
+#' lower <- nv_array(matrix(c(0, 10, 20, 30, 40, 50), nrow = 2))
+#' nv_runif(c(2, 3), state, min = lower, max = lower + 1)$values
 NULL
 
 #' @rdname nv_uniform

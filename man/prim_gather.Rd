@@ -20,12 +20,14 @@ prim_gather(
 }
 \arguments{
 \item{x}{(\code{\link{arrayish}})\cr
-Arrayish value of any data type.}
+One input. Can be any data type. An R value materializes at its
+\link[=default_dtypes]{default data type}.}
 
-\item{start_indices}{(\code{\link{arrayish}} of integer type)\cr
-Array of starting indices. Contains index vectors that map to
-positions in \code{x} via \code{start_index_map}. The axis
-specified by \code{index_vector_axis} holds the index vectors.}
+\item{start_indices}{(\code{\link{arrayish}})\cr
+Array of starting indices, of an integer data type, which it keeps -- the
+indices take no part in \code{x}'s. Contains index vectors that map to
+positions in \code{x} via \code{start_index_map}. The axis specified by
+\code{index_vector_axis} holds the index vectors.}
 
 \item{slice_sizes}{(\code{integer()})\cr
 Size of the slice to gather from \code{x} in each axis.
@@ -50,9 +52,10 @@ Axes of \code{start_indices} that correspond to batch
 axes. Must have the same length as \code{x_batching_axes}.}
 
 \item{start_index_map}{(\code{integer()})\cr
-Maps each component of the index vector to an \code{x}
-axis. For example, \code{start_index_map = c(1L)} means each
-index vector indexes into the first axis of \code{x}.}
+Maps each component of an index vector in \code{start_indices} to an axis
+of \code{x}. For example, \code{start_index_map = 1L} means each index
+vector indexes into the first axis of \code{x}. This is \code{\link[=prim_scatter]{prim_scatter()}}'s
+\code{scatter_axes_to_x_axes}.}
 
 \item{index_vector_axis}{(\code{integer(1)})\cr
 Axis of \code{start_indices} that contains the index vectors.
@@ -70,8 +73,8 @@ Setting to \code{TRUE} may improve performance but produces undefined
 behavior if the indices are not actually unique. Default \code{FALSE}.}
 }
 \value{
-\code{\link{arrayish}}\cr
-Has the same data type as \code{x}. The output shape is composed
+(\code{\link{arrayish}})\cr
+Has the input's data type. The output shape is composed
 of the offset axes (from the slice) and the remaining
 axes from \code{start_indices}. See the underlying StableHLO function
 for more details.
@@ -106,7 +109,10 @@ the effective start position may differ from the requested one.
 
 \section{StableHLO}{
 
-Lowers to \code{\link[stablehlo:hlo_gather]{hlo_gather()}}.
+Lowers to \code{\link[stablehlo:hlo_gather]{hlo_gather()}}, specified under
+\href{https://openxla.org/stablehlo/spec#gather}{gather}.
+The axis and index arguments are intricate; anvl states them in its own
+terms and converts on the way down.
 }
 
 \examples{

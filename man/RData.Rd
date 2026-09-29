@@ -39,7 +39,7 @@ nv_aval("double", c(2, 3))
 # below, the `RData` input is materialized in 32 and 64-bit precisions, so the input
 # dtype becomes f64.
 # by NOT converting RData to their default data type we prevent loss of precision
-# (double -> f32 -> f64 roundrips)
+# (avoiding a double -> default data type -> f64 round trip)
 graph <- trace_fn(function(x) {
     print(x)
     list(x + nv_scalar(1, "f64"), x + nv_scalar(1, "f32"))
@@ -48,7 +48,8 @@ graph <- trace_fn(function(x) {
 print(graph)
 # the actual inputs to the compiled program
 graph$inputs
-# the data types of the R values; AnvlArrays get NA here
+# the R storage types of the inputs passed as R values; NA for inputs passed
+# as AnvlArrays
 graph$rdata_types
 \dontshow{\}) # examplesIf}
 }

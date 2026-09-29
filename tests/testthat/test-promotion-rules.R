@@ -171,9 +171,16 @@ test_that("a rule that cannot place an argument says which one", {
   # The diagnosis is only useful if it points at the operand to change, which
   # is what the multi-operand calls need it for.
   x <- nv_array(c(1L, 2L), dtype = "i32")
-  expect_error(nv_pad(x, 0, 1L, 1L), "Cannot bring `padding_value`")
+  expect_error(nv_pad(x, 0, 1L, 1L), "Cannot bring `value`")
   expect_error(prim_pad(1.5, 1L, 0L, 0L, 0L), "`x` is an R double and `padding_value` is an R integer")
-  expect_error(as_anvl_arrays(1.5, 1L, .promote = promotion_rdata_common()), "argument 1 is an R double")
+  # An unnamed operand is spelled the way a primitive that takes its operands
+  # through `...` names it, so that the promotion layer and the inference rules
+  # call the same operand the same thing.
+  expect_error(
+    as_anvl_arrays(1.5, 1L, .promote = promotion_rdata_common()),
+    "`..1` is an R double",
+    fixed = TRUE
+  )
   expect_error(as_anvl_arrays(v = 1.5, .promote = promotion_dtype("i32")), "Cannot bring `v`")
   # `coerce` is an argument of the rule, not of the function the user called, so
   # it is not offered as a way out here.
@@ -374,6 +381,20 @@ test_that("promotion_grouped() refuses groups that could overlap", {
     promotion_grouped(promotion_common(on = 1:2), promotion_common(on = 2:3)),
     "covers the same argument"
   )
+  # A name and a position may mean the same argument, which only the call can
+  # tell -- so a group refers to arguments one way.
+  expect_error(
+    promotion_grouped(promotion_dtype("f64", on = "x"), promotion_common(on = 3L)),
+    "all refer to arguments by"
+  )
+  expect_error(
+    promotion_grouped(
+      promotion_grouped(promotion_dtype("f64", on = "x")),
+      promotion_common(on = 2L)
+    ),
+    "all refer to arguments by"
+  )
+
   # A rule that names no `on` covers any argument, so it can only stand alone.
   expect_error(
     promotion_grouped(promotion_common(), promotion_common(on = "x")),

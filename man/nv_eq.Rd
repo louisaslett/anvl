@@ -6,16 +6,24 @@
 \title{Equal}
 \usage{
 nv_eq(lhs, rhs)
+
+\method{==}{AnvlArray}(e1, e2)
 }
 \arguments{
 \item{lhs, rhs}{(\code{\link{arrayish}})\cr
-Left and right operand.
-Operands are \link[=nv_promote_to_common]{promoted to a common data type}.
-Scalars are \link[=nv_broadcast_scalars]{broadcast} to the shape of the other operand.}
+Two inputs with a \link[=common_dtype]{common data type}. Can be
+any data type. Scalars are broadcast. An R value takes the other
+operand's data type when that is in its own or a higher
+\link[=dtype_categories]{category}. Otherwise it
+settles on its \link[=default_dtypes]{default data type}, and the operands meet
+at their common data type.}
+
+\item{e1, e2}{(\code{\link{arrayish}})\cr
+The operands of the operator, which it passes on as \code{lhs} and \code{rhs}.}
 }
 \value{
-\code{\link{arrayish}}\cr
-Has the same shape as the inputs and boolean data type.
+(\code{\link{arrayish}})\cr
+Has the inputs' broadcast shape and boolean data type.
 }
 \description{
 Element-wise equality comparison. You can also use the \code{==} operator.
@@ -26,6 +34,12 @@ x <- nv_array(c(1, 2, 3))
 y <- nv_array(c(1, 3, 2))
 nv_eq(x, y)
 x == y
+
+# different data types are promoted to their common one
+nv_eq(nv_scalar(1, "f32"), nv_scalar(1, "f64"))
+
+# a scalar is broadcast and an R integer is converted to a float
+x == 2L
 \dontshow{\}) # examplesIf}
 }
 \seealso{

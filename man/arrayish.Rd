@@ -3,7 +3,7 @@
 \name{arrayish}
 \alias{arrayish}
 \alias{is_arrayish}
-\title{Array-like Objects}
+\title{Array-Like Objects}
 \usage{
 is_arrayish(x, convert_ok = TRUE)
 }
@@ -15,37 +15,33 @@ Object to check.}
 Whether to accept \code{numeric(1)} and \code{logical(1)} and R arrays of type \code{numeric} and \code{logical}.}
 }
 \value{
-\code{logical(1)}
+(\code{logical(1)})\cr
+Whether \code{x} is arrayish.
 }
 \description{
-A \code{arrayish} value is anything that represents an \code{\link{AnvlArray}}
+An \code{arrayish} value is anything that represents an \code{\link{AnvlArray}}
 or can be converted to one.
 
 Specifically, these values are \code{arrayish}:
 \itemize{
 \item \code{\link{AnvlArray}}: a concrete array holding data on a device.
+\item \code{\link{GraphBox}}: the representation of an array during tracing, e.g. inside
+a \code{\link[=jit]{jit()}}ted function.
 \item R objects:
 \itemize{
 \item \code{numeric(1)} and \code{logical(1)} which represent scalars.
 \item \code{numeric} and \code{logical} R arrays.
 }
-\item \code{\link{GraphBox}}: this is how dynamic \code{\link{AnvlArray}}s are represented
-during \code{\link[=jit]{jit()}}.
 }
 
 Use \code{\link[=is_arrayish]{is_arrayish()}} to check whether a value is arrayish.
 }
 \examples{
 \dontshow{if (pjrt::plugins_downloaded()) withAutoprint(\{ # examplesIf}
-# AnvlArrays are arrayish
+# AnvlArray objects are arrayish
 is_arrayish(nv_array(1:4))
 
-# scalar R literals are arrayish by default
-is_arrayish(1.5)
-# R arrays are arrayish by default
-is_arrayish(array(1.5))
-
-# R arrays
+# R arrays and literals are arrayish by default
 is_arrayish(array(1:4), convert_ok = TRUE)
 is_arrayish(array(1:4), convert_ok = FALSE)
 

@@ -233,17 +233,183 @@ test_that("broadcasting", {
   expect_equal(out[[2L]], nv_array(0.5, shape = c(1, 2)))
 })
 
-test_that("prim_if", {
-  # TODO:
-  #f <- jit(gradient(
-  #  function(pred, x) {
-  #    prim_if(pred, \() x * nv_scalar(1), \() x * nv_scalar(2))
-  #  },
-  #  wrt = "x"
-  #))
-  #out <- f(nv_scalar(TRUE), nv_scalar(2))
-  #expect_equal(out[[1L]], nv_scalar(2))
-  #expect_equal(out[[2L]], nv_scalar(1))
+describe("prim_if", {
+  x <- nv_array(c(1, 2, 3), dtype = "f64")
+  y <- nv_array(c(4, 5, 6), dtype = "f64")
+  true_ <- nv_scalar(TRUE)
+  false_ <- nv_scalar(FALSE)
+
+  it("differentiates a value the branches close over", {
+    # `prim_if()`'s branches take no arguments; the values they use reach them
+    # by capture, and are listed as operands so the backward pass can see them.
+    f <- function(p, x) {
+      prim_if(p, function() prim_sum(x, axes = 1L), function() nv_scalar(0, "f64"))
+    }
+    expect_equal(as.numeric(jit(f)(true_, x)), 6)
+    expect_equal(as.numeric(jit(gradient(f, wrt = "x"))(true_, x)[[1L]]), c(1, 1, 1))
+    expect_equal(as.numeric(jit(f)(false_, x)), 0)
+    expect_equal(as.numeric(jit(gradient(f, wrt = "x"))(false_, x)[[1L]]), c(0, 0, 0))
+  })
+
+  it("takes the gradient of the branch the predicate selects", {
+    g <- function(p, x) nv_if(p, function() nv_sum(x * x), function() nv_sum(x))
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(true_, x)[[1L]]), c(2, 4, 6))
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(false_, x)[[1L]]), c(1, 1, 1))
+  })
+
+  it("differentiates several captured values", {
+    g <- function(p, x, y) nv_if(p, function() nv_sum(x * y), function() nv_sum(x + y))
+    grads <- jit(gradient(g, wrt = c("x", "y")))(true_, x, y)
+    expect_equal(as.numeric(grads[[1L]]), c(4, 5, 6))
+    expect_equal(as.numeric(grads[[2L]]), c(1, 2, 3))
+    grads <- jit(gradient(g, wrt = c("x", "y")))(false_, x, y)
+    expect_equal(as.numeric(grads[[1L]]), c(1, 1, 1))
+    expect_equal(as.numeric(grads[[2L]]), c(1, 1, 1))
+  })
+
+  it("differentiates only the captured values it is asked for", {
+    g <- function(p, x, y) nv_if(p, function() nv_sum(x * y), function() nv_sum(x))
+    grads <- jit(gradient(g, wrt = "x"))(true_, x, y)
+    expect_equal(names(grads), "x")
+    expect_equal(as.numeric(grads$x), c(4, 5, 6))
+  })
+
+  it("gives a zero to a value the taken branch does not use", {
+    g <- function(p, x, y) nv_if(p, function() nv_sum(x * x), function() nv_sum(y * y))
+    grads <- jit(gradient(g, wrt = c("x", "y")))(true_, x, y)
+    expect_equal(as.numeric(grads[[1L]]), c(2, 4, 6))
+    expect_equal(as.numeric(grads[[2L]]), c(0, 0, 0))
+    grads <- jit(gradient(g, wrt = c("x", "y")))(false_, x, y)
+    expect_equal(as.numeric(grads[[1L]]), c(0, 0, 0))
+    expect_equal(as.numeric(grads[[2L]]), c(8, 10, 12))
+  })
+
+  it("carries the gradient on into what uses the result", {
+    g <- function(p, x) {
+      nv_sum(nv_if(p, function() x * x, function() x) * nv_array(c(2, 2, 2), dtype = "f64"))
+    }
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(true_, x)[[1L]]), c(4, 8, 12))
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(false_, x)[[1L]]), c(2, 2, 2))
+  })
+
+  it("differentiates branches that return several values", {
+    g <- function(p, x) {
+      r <- nv_if(p, function() list(a = x * x, b = x), function() list(a = x, b = x * x))
+      nv_sum(r$a) + nv_sum(r$b)
+    }
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(true_, x)[[1L]]), c(3, 5, 7))
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(false_, x)[[1L]]), c(3, 5, 7))
+  })
+
+  it("differentiates a nested if", {
+    g <- function(p, q, x) {
+      nv_if(
+        p,
+        function() nv_if(q, function() nv_sum(x * x), function() nv_sum(x)),
+        function() nv_scalar(0, "f64")
+      )
+    }
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(true_, true_, x)[[1L]]), c(2, 4, 6))
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(true_, false_, x)[[1L]]), c(1, 1, 1))
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(false_, true_, x)[[1L]]), c(0, 0, 0))
+  })
+
+  it("differentiates an if whose branches capture nothing", {
+    g <- function(p, x) {
+      nv_sum(x) * nv_if(p, function() nv_scalar(2, "f64"), function() nv_scalar(3, "f64"))
+    }
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(true_, x)[[1L]]), c(2, 2, 2))
+    expect_equal(as.numeric(jit(gradient(g, wrt = "x"))(false_, x)[[1L]]), c(3, 3, 3))
+  })
+
+  it("keeps the operand's data type", {
+    g <- function(p, x) nv_if(p, function() nv_sum(x * x), function() nv_sum(x))
+    grad <- jit(gradient(g, wrt = "x"))(true_, nv_array(c(1, 2, 3), dtype = "f32"))[[1L]]
+    expect_equal(dtype(grad), as_dtype("f32"))
+    expect_equal(as.numeric(grad), c(2, 4, 6))
+  })
+
+  it("works through value_and_gradient()", {
+    g <- function(p, x) nv_if(p, function() nv_sum(x * x), function() nv_sum(x))
+    out <- jit(value_and_gradient(g, wrt = "x"))(true_, x)
+    expect_equal(as.numeric(out[[1L]]), 14)
+    expect_equal(as.numeric(out[[2L]][[1L]]), c(2, 4, 6))
+  })
+
+  it("differentiates its own backward pass", {
+    g <- function(x) nv_if(true_, function() nv_sum(x * x * x), function() nv_sum(x))
+    h <- function(x) nv_sum(gradient(g)(x)[[1L]])
+    expect_equal(as.numeric(jit(gradient(h))(x)[[1L]]), c(6, 12, 18))
+  })
+
+  it("leaves an RNG state a branch returns undifferentiated", {
+    f <- function(p, x, st) {
+      r <- nv_if(
+        p,
+        function() {
+          d <- nv_rnorm(integer(), st, dtype = "f64")
+          list(st = d$state, a = nv_sum(x) * d$values)
+        },
+        function() list(st = st, a = nv_sum(x))
+      )
+      r$a + nv_rnorm(integer(), r$st, dtype = "f64")$values
+    }
+    grad <- jit(gradient(f, wrt = "x"))(false_, x, nv_rng_state(1L))$x
+    expect_equal(as.numeric(grad), c(1, 1, 1))
+  })
+
+  it("lets a branch take the gradient of a value it closes over", {
+    # The inlined gradient graph reaches `x` and the R value `a` from outside
+    # the branch, so the branch has to capture them first.
+    x <- nv_array(c(0.7, -1.3, 2.1))
+    f <- jit(function(p, x, a) {
+      nv_if(p, function() nv_sum(gradient(function(y, a) nv_sum(y * y * a), wrt = "y")(x, a)[[1L]]), function() {
+        nv_sum(x)
+      })
+    })
+    expect_equal(as.numeric(f(true_, x, 2)), sum(4 * c(0.7, -1.3, 2.1)), tolerance = 1e-6)
+  })
+
+  it("passes a gradient computed outside a branch into it", {
+    f <- jit(function(x) {
+      v <- gradient(function(z) sin(z))(x)[[1L]]
+      nv_if(true_, function() v, function() x)
+    })
+    expect_equal(as.numeric(f(nv_scalar(2, "f64"))), cos(2))
+  })
+
+  it("differentiates a value an earlier call's reverse rule replaced", {
+    # `prim_sort()`'s reverse rule replaces its forward, so the value the
+    # branches closed over is rebuilt before they are differentiated.
+    g <- function(p, x) {
+      y <- nv_sort(x)
+      nv_if(p, function() nv_sum(y * y), function() nv_sum(y))
+    }
+    grad <- jit(gradient(g, wrt = "x"))(true_, nv_array(c(3, 1, 2), dtype = "f64"))[[1L]]
+    expect_equal(as.numeric(grad), c(6, 2, 4))
+  })
+
+  it("does not rerun the forward branch in the backward pass", {
+    # The forward `if` returns what the backward one reads -- here `sin(x)` --
+    # alongside its result, so the backward branch computes no `sin()`.
+    g <- trace_fn(
+      function(p, x) nv_if(p, function() nv_sum(sin(x) * x), function() nv_sum(x)),
+      list(p = true_, x = x)
+    )
+    grad <- transform_gradient(g, "x")
+    ifs <- Filter(function(s) s$primitive$name == "if", grad$statements)
+    expect_length(ifs, 2L)
+    prims_of <- function(graph) vapply(graph$statements, function(s) s$primitive$name, character(1L))
+    expect_true("sin" %in% prims_of(ifs[[1L]]$params$true))
+    expect_false("sin" %in% prims_of(ifs[[2L]]$params$true))
+
+    f <- function(p, x) nv_if(p, function() nv_sum(sin(x) * x), function() nv_sum(x))
+    expect_equal(
+      as.numeric(jit(gradient(f, wrt = "x"))(true_, x)[[1L]]),
+      cos(c(1, 2, 3)) * c(1, 2, 3) + sin(c(1, 2, 3))
+    )
+    expect_equal(as.numeric(jit(gradient(f, wrt = "x"))(false_, x)[[1L]]), c(1, 1, 1))
+  })
 })
 
 test_that("prim_log reverse", {
@@ -268,10 +434,10 @@ test_that("prim_exp", {
   expect_equal(as_array(grad), exp(2))
 })
 
-test_that("prim_reduce_max reverse", {
+test_that("prim_max reverse", {
   f <- jit(gradient(function(x) {
-    rows_max <- prim_reduce_max(x, axes = 2L, drop = TRUE)
-    nv_reduce_sum(rows_max, axes = 1L, drop = TRUE)
+    rows_max <- prim_max(x, axes = 2L, drop = TRUE)
+    nv_sum(rows_max, axes = 1L, drop = TRUE)
   }))
 
   x <- nv_array(
@@ -292,10 +458,10 @@ test_that("prim_reduce_max reverse", {
   )
 })
 
-test_that("prim_reduce_min reverse", {
+test_that("prim_min reverse", {
   f <- jit(gradient(function(x) {
-    rows_min <- prim_reduce_min(x, axes = 2L, drop = TRUE)
-    nv_reduce_sum(rows_min, axes = 1L, drop = TRUE)
+    rows_min <- prim_min(x, axes = 2L, drop = TRUE)
+    nv_sum(rows_min, axes = 1L, drop = TRUE)
   }))
 
   x <- nv_array(
@@ -319,27 +485,27 @@ test_that("prim_reduce_min reverse", {
   )
 })
 
-test_that("prim_max on ties", {
+test_that("prim_pmax on ties", {
   x <- nv_array(c(1, 2, 2))
-  grads <- jit(gradient(\(x) nv_reduce_max(x, axes = 1)))(x)
+  grads <- jit(gradient(\(x) nv_max(x, axes = 1)))(x)
   expect_equal(as_array(grads$x), array(c(0, 0.5, 0.5), dim = 3))
 })
 
-test_that("prim_max", {
+test_that("prim_pmax", {
   x <- nv_array(c(1, 2, 3))
   y <- nv_array(c(3, 2, 1))
 
-  grads <- jit(gradient(\(x, y) nv_reduce_sum(nv_max(x, y), axes = 1)))(x, y)
+  grads <- jit(gradient(\(x, y) nv_sum(nv_pmax(x, y), axes = 1)))(x, y)
 
   expect_equal(as_array(grads$x), array(c(0, 0.5, 1), dim = 3))
   expect_equal(as_array(grads$y), array(c(1, 0.5, 0), dim = 3))
 })
 
-test_that("prim_min", {
+test_that("prim_pmin", {
   x <- nv_array(c(1, 2, 3))
   y <- nv_array(c(3, 2, 1))
 
-  grads <- jit(gradient(\(x, y) nv_reduce_sum(nv_min(x, y), axes = 1)))(x, y)
+  grads <- jit(gradient(\(x, y) nv_sum(nv_pmin(x, y), axes = 1)))(x, y)
 
   expect_equal(as_array(grads$x), array(c(1, 0.5, 0), dim = 3))
   expect_equal(as_array(grads$y), array(c(0, 0.5, 1), dim = 3))
@@ -350,7 +516,7 @@ test_that("prim_convert reverse converts gradients to the input dtype", {
   x <- nv_array(x_arr, dtype = "f32")
   f <- jit(gradient(function(x) {
     y <- prim_convert(x, dtype = "f64")
-    nv_reduce_sum(y, axes = 1:2, drop = TRUE)
+    nv_sum(y, axes = 1:2, drop = TRUE)
   }))
 
   grads <- f(x)
@@ -363,12 +529,12 @@ test_that("prim_convert reverse is zero across a non-float data type", {
   # the same answer `prim_floor()` gives for the same function on the reals.
   x <- nv_array(c(1.5, 2.5, 3.5), dtype = "f64")
   through_int <- jit(gradient(function(x) {
-    nv_reduce_sum(prim_convert(prim_convert(x, "i32"), "f64"))
+    nv_sum(prim_convert(prim_convert(x, "i32"), "f64"))
   }))
   through_bool <- jit(gradient(function(x) {
-    nv_reduce_sum(prim_convert(prim_convert(x, "bool"), "f64"))
+    nv_sum(prim_convert(prim_convert(x, "bool"), "f64"))
   }))
-  floor_ref <- jit(gradient(function(x) nv_reduce_sum(prim_floor(x))))
+  floor_ref <- jit(gradient(function(x) nv_sum(prim_floor(x))))
 
   expect_equal(as.numeric(through_int(x)[[1L]]), c(0, 0, 0))
   expect_equal(as.numeric(through_bool(x)[[1L]]), c(0, 0, 0))
@@ -377,7 +543,7 @@ test_that("prim_convert reverse is zero across a non-float data type", {
 
 test_that("prim_convert reverse passes the gradient through between floats", {
   x <- nv_array(c(1.5, 2.5, 3.5), dtype = "f64")
-  f <- jit(gradient(function(x) nv_reduce_sum(prim_convert(prim_convert(x, "f32"), "f64"))))
+  f <- jit(gradient(function(x) nv_sum(prim_convert(prim_convert(x, "f32"), "f64"))))
   expect_equal(as.numeric(f(x)[[1L]]), c(1, 1, 1))
   expect_dtype(f(x)[[1L]], "f64")
 })
@@ -385,7 +551,7 @@ test_that("prim_convert reverse passes the gradient through between floats", {
 test_that("prim_convert reverse leaves the rest of an expression differentiable", {
   x <- nv_array(c(1.5, 2.5, 3.5), dtype = "f64")
   f <- jit(gradient(function(x) {
-    nv_reduce_sum(x * nv_scalar(2, "f64") + nv_convert(nv_convert(x, "i32"), "f64"))
+    nv_sum(x * nv_scalar(2, "f64") + nv_convert(nv_convert(x, "i32"), "f64"))
   }))
   expect_equal(as.numeric(f(x)[[1L]]), c(2, 2, 2))
 })
@@ -437,7 +603,7 @@ test_that("prim_pad reverse with interior padding", {
   f <- jit(gradient(function(x) {
     x <- x * nv_array(c(1, 2, 3), dtype = "f64")
     y <- prim_pad(x, nv_scalar(0, "f64"), 0L, 0L, 1L)
-    nv_reduce_sum(y, axes = 1L, drop = TRUE)
+    nv_sum(y, axes = 1L, drop = TRUE)
   }))
   x <- nv_array(c(1, 2, 3), dtype = "f64")
   g <- f(x)
@@ -449,7 +615,7 @@ test_that("prim_pad reverse with interior padding", {
     # edge_padding_low=1, edge_padding_high=1, interior_padding=1
     # For input [a, b], output is [0, a, 0, b, 0]
     y <- prim_pad(x, nv_scalar(0, "f64"), 1L, 1L, 1L)
-    nv_reduce_sum(y, axes = 1L, drop = TRUE)
+    nv_sum(y, axes = 1L, drop = TRUE)
   }))
   x2 <- nv_array(c(5, 10), dtype = "f64")
   g2 <- f2(x2)
@@ -459,7 +625,7 @@ test_that("prim_pad reverse with interior padding", {
   f3 <- jit(gradient(function(x) {
     x <- x * nv_array(c(1, 2, 3, 4), shape = c(2, 2), dtype = "f64")
     y <- prim_pad(x, nv_scalar(0, "f64"), c(0L, 0L), c(0L, 0L), c(1L, 1L))
-    nv_reduce_sum(y, axes = c(1L, 2L), drop = TRUE)
+    nv_sum(y, axes = c(1L, 2L), drop = TRUE)
   }))
   x3 <- nv_matrix(1:4, nrow = 2, ncol = 2, dtype = "f64")
   g3 <- f3(x3)
@@ -468,7 +634,7 @@ test_that("prim_pad reverse with interior padding", {
   # Test 2D with different edge padding on each axis
   f4 <- jit(gradient(function(x) {
     y <- prim_pad(x, nv_scalar(0, "f64"), c(1L, 2L), c(2L, 1L), c(0L, 0L))
-    nv_reduce_sum(y, axes = c(1L, 2L), drop = TRUE)
+    nv_sum(y, axes = c(1L, 2L), drop = TRUE)
   }))
   x4 <- nv_matrix(1:6, nrow = 2, ncol = 3, dtype = "f64")
   g4 <- f4(x4)
@@ -480,7 +646,7 @@ test_that("prim_dynamic_slice reverse", {
   f <- jit(gradient(
     function(x, start_i) {
       sliced <- prim_dynamic_slice(x, start_i, slice_sizes = 3L)
-      nv_reduce_sum(sliced, axes = 1L, drop = TRUE)
+      nv_sum(sliced, axes = 1L, drop = TRUE)
     },
     wrt = "x"
   ))
@@ -496,7 +662,7 @@ test_that("prim_dynamic_slice reverse", {
   f2d <- jit(gradient(
     function(x, start_i, start_j) {
       sliced <- prim_dynamic_slice(x, start_i, start_j, slice_sizes = c(2L, 2L))
-      nv_reduce_sum(sliced, axes = c(1L, 2L), drop = TRUE)
+      nv_sum(sliced, axes = c(1L, 2L), drop = TRUE)
     },
     wrt = "x"
   ))
@@ -515,7 +681,7 @@ test_that("prim_dynamic_slice reverse with out-of-bounds", {
   f <- jit(gradient(
     function(x, start_i) {
       sliced <- prim_dynamic_slice(x, start_i, slice_sizes = c(5L))
-      nv_reduce_sum(sliced, axes = 1L, drop = TRUE)
+      nv_sum(sliced, axes = 1L, drop = TRUE)
     },
     wrt = "x"
   ))
@@ -534,7 +700,7 @@ test_that("prim_dynamic_update_slice reverse", {
   f_x <- jit(gradient(
     function(x, update, start_i) {
       updated <- prim_dynamic_update_slice(x, update, start_i)
-      nv_reduce_sum(updated, axes = 1L, drop = TRUE)
+      nv_sum(updated, axes = 1L, drop = TRUE)
     },
     wrt = "x"
   ))
@@ -551,7 +717,7 @@ test_that("prim_dynamic_update_slice reverse", {
   f_update <- jit(gradient(
     function(x, update, start_i) {
       updated <- prim_dynamic_update_slice(x, update, start_i)
-      nv_reduce_sum(updated, axes = 1L, drop = TRUE)
+      nv_sum(updated, axes = 1L, drop = TRUE)
     },
     wrt = "update"
   ))
@@ -567,7 +733,7 @@ test_that("prim_dynamic_update_slice reverse with out-of-bounds", {
   f_x <- jit(gradient(
     function(x, update, start_i) {
       updated <- prim_dynamic_update_slice(x, update, start_i)
-      nv_reduce_sum(updated, axes = 1L, drop = TRUE)
+      nv_sum(updated, axes = 1L, drop = TRUE)
     },
     wrt = "x"
   ))
@@ -585,7 +751,7 @@ test_that("prim_dynamic_update_slice reverse with out-of-bounds", {
   f_update <- jit(gradient(
     function(x, update, start_i) {
       updated <- prim_dynamic_update_slice(x, update, start_i)
-      nv_reduce_sum(updated, axes = 1L, drop = TRUE)
+      nv_sum(updated, axes = 1L, drop = TRUE)
     },
     wrt = "update"
   ))
@@ -609,20 +775,20 @@ test_that("prim_popcnt", {
 describe("shift ops", {
   it("prim_shift_left returns zero gradients", {
     x <- nv_array(c(1L, 2L, 4L, 8L), dtype = "i32")
-    y <- nv_array(c(1L, 1L, 1L, 1L), dtype = "i32")
-    verify_zero_grad_binary(prim_shift_left, x, y)
+    shift <- nv_array(c(1L, 1L, 1L, 1L), dtype = "i32")
+    verify_zero_grad_binary(prim_shift_left, x, shift)
   })
 
   it("prim_shift_right_arithmetic returns zero gradients", {
     x <- nv_array(c(8L, 16L, 32L, -8L), dtype = "i32")
-    y <- nv_array(c(1L, 2L, 1L, 1L), dtype = "i32")
-    verify_zero_grad_binary(prim_shift_right_arithmetic, x, y)
+    shift <- nv_array(c(1L, 2L, 1L, 1L), dtype = "i32")
+    verify_zero_grad_binary(prim_shift_right_arithmetic, x, shift)
   })
 
   it("prim_shift_right_logical returns zero gradients", {
     x <- nv_array(c(8L, 16L, 32L, 64L), dtype = "i32")
-    y <- nv_array(c(1L, 2L, 1L, 2L), dtype = "i32")
-    verify_zero_grad_binary(prim_shift_right_logical, x, y)
+    shift <- nv_array(c(1L, 2L, 1L, 2L), dtype = "i32")
+    verify_zero_grad_binary(prim_shift_right_logical, x, shift)
   })
 })
 
@@ -631,7 +797,7 @@ test_that("prim_bitcast_convert", {
   verify_zero_grad_unary(prim_bitcast_convert, x, f_wrapper = function(x) {
     out <- prim_bitcast_convert(x, dtype = "i32")
     out <- nv_convert(out, "f32")
-    nv_reduce_sum(out, axes = 1L, drop = TRUE)
+    nv_sum(out, axes = 1L, drop = TRUE)
   })
 })
 
@@ -676,22 +842,22 @@ describe("boolean ops", {
       x_pred <- nv_convert(x, "bool")
       out <- prim_not(x_pred)
       out <- nv_convert(out, "f32")
-      nv_reduce_sum(out, axes = 1L, drop = TRUE)
+      nv_sum(out, axes = 1L, drop = TRUE)
     }
     verify_zero_grad_unary(prim_not, x, f_wrapper = f)
   })
-  it("prim_reduce_all returns zero gradients", {
-    verify_bool_reduce(prim_reduce_all)
+  it("prim_all returns zero gradients", {
+    verify_bool_reduce(prim_all)
   })
-  it("prim_reduce_any returns zero gradients", {
-    verify_bool_reduce(prim_reduce_any)
+  it("prim_any returns zero gradients", {
+    verify_bool_reduce(prim_any)
   })
 })
 
 describe("prim_gather", {
   it("out of bounds", {
     out <- jit(\() {
-      x <- nv_array(1:4, "f32")
+      x <- nv_array(1:4, dtype = "f32")
       g1 <- gradient(function(x) {
         mean(x[nv_array(5:7)]^2)
       })(x)
@@ -733,7 +899,7 @@ describe("prim_scatter", {
     expect_equal(g[[1]], g[[2]][[1]])
   })
 
-  it("errors for non-simple replacement update_computation", {
+  it("errors for non-simple replacement update_fn", {
     expect_error(
       jit(gradient(function(x) {
         out <- prim_scatter(
@@ -748,9 +914,9 @@ describe("prim_scatter", {
           index_vector_axis = 1L,
           indices_are_sorted = TRUE,
           unique_indices = TRUE,
-          update_computation = function(old, new) prim_add(old, new)
+          update_fn = function(old, new) prim_add(old, new)
         )
-        nv_reduce_sum(out, axes = 1L, drop = TRUE)
+        nv_sum(out, axes = 1L, drop = TRUE)
       }))(nv_array(1:5, dtype = "f32")),
       "simple replacement"
     )
@@ -778,7 +944,7 @@ describe("gather/scatter reverse via subset operators", {
     f2 <- function(x_subset, value) {
       x_subset <- rlang::inject(nv_subset(x, !!!quos))
       out <- gradient(\(x, value) {
-        mean(x_subset * value)
+        mean(x * value)
       })(x_subset, value)
       g1 <- nv_fill(0, shape = shape, dtype = dtype(x))
       out[[1L]] <- rlang::inject(nv_subset_assign(g1, !!!quos, value = out[[1]]))
@@ -857,9 +1023,9 @@ describe("gather/scatter reverse via subset operators", {
 })
 
 # argmax / argmin reverse rule short-circuits the gradient to zero.
-test_that("prim_argmax / prim_argmin have zero gradient", {
+test_that("prim_which_max / prim_which_min have zero gradient", {
   x <- nv_array(c(3, 1, 4), dtype = "f32")
-  for (prim in list(prim_argmax, prim_argmin)) {
+  for (prim in list(prim_which_max, prim_which_min)) {
     verify_zero_grad_unary(prim, x, f_wrapper = function(x) {
       out <- prim(x, axis = 1L)
       prim_convert(out, "f32")
@@ -876,7 +1042,7 @@ describe("prim_cummax", {
     x_nv <- nv_array(x_arr, dtype = "f32")
     f_nv <- function(x) {
       y <- nv_cummax(x, axis = axis)
-      nv_reduce_sum(y, axes = seq_along(shape(y)), drop = TRUE)
+      nv_sum(y, axes = seq_along(shape(y)), drop = TRUE)
     }
     grads_nv <- jit(gradient(f_nv))(x_nv)
     expected <- if (length(dim(x_arr))) {
@@ -914,7 +1080,7 @@ describe("prim_cummin", {
     x_nv <- nv_array(x_arr, dtype = "f32")
     f_nv <- function(x) {
       y <- nv_cummin(x, axis = axis)
-      nv_reduce_sum(y, axes = seq_along(shape(y)), drop = TRUE)
+      nv_sum(y, axes = seq_along(shape(y)), drop = TRUE)
     }
     grads_nv <- jit(gradient(f_nv))(x_nv)
     expected <- if (length(dim(x_arr))) {
@@ -955,7 +1121,7 @@ describe("prim_cummin", {
 test_that("prim_sort", {
   withr::local_seed(42)
   # 2D descending sort along axis != 1. Distinct values so the result is
-  # deterministic under the default is_stable = FALSE (tie-breaking unspecified).
+  # deterministic under the default stable = FALSE (tie-breaking unspecified).
   x_arr <- matrix(rnorm(4 * 6), nrow = 4)
   w_arr <- matrix(as.double(seq_len(4 * 6)), nrow = 4)
 
@@ -963,8 +1129,8 @@ test_that("prim_sort", {
   w_nv <- nv_array(w_arr)
 
   f_nv <- function(x) {
-    sorted <- prim_sort(list(x), axis = 2L, descending = TRUE)[[1L]]
-    nv_reduce_sum(sorted * w_nv, axes = c(1L, 2L))
+    sorted <- prim_sort(list(x), axis = 2L, decreasing = TRUE)[[1L]]
+    nv_sum(sorted * w_nv, axes = c(1L, 2L))
   }
   grad_nv <- jit(gradient(f_nv))(x_nv)[[1L]]
 
@@ -980,56 +1146,58 @@ test_that("prim_sort", {
 })
 
 test_that("prim_top_k", {
-  withr::local_seed(42)
-  x_arr <- matrix(rnorm(4 * 6), nrow = 4)
-  k <- 3L
-  w_arr <- matrix(as.double(seq_len(4 * k)), nrow = 4)
+  for (indices in c(TRUE, FALSE)) {
+    withr::local_seed(42)
+    x_arr <- matrix(rnorm(4 * 6), nrow = 4)
+    k <- 3L
+    w_arr <- matrix(as.double(seq_len(4 * k)), nrow = 4)
 
-  x_nv <- nv_array(x_arr)
-  w_nv <- nv_array(w_arr)
+    x_nv <- nv_array(x_arr)
+    w_nv <- nv_array(w_arr)
 
-  f_nv <- function(x) {
-    top <- prim_top_k(x, k = k)[[1L]]
-    nv_reduce_sum(top * w_nv, axes = c(1L, 2L))
+    f_nv <- function(x) {
+      top <- prim_top_k(x, k = k, indices = indices)[[1L]]
+      nv_sum(top * w_nv, axes = c(1L, 2L))
+    }
+    grad_nv <- jit(gradient(f_nv))(x_nv)[[1L]]
+
+    # Scatter w along the top-k indices for each row.
+    expected_grad <- matrix(0, nrow = nrow(x_arr), ncol = ncol(x_arr))
+    for (i in seq_len(nrow(x_arr))) {
+      top_idx <- order(x_arr[i, ], decreasing = TRUE)[seq_len(k)]
+      expected_grad[i, top_idx] <- w_arr[i, ]
+    }
+
+    expect_equal(as_array(grad_nv), expected_grad, tolerance = 1e-5)
   }
-  grad_nv <- jit(gradient(f_nv))(x_nv)[[1L]]
-
-  # Scatter w along the top-k indices for each row.
-  expected_grad <- matrix(0, nrow = nrow(x_arr), ncol = ncol(x_arr))
-  for (i in seq_len(nrow(x_arr))) {
-    top_idx <- order(x_arr[i, ], decreasing = TRUE)[seq_len(k)]
-    expected_grad[i, top_idx] <- w_arr[i, ]
-  }
-
-  expect_equal(as_array(grad_nv), expected_grad, tolerance = 1e-5)
 })
 
-test_that("prim_reduce_prod: gradient is safe at zeros", {
+test_that("prim_prod: gradient is safe at zeros", {
   # The safe rule: gradient at position i = product of all *other* elements
   # along the reduced axis. With one zero, only the zero position has a
   # non-zero gradient; with two or more zeros, the gradient is zero everywhere.
-  f1 <- jit(gradient(function(x) prim_reduce_prod(x, axes = 1L, drop = TRUE)))
+  f1 <- jit(gradient(function(x) prim_prod(x, axes = 1L, drop = TRUE)))
 
   expect_equal(as.numeric(f1(nv_array(c(2, 3, 5)))[[1L]]), c(15, 10, 6))
   expect_equal(as.numeric(f1(nv_array(c(2, 0, 5)))[[1L]]), c(0, 10, 0))
   expect_equal(as.numeric(f1(nv_array(c(2, 0, 0)))[[1L]]), c(0, 0, 0))
 })
 
-test_that("prim_reduce_prod: multi-axis reduction with a zero", {
+test_that("prim_prod: multi-axis reduction with a zero", {
   x <- matrix(c(2, 3, 0, 4, 5, 6), nrow = 3, byrow = TRUE)
-  f <- jit(gradient(function(x) prim_reduce_prod(x, axes = c(1L, 2L), drop = TRUE)))
+  f <- jit(gradient(function(x) prim_prod(x, axes = c(1L, 2L), drop = TRUE)))
   expected <- matrix(0, nrow = 3, ncol = 2)
   expected[2, 1] <- prod(x[x != 0])
   expect_equal(as_array(f(nv_array(x))[[1L]]), expected)
 })
 
-test_that("prim_reduce_prod: drop = FALSE matches drop = TRUE", {
+test_that("prim_prod: drop = FALSE matches drop = TRUE", {
   x <- nv_matrix(c(2, 3, 0, 4, 5, 6), nrow = 3, byrow = TRUE)
   f_drop <- jit(gradient(function(x) {
-    nv_reduce_sum(prim_reduce_prod(x, axes = 2L, drop = TRUE), axes = 1L, drop = TRUE)
+    nv_sum(prim_prod(x, axes = 2L, drop = TRUE), axes = 1L, drop = TRUE)
   }))
   f_keep <- jit(gradient(function(x) {
-    nv_reduce_sum(prim_reduce_prod(x, axes = 2L, drop = FALSE), axes = c(1L, 2L), drop = TRUE)
+    nv_sum(prim_prod(x, axes = 2L, drop = FALSE), axes = c(1L, 2L), drop = TRUE)
   }))
   expect_equal(as_array(f_drop(x)[[1L]]), as_array(f_keep(x)[[1L]]))
 })
@@ -1037,3 +1205,42 @@ test_that("prim_reduce_prod: drop = FALSE matches drop = TRUE", {
 if (nzchar(system.file(package = "torch"))) {
   source(system.file("extra-tests", "test-primitives-reverse-torch.R", package = "anvl"), local = TRUE)
 }
+
+describe("prim_reshape reverse", {
+  it("reshapes the gradient back in column-major order", {
+    # d/dx sum(reshape(x) * w) = reshape(w, shape(x)), so a distinct weight per
+    # element pins the order the gradient travels back in.
+    x <- nv_array(array(0, c(2L, 3L, 4L)), dtype = "f32")
+    w <- array(as.numeric(1:24), c(4L, 6L))
+    f <- function(x) nv_sum(prim_reshape(x, c(4L, 6L)) * w)
+    grads <- jit(gradient(f))(x)
+    expect_equal(as_array(grads[[1L]]), array(w, c(2L, 3L, 4L)))
+  })
+})
+
+describe("prim_print", {
+  x <- nv_array(c(1, 2, 3), dtype = "f64")
+  # The number of times a print ran: each one shows the value 7 on a line of
+  # its own.
+  prints_of_seven <- function(expr) sum(trimws(capture.output(expr)) == "7")
+
+  it("passes the gradient through", {
+    grad <- expect_output(jit(gradient(function(x) nv_sum(prim_print(x) * x)))(x))
+    expect_equal(as.numeric(grad[[1L]]), c(2, 4, 6))
+  })
+
+  it("prints once where a differentiated branch runs", {
+    f <- function(p, x) {
+      nv_if(
+        p,
+        function() {
+          prim_print(nv_scalar(7L))
+          nv_sum(x * x)
+        },
+        function() nv_sum(x)
+      )
+    }
+    g <- jit(gradient(f, wrt = "x"))
+    expect_equal(prints_of_seven(g(nv_scalar(TRUE), x)), 1L)
+  })
+})

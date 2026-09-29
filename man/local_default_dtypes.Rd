@@ -13,7 +13,7 @@ with_default_dtypes(dtypes, code, backend = NULL)
 \item{dtypes}{(named \code{character()} | named \code{list()})\cr
 A mapping of the data type categories (\code{float} and \code{int}) to data types,
 e.g. \code{c(float = "f64", int = "i32")}. Each may be a string or a
-\code{\link[tengen:DataType]{DataType}}. Can also be a partial override, such as \code{c(float = "f64")},
+\code{\link[xlamisc:DataType]{DataType}}. Can also be a partial override, such as \code{c(float = "f64")},
 in which case the category it does not name is left as it is.}
 
 \item{backend}{(\code{NULL} | \code{character(1)})\cr
@@ -39,22 +39,20 @@ categories they name.
 \details{
 Inside a \code{\link[=jit]{jit()}}ted body the defaults the program was keyed on are the
 \emph{baseline} and an override applies to its scope, so one program can use
-different precisions in different parts of itself. Only that baseline is
-part of the compilation cache key, so \strong{an override in a body must not
-change between calls: write it out literally rather than reading it from a
-variable.} \code{with_default_dtypes(c(float = prec), ...)} with a \code{prec} that
-later changes keeps serving the program traced at the first value, exactly
-as a changing \code{dtype} argument would -- and just as silently. Nothing
-checks this for you.
+different precisions in different parts of itself.
 }
 \examples{
 \dontshow{if (pjrt::plugins_downloaded()) withAutoprint(\{ # examplesIf}
 with_default_dtypes(c(float = "f64"), dtype(nv_array(1.5)))
 # A value that meets a typed array still takes that array's data type
 with_default_dtypes(c(float = "f64"), dtype(nv_array(1, dtype = "f32") + 1.5))
-# untyped values in one program can materialize at different precisions
+# untyped values in one program can materialize at different precisions: one at
+# whatever the default is, one at the `f64` the override asks for
 jit(function() {
-  list(single = nv_fill(0, 2), double = with_default_dtypes(c(float = "f64"), nv_fill(0, 2)))
+  list(
+    at_default = nv_fill(0, 2),
+    forced_f64 = with_default_dtypes(c(float = "f64"), nv_fill(0, 2))
+  )
 })()
 \dontshow{\}) # examplesIf}
 }

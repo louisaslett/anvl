@@ -74,9 +74,9 @@ test_that("ConcreteArray", {
 })
 
 test_that("from DataType", {
-  expect_class(nv_array(1L, "i32"), "AnvlArray")
+  expect_class(nv_array(1L, dtype = "i32"), "AnvlArray")
   expect_class(nv_scalar(1L, "i32"), "AnvlArray")
-  expect_class(nv_empty("i32", c(0, 1)), "AnvlArray")
+  expect_class(nv_empty(c(0, 1), "i32"), "AnvlArray")
 })
 
 test_that("nv_array from nv_array", {
@@ -184,7 +184,7 @@ test_that("nv_matrix() errors when nrow * ncol does not match data length", {
 test_that("nv_matrix() handles existing AnvlArray inputs", {
   x <- nv_array(1:6, shape = c(2L, 3L))
   expect_equal(as_array(nv_matrix(x, nrow = 2L)), as_array(x))
-  expect_error(nv_matrix(x, nrow = 3L), "Cannot change shape")
+  expect_error(nv_matrix(x, nrow = 3L), "Cannot change the shape")
 })
 
 test_that("nv_matrix() handles zero-row / zero-column shapes", {
@@ -365,7 +365,7 @@ test_that("nv_array rejects a device of another backend", {
   skip_if_no_quickr()
   local_backend("quickr")
   expect_error(nv_array(1, device = pjrt::pjrt_device("cpu")), "active backend")
-  expect_error(nv_empty("f64", 2L, device = pjrt::pjrt_device("cpu")), "active backend")
+  expect_error(nv_empty(2L, "f64", device = pjrt::pjrt_device("cpu")), "active backend")
 })
 
 test_that("default floating dtype is f32 for pjrt", {
@@ -896,6 +896,26 @@ describe("arr", {
   })
 })
 
+describe("as_array", {
+  it("rejects a `check` level it does not know", {
+    x <- nv_array(1:3)
+    expect_error(as_array(x, check = "nope"), "must be")
+    expect_error(as_array(x, check = NA), "must be")
+    expect_error(as_array(x, check = c("warn", "err")), "must be")
+  })
+
+  it("rejects `TRUE`, which does not say which level is meant", {
+    expect_error(as_array(nv_array(1:3), check = TRUE), "not accepted")
+  })
+
+  it("takes the levels it does know", {
+    x <- nv_array(1:3)
+    expect_equal(as_array(x, check = "warn"), array(1:3, 3L))
+    expect_equal(as_array(x, check = "err"), array(1:3, 3L))
+    expect_equal(as_array(x, check = FALSE), array(1:3, 3L))
+  })
+})
+
 describe("as.double", {
   it("returns a bare double vector and discards shape", {
     x <- nv_array(c(1, 2, 3, 4, 5, 6), dtype = "f32", shape = c(2L, 3L))
@@ -979,16 +999,19 @@ describe("bit64::as.integer64()", {
   it("wraps a ui64 value that R's signed integer64 cannot hold", {
     # `bit64::integer64` is signed, so the top half of `ui64` has nowhere to
     # go: exactly 2^63 lands on NA and anything above it comes back negative.
+    # `check = FALSE` asks for the wrapped value without being told about it.
     u <- nv_convert(nv_array(c(2^63, 2^63 + 2^11), dtype = "f64"), "ui64")
     expect_identical(
-      bit64::as.integer64(u),
+      bit64::as.integer64(u, check = FALSE),
       c(bit64::NA_integer64_, bit64::as.integer64(-2^63 + 2^11))
     )
   })
 
-  it("reports the wrap when asked to check", {
+  it("reports the wrap at every check level", {
     u <- nv_convert(nv_array(2^63, dtype = "f64"), "ui64")
-    expect_error(bit64::as.integer64(u, check = TRUE), "wrapped")
+    expect_warning(bit64::as.integer64(u), "wrapped")
+    expect_error(bit64::as.integer64(u, check = "err"), "wrapped")
+    expect_no_warning(bit64::as.integer64(u, check = FALSE))
   })
 
   it("works on a scalar", {
@@ -1079,13 +1102,13 @@ describe("the default float", {
     expect_dtype(nv_scalar(1.5), "f64")
     expect_dtype(nv_array(matrix(c(1.5, 2.5, 3.5, 4.5), 2)), "f64")
     expect_dtype(nv_fill(0, 3), "f64")
-    expect_dtype(nv_linspace(0, 1, steps = 3L), "f64")
+    expect_dtype(nv_linspace(0, 1, length_out = 3L), "f64")
     expect_dtype(nv_eye(2), "f64")
     state <- nv_rng_state(1L)
     expect_dtype(nv_rnorm(3, state)[[2L]], "f64")
     expect_dtype(nv_runif(3, state)[[2L]], "f64")
     expect_equal(peek_dtype(1.5), as_dtype("f64"))
-    expect_error(dtype(1.5), "f64")
+    expect_error(dtype(1.5), "no data type of its own")
     # An explicit dtype still wins, and the other categories are untouched.
     expect_dtype(nv_array(1.5, dtype = "f32"), "f32")
     expect_dtype(nv_array(1L), default_int())
@@ -1096,8 +1119,8 @@ describe("the default float", {
     local_default_dtypes(c(float = "f64", int = "i64"))
     # A buffer already has its dtype; nv_minval() builds one from raw bytes.
     expect_dtype(nv_scalar(pjrt::pjrt_scalar(1L, dtype = "i32")), "i32")
-    expect_equal(as.integer(nv_reduce_max(nv_array(1:3, dtype = "i32"))), 3L)
-    expect_equal(as.integer(jit(function(x) nv_reduce_min(x))(nv_array(1:3, dtype = "i32"))), 1L)
+    expect_equal(as.integer(nv_max(nv_array(1:3, dtype = "i32"))), 3L)
+    expect_equal(as.integer(jit(function(x) nv_min(x))(nv_array(1:3, dtype = "i32"))), 1L)
   })
 })
 
@@ -1136,4 +1159,20 @@ test_that("raw payloads require dtype and shape and are pjrt-only", {
   skip_if_no_quickr()
   local_backend("quickr")
   expect_error(nv_array(as.raw(1:4), dtype = "ui8", shape = 4L), "quickr")
+})
+
+describe("axes", {
+  it("returns the axis indices of an array", {
+    expect_identical(axes(nv_array(1:6, shape = c(2, 3))), 1:2)
+  })
+  it("is empty for a scalar", {
+    expect_identical(axes(nv_scalar(1)), integer())
+  })
+  it("works on traced values", {
+    f <- jit(function(x) {
+      expect_identical(axes(x), 1:3)
+      x
+    })
+    f(nv_fill(1, c(2L, 3L, 4L)))
+  })
 })

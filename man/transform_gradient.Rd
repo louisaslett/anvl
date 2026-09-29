@@ -2,7 +2,7 @@
 % Please edit documentation in R/reverse.R
 \name{transform_gradient}
 \alias{transform_gradient}
-\title{Transform a graph to its gradient}
+\title{Transform a Graph to Its Gradient}
 \usage{
 transform_gradient(graph, wrt)
 }
@@ -10,11 +10,13 @@ transform_gradient(graph, wrt)
 \item{graph}{(\code{\link{AnvlGraph}})\cr
 The graph to transform. Must produce a single scalar float output.}
 
-\item{wrt}{(\code{character})\cr
-Names of the graph inputs to differentiate with respect to.}
+\item{wrt}{(\code{NULL} | \code{character()})\cr
+Names of the graph inputs to differentiate with respect to. \code{NULL} differentiates with respect
+to all inputs.}
 }
 \value{
-An \code{\link{AnvlGraph}} whose outputs are the requested gradients.
+(\code{\link{AnvlGraph}})\cr
+Its outputs are the requested gradients.
 }
 \description{
 Low-level graph transformation that transforms a graph into its gradient.
@@ -29,11 +31,12 @@ Afterwards, we traverse it backwards and call the gradient rules where necessary
 
 See \code{\link[=rule_reverse]{rule_reverse()}} for more information.
 
-This is the building block used by \code{\link[=gradient]{gradient()}} and \code{\link[=value_and_gradient]{value_and_gradient()}}; prefer
-those higher-level wrappers unless you need to operate on graphs directly.
+\code{\link[=gradient]{gradient()}} and \code{\link[=value_and_gradient]{value_and_gradient()}} differentiate the same way, but
+into the trace they are called in rather than into a graph of its own;
+prefer them unless you need to operate on graphs directly.
 }
 \examples{
-graph <- trace_fn(prim_mul, list(nv_aval("f32", c()), nv_aval("f32", c())))
+graph <- trace_fn(prim_mul, list(nv_aval("f32", integer()), nv_aval("f32", integer())))
 graph
 transform_gradient(graph, "lhs")
 }

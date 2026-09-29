@@ -29,6 +29,14 @@ test_that("with_backend restores backend on error", {
   expect_equal(active_backend(), "pjrt")
 })
 
+describe("with_backend", {
+  it("rejects the internal plain backend", {
+    expect_error(with_backend("plain", 1), "plain")
+    expect_error(local_backend("plain"), "plain")
+    expect_equal(active_backend(), "pjrt")
+  })
+})
+
 test_that("backend() returns the backend name", {
   expect_equal(backend(nv_array(1)), "pjrt")
 })
@@ -42,14 +50,14 @@ test_that("backend() returns 'quickr' for quickr arrays", {
 test_that("nv_empty works with quickr backend", {
   skip_if_no_quickr()
   local_backend("quickr")
-  x <- nv_empty("f64", c(0L, 3L))
+  x <- nv_empty(c(0L, 3L), "f64")
   expect_equal(backend(x), "quickr")
   expect_dtype(x, "f64")
   expect_shape(x, c(0L, 3L))
 })
 
 test_that("nv_empty works with pjrt backend", {
-  x <- nv_empty("f32", c(0L, 3L))
+  x <- nv_empty(c(0L, 3L), "f32")
   expect_equal(backend(x), "pjrt")
   expect_dtype(x, "f32")
   expect_shape(x, c(0L, 3L))

@@ -1,14 +1,14 @@
 #' @include backend.R
 NULL
 
-#' @title Quickr device
+#' @title Quickr Device
 #' @description
 #' Device descriptor for the quickr backend. The only supported `type` is
 #' `"cpu"`.
 #'
 #' @param x (`character(1)`)\cr
 #'   Device type. Currently only supports `"cpu"`.
-#' @return A `QuickrDevice` object.
+#' @return (`QuickrDevice`)
 #' @seealso [`nv_device()`], [`AnvlBackendQuickr()`].
 #' @export
 quickr_device <- function(x = "cpu") {
@@ -43,7 +43,6 @@ jit_quickr_compile_cb <- function(f, static, unwrap) {
       f,
       args_flat = avals_from_dispatch(info),
       in_tree = info$in_tree,
-      arg_devices = dispatch_arg_devices(info),
       unwrap = unwrap,
       flat = TRUE,
       default_dtypes = default_dtypes_from_key(info$context)
@@ -108,23 +107,20 @@ compile_quickr <- function(
   f,
   args_flat,
   in_tree,
-  arg_devices = list(),
   unwrap = FALSE,
   flat = FALSE,
   default_dtypes = NULL
 ) {
   desc <- local_descriptor(default_dtypes = default_dtypes, backend = "quickr")
-  graph <- trace_fn(f, desc = desc, args_flat = args_flat, in_tree = in_tree, mode = "toplevel")
-  check_single_backend(graph, arg_devices = arg_devices, expected = "quickr")
+  graph <- trace_fn(f, desc = desc, args_flat = args_flat, in_tree = in_tree)
+  check_single_backend(graph, expected = "quickr")
   list(fun = graph_to_quickr_function(graph, unwrap = unwrap, flat = flat))
 }
 
-#' Quickr backend
+#' Quickr Backend
 #'
 #' Constructs the quickr backend, which stores array data as plain R arrays and
 #' compiles jitted functions to R code via the \CRANpkg{quickr} package.
-#'
-#' To use it, the `"quickr"` package needs to be installed.
 #'
 #' Registered automatically under the name `"quickr"` when the package is
 #' loaded; call [`local_backend("quickr")`][local_backend()] or
@@ -138,7 +134,7 @@ compile_quickr <- function(
 #' copying, and [`nv_array()`] simply wraps an R vector/array. Data always lives
 #' in R's memory and computation always runs on the CPU, so the only device is
 #' [`quickr_device("cpu")`][quickr_device()]; every array still carries it in
-#' `$device`, as arrays of every backend do.
+#' `$device`.
 #'
 #' @section Status:
 #' This backend is **experimental** and has a number of limitations:
@@ -147,21 +143,16 @@ compile_quickr <- function(
 #'   suited to long-running or repeatedly-called functions where the one-time
 #'   compilation cost is amortized.
 #' * Only a subset of the primitives that the PJRT backend supports are currently
-#'   lowered to quickr code. See `vignette("primitives")` for an overview.
+#'   lowered to quickr code. See
+#'   `r roxy_article("primitives")` for an overview.
 #' * Only CPU execution is supported.
 #' * Only three data types are supported; see the section below.
 #'
 #' @section Supported data types:
 #' `f64`, `i32` and `bool` -- the three R storage types.
 #'
-#' @section Quickr JIT arguments:
-#'
-#' * `unwrap` (`logical(1)`, default `FALSE`): if `TRUE`, the compiled function
-#'   returns plain R arrays instead of [`AnvlArray`]s. Useful when the jitted
-#'   function's output is consumed by non-anvl R code and the extra wrapping
-#'   would only get stripped again.
-#'
-#' @return An [`AnvlBackend`] object with subclass `"AnvlBackendQuickr"`.
+#' @return ([`AnvlBackend`])\cr
+#'   With subclass `"AnvlBackendQuickr"`.
 #' @seealso [`AnvlBackend()`], [`AnvlBackendPjrt()`], [`local_backend()`], [`jit()`].
 #' @export
 AnvlBackendQuickr <- function() {

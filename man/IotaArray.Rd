@@ -10,7 +10,7 @@ IotaArray(shape, dtype, axis, start = 1L)
 \item{shape}{(\code{\link[stablehlo:Shape]{stablehlo::Shape}} | \code{integer()})\cr
 The shape of the array.}
 
-\item{dtype}{(\code{\link[tengen:DataType]{tengen::DataType}})\cr
+\item{dtype}{(\code{\link[xlamisc:DataType]{xlamisc::DataType}})\cr
 The data type.}
 
 \item{axis}{(\code{integer(1)})\cr
@@ -19,8 +19,12 @@ The axis along which values increase.}
 \item{start}{(\code{integer(1)})\cr
 The starting value.}
 }
+\value{
+(\code{\link{IotaArray}})
+}
 \description{
-An \code{\link{AbstractArray}} representing an integer sequence.
+An \code{\link{AbstractArray}} representing an arithmetic sequence with step 1 along
+one axis.
 Usually created by \code{\link[=nv_iota]{nv_iota()}} / \code{\link[=nv_seq]{nv_seq()}}, which both call \code{\link[=prim_iota]{prim_iota()}} internally.
 Inherits from \code{\link{AbstractArray}}.
 }
@@ -40,7 +44,7 @@ shape(x)
 naxes(x)
 dtype(x)
 # how it appears during tracing:
-graph <- trace_fn(function() nv_iota(axis = 1L, dtype = "i32", shape = 4L), list())
+graph <- trace_fn(function() nv_iota(axis = 1L, shape = 4L, dtype = "i32"), list())
 graph
 graph$outputs[[1]]$aval
 \dontshow{\}) # examplesIf}

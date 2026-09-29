@@ -51,6 +51,17 @@ test_that("nv_rnorm accepts arrayish mean and sd", {
   odd_means <- nv_array(matrix(rep(c(-1000, 0, 1000), each = 3), nrow = 3))
   odd <- as_array(nv_rnorm(c(3, 3), state, dtype = "f64", mean = odd_means)[[2]])
   expect_true(all(odd[, 1] < -900) && all(abs(odd[, 2]) < 100) && all(odd[, 3] > 900))
+
+  # Anything else than a scalar or the sample's shape is refused, including for
+  # a scalar sample, which would otherwise take the shape of `mean`/`sd`
+  expect_error(
+    nv_rnorm(c(2, 3), state, mean = nv_array(matrix(0, 2, 1))),
+    "must be a scalar or have the shape of the sample"
+  )
+  expect_error(
+    nv_rnorm(integer(), state, sd = nv_array(c(1, 2, 3))),
+    "must be a scalar or have the shape of the sample"
+  )
 })
 
 test_that("rng rejects non-f32/f64 dtypes", {
@@ -104,14 +115,66 @@ test_that("nv_rbinom", {
   expect_shape(out3[[2]], c(3L, 3L))
 })
 
-test_that("nv_runif with min == max returns the pair, state unchanged", {
+test_that("nv_runif with min == max returns the pair, state advanced", {
   state <- nv_array(c(1, 2), dtype = "ui64")
   out <- nv_runif(c(2, 3), state, min = 5, max = 5)
   expect_named(out, c("state", "values"))
-  # No draw is made, so the state comes back as it went in.
-  expect_equal(as.vector(out$state), as.vector(state))
+  # `min`/`max` may be traced, so the draw is made and the state advanced as
+  # for any other interval.
+  expect_equal(as.vector(out$state), as.vector(nv_runif(c(2, 3), state)$state))
   expect_shape(out$values, c(2L, 3L))
   expect_true(all(as.vector(out$values) == 5))
+})
+
+test_that("nv_runif accepts arrayish min and max", {
+  state <- nv_array(c(1, 2), dtype = "ui64")
+
+  # An elementwise interval of the same shape as the sample
+  lower <- nv_array(matrix(c(0, 10, 100, 1000, 10000, 100000), nrow = 2), dtype = "f64")
+  out <- nv_runif(c(2, 3), state, min = lower, max = lower + 1)
+  values <- as_array(out$values)
+  expect_shape(out$values, c(2L, 3L))
+  expect_dtype(out$values, "f64")
+  expect_true(all(values > as_array(lower) & values < as_array(lower) + 1))
+
+  # A scalar bound combines with an array one, and the draws are those of the
+  # standard uniform, scaled and shifted elementwise
+  upper <- nv_array(matrix(1:6, nrow = 2), dtype = "f64")
+  u <- as_array(nv_runif(c(2, 3), state, dtype = "f64")$values)
+  expect_equal(as_array(nv_runif(c(2, 3), state, min = 0, max = upper)$values), u * 1:6)
+
+  # min/max may be traced under jit
+  f <- jit(function(s, a, b) nv_runif(c(2, 3), s, min = a, max = b))
+  traced <- as_array(f(state, nv_scalar(1000, dtype = "f64"), nv_scalar(1001, dtype = "f64"))$values)
+  expect_true(all(traced > 1000 & traced < 1001))
+
+  # Anything else than a scalar or the sample's shape is refused
+  expect_error(
+    nv_runif(c(2, 3), state, max = nv_array(matrix(1, 2, 1))),
+    "must be a scalar or have the shape of the sample"
+  )
+  expect_error(
+    nv_runif(integer(), state, min = nv_array(c(0, 1))),
+    "must be a scalar or have the shape of the sample"
+  )
+})
+
+test_that("nv_runif gives NaN for an invalid interval, like runif()", {
+  state <- nv_array(c(1, 2), dtype = "ui64")
+  lower <- c(0, 5, 1, -Inf, NaN, 10)
+  upper <- c(1, 5, 0, 1, 1, Inf)
+  out <- nv_runif(6L, state, dtype = "f64", min = nv_array(lower), max = nv_array(upper))
+  expect_equal(is.nan(as.vector(out$values)), suppressWarnings(is.nan(runif(6L, lower, upper))))
+  expect_equal(as.vector(out$values)[2L], 5)
+})
+
+test_that("nv_runif differentiates with respect to min and max", {
+  state <- nv_array(c(1, 2), dtype = "ui64")
+  u <- as.vector(nv_runif(c(2, 3), state, dtype = "f64")$values)
+  g <- jit(gradient(function(a, b) sum(nv_runif(c(2, 3), state, min = a, max = b)$values)))
+  grads <- g(nv_array(matrix(-2, 2, 3), dtype = "f64"), nv_array(matrix(3, 2, 3), dtype = "f64"))
+  expect_equal(as.vector(grads[[1L]]), 1 - u)
+  expect_equal(as.vector(grads[[2L]]), u)
 })
 
 test_that("nv_rbinom and nv_sample_int reject a boolean data type", {
@@ -126,7 +189,7 @@ test_that("nv_sample_int", {
   # statistical validity checks are in inst/random
   state <- nv_array(c(1, 2), dtype = "ui64")
 
-  out1 <- nv_sample_int(n = 6L, shape = 10L, initial_state = state)
+  out1 <- nv_sample_int(n = 6L, shape = 10L, state = state)
 
   expect_shape(out1[[1]], 2L)
   expect_shape(out1[[2]], 10L)
@@ -137,45 +200,45 @@ test_that("nv_sample_int", {
   expect_true(all(values1 >= 1L & values1 <= 6L))
 
   # Test 2D output shape
-  out3 <- nv_sample_int(n = 4L, shape = c(2L, 3L), initial_state = state)
+  out3 <- nv_sample_int(n = 4L, shape = c(2L, 3L), state = state)
   expect_shape(out3[[2]], c(2L, 3L))
 
   # The last integer is reachable and the first is not over-represented
-  values4 <- as.vector(nv_sample_int(n = 6L, shape = 5000L, initial_state = state)[[2]])
+  values4 <- as.vector(nv_sample_int(n = 6L, shape = 5000L, state = state)[[2]])
   expect_setequal(unique(values4), 1:6)
   expect_true(all(abs(as.numeric(table(values4)) / 5000 - 1 / 6) < 0.02))
 
   # The dtype of the drawn integers is configurable
-  out5 <- nv_sample_int(n = 6L, shape = 4L, initial_state = state, dtype = "i64")
+  out5 <- nv_sample_int(n = 6L, shape = 4L, state = state, dtype = "i64")
   expect_dtype(out5[[2]], "i64")
 
   # A population of size one is always drawn
-  expect_true(all(as.vector(nv_sample_int(n = 1L, shape = 20L, initial_state = state)[[2]]) == 1L))
+  expect_true(all(as.vector(nv_sample_int(n = 1L, shape = 20L, state = state)[[2]]) == 1L))
 })
 
 test_that("nv_sample from a population array", {
   state <- nv_array(c(1, 2), dtype = "ui64")
   pop <- nv_array(c(10, 20, 30))
 
-  out <- nv_sample(x = pop, shape = 8L, initial_state = state)
+  out <- nv_sample(x = pop, shape = 8L, state = state)
   expect_shape(out[[2]], 8L)
   # The result has the data type of the population
   expect_dtype(out[[2]], dtype(pop))
   expect_true(all(as.vector(out[[2]]) %in% c(10, 20, 30)))
 
   # 2D output shape
-  expect_shape(nv_sample(x = pop, shape = c(2L, 3L), initial_state = state)[[2]], c(2L, 3L))
+  expect_shape(nv_sample(x = pop, shape = c(2L, 3L), state = state)[[2]], c(2L, 3L))
 
   # Every element of the population is reachable
-  many <- as.vector(nv_sample(x = pop, shape = 500L, initial_state = state)[[2]])
+  many <- as.vector(nv_sample(x = pop, shape = 500L, state = state)[[2]])
   expect_setequal(unique(many), c(10, 20, 30))
 
   # Unlike R's `sample()`, a length-one population is not a count
-  expect_true(all(as.vector(nv_sample(x = nv_array(6), shape = 5L, initial_state = state)[[2]]) == 6))
+  expect_true(all(as.vector(nv_sample(x = nv_array(6), shape = 5L, state = state)[[2]]) == 6))
 
   # Population must be 1-D
   expect_error(
-    nv_sample(x = nv_array(matrix(1:6, nrow = 2)), shape = 3L, initial_state = state),
+    nv_sample(x = nv_array(matrix(1:6, nrow = 2)), shape = 3L, state = state),
     "must be a 1-D array"
   )
 })
