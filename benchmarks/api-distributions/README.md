@@ -311,8 +311,7 @@ log1p(-x)                                                # correct: -5.551e-17
 
 base R forms `1 - x` first, which rounds to exactly 1, and loses the value
 entirely; anvl goes through `log1p` and keeps it. The sweep correctly reports a
-disagreement, and the right response is to leave `nv_punif` alone. Always
-establish which side is right before acting on one.
+disagreement, and the right response is to leave `nv_punif` alone.
 
 ### How disagreements are classified
 
