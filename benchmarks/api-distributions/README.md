@@ -140,7 +140,7 @@ backends represented in the store.
 | reader | selection |
 |---|---|
 | `sw_results()`, `sw_worst()` | latest per cell, output, platform and depth |
-| `status`, `export`, `validate-refs` | latest results first, then deepest available per cell/output |
+| `status`, `export`, `validate-refs` | newest attempt per cell, platform and depth; of those that succeeded, the deepest per cell/output (`current_results()`) |
 | `diff` | newest matching run versus the previous matching result per cell, output, platform and depth; `--from`/`--to` select runs |
 | `sw_detail()`, `sw_hist()`, `sw_bands()`, `sw_ranges()`, `sw_points()` | matching historical rows, not just the latest run |
 
@@ -167,14 +167,23 @@ Rscript run.R status
 Rscript run.R status --filter spec=nv_qnorm --backends anvl,jax
 ```
 
-`status` reports two things, for every backend the store holds unless
+`status` reports three things, for every backend the store holds unless
 `--backends` names some:
 
 - **Coverage.** For each platform and depth, how many of the declared cells
-  were swept, and whether any cell was never swept.
+  were swept, and which cells have no successful result at any depth. A cell
+  counts as swept at a depth when its newest attempt there succeeded.
+- **Errors.** Every cell whose newest attempt errored, with its platform, depth,
+  run and the first line of the error. An error superseded by a later
+  successful run of the same cell, platform and depth is not listed.
 - **References.** How many stable and gradient references are validated,
   failed, not validated or have no identity, and which results use a failed
   reference or one with no identity.
+
+`run` records a cell's error and carries on, so its exit status does not show
+whether a sweep completed; `status` is where that is checked before an export.
+`export` applies the same rules and carries them to the site, so a cell that
+errored or was never run is shown there too.
 
 ### Retaining worst inputs per binade
 
@@ -582,12 +591,18 @@ Rscript run.R export --out <dir> --backends anvl     # restrict, if you mean to
 ```
 
 Unlike `run`, `export` does not default to anvl alone: it exports whatever
-backends the store holds.
+backends the store holds. It exports errored and never-run cells as such in
+`coverage.parquet`, and warns when there are any; it refuses only when there is
+no successful result at all.
 
 ```
-manifest.json     index: schema version, platform, specs, depths, row counts
+manifest.json     index: schema version, platform, specs, depths, coverage counts,
+                  row counts
 runs.parquet      the environment fingerprint of every run included
-summary.parquet   the results table for every cell of every function
+summary.parquet   the successful results of every cell of every function
+coverage.parquet  every declared cell: the depth of its deepest successful
+                  sweep and its newest error, so errored and never-run cells
+                  are visible
 detail.parquet    the worst inputs, per binade
 bands.parquet     the per-binade profile, one row per binade
 hist.parquet      the error distribution
@@ -602,7 +617,7 @@ validations.parquet  reference-validation records
 validation_samples.parquet  retained validation samples and failures
 ```
 
-Schema version is currently 7. Optional tables are written only when data is
+Schema version is currently 8. Optional tables are written only when data is
 available; consult `manifest.json` for the actual file inventory.
 
 One file per **table**, not per function. The overview page summarises every

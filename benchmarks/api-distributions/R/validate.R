@@ -369,8 +369,7 @@ cmd_validate_refs <- function(opt) {
   backends <- if (isTRUE(opt$backends_given)) opt$backends else sort(unique(res$backend))
   specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
   g <- apply_filter(build_grid(specs, backends), opt$filter, extra = "output")
-  res <- deepest_per_cell(res[res$cell_id %in% g$cell_id & res$output != "-", , drop = FALSE], names(DEPTHS))
-  res <- filter_results(res, opt$filter)
+  res <- current_results(res[res$cell_id %in% g$cell_id, , drop = FALSE], opt$filter)$results
   if (!is.null(opt$run)) res <- res[res$run_id == opt$run, , drop = FALSE]
   if (!nrow(res)) stop("no results to validate for that filter", call. = FALSE)
   res <- res[order(res$cell_id, res$output), , drop = FALSE]

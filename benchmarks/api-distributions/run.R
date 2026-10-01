@@ -5,7 +5,7 @@
 ##   Rscript run.R list                       what cells exist
 ##   Rscript run.R run --depth smoke          run them all, coarsely
 ##   Rscript run.R run --filter spec=nv_punif,dtype=f64 --depth full
-##   Rscript run.R status                     coverage and reference statuses
+##   Rscript run.R status                     coverage, errored cells, reference statuses
 ##   Rscript run.R selftest                   prove the engine still detects errors
 ##   Rscript run.R validate-refs              check the references against MPFR
 ##   Rscript run.R diff                       what changed since the previous run
@@ -535,28 +535,26 @@ cmd_run <- function(opt) {
   invisible(pv$run_id)
 }
 
-## What the store holds: coverage of the declared grid per platform and
-## depth, and the validation status of every reference the results use.
+## Whether the store holds what was meant to be swept: coverage of the
+## declared grid per platform and depth, the cells whose newest attempt
+## errored, and the validation status of every reference the results use.
 cmd_status <- function(opt) {
   dir <- store_dir(opt$store)
-  res <- latest_results(dir)
+  all <- latest_results(dir)
   specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
-  g <- apply_filter(build_grid(specs, store_backends(opt, res)), opt$filter, extra = "output")
+  g <- apply_filter(build_grid(specs, store_backends(opt, all)), opt$filter, extra = "output")
 
-  if (is.null(res)) {
+  if (is.null(all)) {
     cat("The result store is empty.\n  ", dir, "\n\n")
     cat(sprintf("%d cells are declared. To fill them:\n", nrow(g)))
     cat("  Rscript run.R run --depth smoke\n")
     return(invisible(NULL))
   }
-  res <- filter_results(res[res$cell_id %in% g$cell_id, , drop = FALSE], opt$filter)
+  cur <- current_results(all[all$cell_id %in% g$cell_id, , drop = FALSE], opt$filter)
+  att <- cur$attempts
+  ok <- att[is.na(att$error), , drop = FALSE]
+  err <- cur$errors
   runs <- store_read(dir, "runs")
-
-  ## `all_depths` drives coverage, which is about what has been run. `res` is
-  ## collapsed to the deepest result per cell, because the references are
-  ## about the best evidence available.
-  all_depths <- res
-  res <- deepest_per_cell(res, names(DEPTHS))
 
   cat("\nanvl distribution sweeps \u2014 status\n")
   cat("store: ", dir, "\n", sep = "")
@@ -566,48 +564,58 @@ cmd_status <- function(opt) {
 
   ## ---- coverage ------------------------------------------------------------
   rule("COVERAGE")
-  cat("A *cell* is one combination of function, precision, value-or-gradient,\n")
-  cat("parameter set and flags. A gradient cell reports one *result* per\n")
-  cat("differentiated argument, so cells and results are different counts.\n\n")
-  for (pk in unique(all_depths$platform_key)) {
+  cat("A *cell* is one combination of function, backend, precision, value-or-\n")
+  cat("gradient, parameter set and flags. A gradient cell reports one *result* per\n")
+  cat("differentiated argument, so cells and results are different counts. A cell\n")
+  cat("counts as swept when its newest attempt at that depth succeeded.\n\n")
+  for (pk in sort(unique(att$platform_key))) {
     cat(sprintf("  %s\n", pk))
     for (d in names(DEPTHS)) {
-      n <- length(unique(all_depths$cell_id[all_depths$depth == d & all_depths$platform_key == pk]))
-      cat(
-        trimws(
-          sprintf(
-            "    %-6s %4d of %4d cells   %s",
-            d,
-            n,
-            nrow(g),
-            if (n == nrow(g)) {
-              "(complete)"
-            } else if (n == 0L) {
-              "(not run)"
-            } else {
-              "(partial)"
-            }
-          ),
-          "right"
-        ),
-        "\n",
-        sep = ""
-      )
+      n <- length(unique(ok$cell_id[ok$depth == d & ok$platform_key == pk]))
+      ne <- length(unique(err$cell_id[err$depth == d & err$platform_key == pk]))
+      cat(sprintf(
+        "    %-6s %4d of %4d cells   %s\n",
+        d,
+        n,
+        nrow(g),
+        paste0(
+          if (n == nrow(g)) "(complete)" else if (n == 0L) "(not run)" else "(partial)",
+          if (ne) sprintf(", %d errored", ne) else ""
+        )
+      ))
     }
   }
-  swept <- length(unique(all_depths$cell_id))
+  swept <- unique(ok$cell_id)
   cat(sprintf(
     "\n  %d of %d cells swept at some depth, producing %d results.\n",
-    swept,
+    length(swept),
     nrow(g),
-    nrow(res)
+    nrow(cur$results)
   ))
-  if (swept < nrow(g)) {
-    miss <- setdiff(g$cell_id, unique(all_depths$cell_id))
-    cat(sprintf("  %d cell(s) never swept, e.g. %s\n", length(miss), miss[1L]))
+  miss <- setdiff(g$cell_id, swept)
+  if (length(miss)) {
+    cat(sprintf("  %d cell(s) not swept successfully at any depth:\n", length(miss)))
+    for (id in utils::head(miss, 10L)) {
+      cat(sprintf("    %s%s\n", id, if (id %in% err$cell_id) "   (errored)" else ""))
+    }
+    if (length(miss) > 10L) cat(sprintf("    ... and %d more.\n", length(miss) - 10L))
   }
 
-  ## ---- the references themselves ----------------------------------------
+  ## ---- errors --------------------------------------------------------------
+  err <- err[order(err$cell_id, err$platform_key, err$depth), , drop = FALSE]
+  rule(sprintf("ERRORS (%d)", nrow(err)))
+  if (!nrow(err)) {
+    cat("  none\n")
+  }
+  for (i in seq_len(min(nrow(err), 20L))) {
+    cat(sprintf("  %s\n    %s %s, run %s\n    %s\n",
+      err$cell_id[i], err$platform_key[i], err$depth[i], err$run_id[i],
+      strsplit(err$error[i], "\n", fixed = TRUE)[[1L]][1L]))
+  }
+  if (nrow(err) > 20L) cat(sprintf("  ... and %d more.\n", nrow(err) - 20L))
+
+  ## ---- references ----------------------------------------------------------
+  res <- cur$results
   rule("REFERENCES")
   cat("Each reference against 256-bit MPFR (Rscript run.R validate-refs). A failed or\n")
   cat("unvalidated stable reference excludes nothing; a gradient reference that is\n")
@@ -620,14 +628,19 @@ cmd_status <- function(opt) {
   }
   cat(sprintf("  stable references    %s\n", tally(res$ref_stable_status)))
   cat(sprintf("  gradient references  %s\n", tally(res$ref_grad_status)))
-  bad <- res[(res$ref_stable_status %in% c("failed", "no identity")) | (res$ref_grad_status %in% c("failed", "no identity")), , drop = FALSE]
-  for (i in seq_len(min(nrow(bad), 10L))) {
-    cat(sprintf("    %-8s %s %s\n", if (bad$ref_stable_status[i] %in% c("failed", "no identity")) bad$ref_stable_status[i] else bad$ref_grad_status[i],
-      bad$cell_id[i], if (bad$output[i] != "value") paste0("d/d", bad$output[i]) else ""))
+  broken <- c("failed", "no identity")
+  bad <- res[res$ref_stable_status %in% broken | res$ref_grad_status %in% broken, , drop = FALSE]
+  for (i in seq_len(min(nrow(bad), 20L))) {
+    cat(sprintf(
+      "    %-12s %s%s\n",
+      if (bad$ref_stable_status[i] %in% broken) bad$ref_stable_status[i] else bad$ref_grad_status[i],
+      bad$cell_id[i],
+      if (bad$output[i] != "value") paste0(" d/d", bad$output[i]) else ""
+    ))
   }
-  if (nrow(bad) > 10L) cat(sprintf("    ... and %d more.\n", nrow(bad) - 10L))
+  if (nrow(bad) > 20L) cat(sprintf("    ... and %d more.\n", nrow(bad) - 20L))
   cat("\n")
-  invisible(res)
+  invisible(att)
 }
 
 cmd_selftest <- function(opt) {
@@ -1170,8 +1183,49 @@ cmd_selftest <- function(opt) {
     }
   )
 
+  ## What a store's newest attempts make current: A errored after succeeding,
+  ## B succeeded after erroring, C succeeded at full and then errored at
+  ## smoke, D was never run.
+  cat("\ncoverage and selection:\n")
+  at <- data.frame(
+    cell_id = c("A", "A", "B", "B", "C", "C"),
+    output = c("value", "-", "-", "value", "value", "-"),
+    platform_key = "p",
+    depth = c("smoke", "smoke", "smoke", "smoke", "full", "smoke"),
+    run_id = c("r1", "r2", "r1", "r2", "r1", "r2"),
+    started_at = c("t1", "t2", "t1", "t2", "t1", "t2"),
+    error = c(NA, "boom A", "boom B", NA, NA, "boom C")
+  )
+  cg <- data.frame(cell_id = c("A", "B", "C", "D"), spec = "s", backend = "anvl", dtype = "f64",
+    kind = "value", param_set = "q", flags = "-", n_outputs = 1L)
+  cr <- current_results(at)
+  cv <- coverage_table(cg, cr$attempts)
+  cs <- c(
+    check("a result superseded by a newer error is not current; the error is",
+      !"A" %in% cr$results$cell_id && "A" %in% cr$errors$cell_id),
+    check("an error superseded by a newer success is gone",
+      "B" %in% cr$results$cell_id && !"B" %in% cr$errors$cell_id),
+    check("an error at one depth leaves a success at another current, and both are reported",
+      identical(cr$results$depth[cr$results$cell_id == "C"], "full") && "C" %in% cr$errors$cell_id),
+    check("coverage lists every declared cell: swept depth, newest error, or neither",
+      identical(cv$cell_id, c("A", "B", "C", "D")) &&
+        identical(cv$depth, c(NA, "smoke", "full", NA)) &&
+        identical(cv$error, c("boom A", NA, "boom C", NA)) &&
+        identical(cv$error_run_id, c("r2", NA, "r2", NA))),
+    check("an output filter selects among results, after the newest attempt is chosen", {
+      cf <- current_results(at, "output=value")
+      !"A" %in% cf$results$cell_id && "A" %in% cf$errors$cell_id
+    }),
+    check("a run with no start time is the oldest attempt, never a row of NAs", {
+      an <- at
+      an$started_at[an$run_id == "r2"] <- NA
+      la <- latest_attempts(an)
+      !anyNA(la$cell_id) && nrow(la) == nrow(an) - 2L && all(la$run_id[la$cell_id %in% c("A", "B")] == "r1")
+    })
+  )
+
   cat("\nassertions:\n")
-  ok <- c(sp, ca0, ca, zv, ec, sw, stt, dp, idr, gr, vl,
+  ok <- c(sp, ca0, ca, zv, ec, sw, stt, dp, idr, gr, vl, cs,
     check(
       "clean f64 value reproduces the reference exactly",
       get(sprintf(p, "f64", "value", "clean", "FALSE"))$worst_rel_err == 0
@@ -1450,12 +1504,15 @@ cmd_diff <- function(opt) {
 ## every backend swept, so anvl and its JAX twin can be compared in one place:
 ##
 ##   manifest.json     what is here: schema version, platform, specs, depths,
-##                     row counts. Small, fetched first, and readable without a
-##                     Parquet reader so it can drive navigation on its own.
+##                     coverage counts, row counts. Small, fetched first, and
+##                     readable without a Parquet reader so it can drive
+##                     navigation on its own.
 ##   runs.parquet      the environment fingerprint of every run included
-##   summary.parquet   the results table for every cell of every function --
-##                     a few hundred rows, enough to drive the whole index and
-##                     the cross-function overview
+##   summary.parquet   the successful results of every cell of every function
+##                     -- a few hundred rows, enough to drive the whole index
+##                     and the cross-function overview
+##   coverage.parquet  every declared cell: the depth it was swept at, and its
+##                     newest error, so errored and never-run cells are visible
 ##   detail.parquet    the worst inputs, per binade
 ##   bands.parquet     the per-binade profile, one row per binade
 ##   hist.parquet      the error distribution
@@ -1540,11 +1597,14 @@ cmd_export <- function(opt) {
   ## once published a full anvl+JAX sweep with every JAX result missing.
   backends <- if (isTRUE(opt$backends_given)) opt$backends else sort(unique(all$backend))
   g <- apply_filter(build_grid(specs, backends), opt$filter, extra = "output")
-  res <- deepest_per_cell(all[all$cell_id %in% g$cell_id, , drop = FALSE], names(DEPTHS))
-  res <- filter_results(res, opt$filter)
+  cur <- current_results(all[all$cell_id %in% g$cell_id, , drop = FALSE], opt$filter)
+  res <- cur$results
   if (!nrow(res)) {
-    stop("no results to export for that filter", call. = FALSE)
+    stop("no successful results to export for that filter; see `run.R status`", call. = FALSE)
   }
+  ## Every declared cell, so a reader can tell a cell that errored or was
+  ## never run from one that does not exist.
+  coverage <- coverage_table(g, cur$attempts)
 
   ## Each cell's valid input domain and distribution support, resolved from its
   ## params and flags exactly as the sweep resolved them -- at the precision
@@ -1626,7 +1686,8 @@ cmd_export <- function(opt) {
 
   nanoparquet::write_parquet(runs, file.path(out, "runs.parquet"))
   nanoparquet::write_parquet(res[order(res$cell_id, res$output), , drop = FALSE], file.path(out, "summary.parquet"))
-  counts <- c(runs = nrow(runs), summary = nrow(res))
+  nanoparquet::write_parquet(coverage, file.path(out, "coverage.parquet"))
+  counts <- c(runs = nrow(runs), summary = nrow(res), coverage = nrow(coverage))
   for (tbl in names(vtabs)) {
     nanoparquet::write_parquet(vtabs[[tbl]], file.path(out, paste0(tbl, ".parquet")))
     counts[tbl] <- nrow(vtabs[[tbl]])
@@ -1654,6 +1715,9 @@ cmd_export <- function(opt) {
     specs = json_array(sort(unique(res$spec))),
     n_cells = length(unique(res$cell_id)),
     n_results = nrow(res),
+    n_cells_declared = nrow(coverage),
+    n_cells_errored = sum(!is.na(coverage$error)),
+    n_cells_not_run = sum(is.na(coverage$depth) & is.na(coverage$error)),
     anvl_version = json_array(sort(unique(runs$anvl_version))),
     anvl_sha = json_array(sort(unique(runs$anvl_sha))),
     files = data.frame(table = names(counts), rows = as.integer(counts))
@@ -1675,6 +1739,14 @@ cmd_export <- function(opt) {
     sum(file.size(files)) / 1024^2,
     length(files)
   ))
+  if (manifest$n_cells_errored || manifest$n_cells_not_run) {
+    cat(sprintf(
+      "  WARNING: of %d declared cells, %d errored and %d were never run; the site shows them as such\n",
+      manifest$n_cells_declared,
+      manifest$n_cells_errored,
+      manifest$n_cells_not_run
+    ))
+  }
   invisible(out)
 }
 

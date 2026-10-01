@@ -56,7 +56,10 @@ TABLES <- c(
 ##    count for nothing -- every record before the MPFR-only comparator) and a
 ##    truth identity of the spec's own truth function; validation_samples
 ##    carry each sample's `pass`.
-SCHEMA_VERSION <- 7L
+## 8: a `coverage` table: every declared cell with the depth of its deepest
+##    successful sweep and its newest error. Summary holds successful results
+##    only, selected from the newest attempt per cell, platform and depth.
+SCHEMA_VERSION <- 8L
 
 ## Where the store lives. Out of the package tree by default, so a result file
 ## can never be committed by accident and the package stays what upstream
@@ -151,8 +154,8 @@ store_merge <- function(from, into) {
 ## every other consumer wants one current result per measurement.
 ## A shallower sweep visits a subset of a deeper one's inputs -- same index
 ## space, larger stride -- so the deeper row is strictly better evidence.
-## Shared by `status`, `export` and `validate-refs` so they can never
-## disagree about what "the current result" is.
+## Called through current_results(), so `status`, `export` and `validate-refs`
+## can never disagree about what "the current result" is.
 deepest_per_cell <- function(res, depths) {
   if (is.null(res) || !nrow(res)) {
     return(res)
@@ -162,6 +165,64 @@ deepest_per_cell <- function(res, depths) {
   res <- res[!duplicated(paste(res$cell_id, res$output, sep = "\r")), , drop = FALSE]
   rownames(res) <- NULL
   res
+}
+
+## The newest attempt at each cell, per platform and depth: every row of the
+## most recent run that swept it. A cell whose newest attempt errored has
+## errored, whatever an earlier run of it recorded.
+##
+## Ordered as latest_results() orders: a run with no start time (no row in
+## `runs`) sorts oldest, and run_id breaks ties, so exactly one run is newest.
+latest_attempts <- function(res) {
+  t <- res$started_at %||% res$run_id
+  k <- paste(res$cell_id, res$platform_key, res$depth, sep = "\r")
+  o <- order(t, res$run_id, decreasing = TRUE)
+  first <- o[!duplicated(k[o])]
+  newest <- stats::setNames(res$run_id[first], k[first])
+  res[res$run_id == newest[k], , drop = FALSE]
+}
+
+## What the store currently holds, as `status`, `export` and `validate-refs`
+## all read it: the newest attempts, the successful ones collapsed to the
+## deepest result per cell and output, and the ones that errored.
+##
+## `filter`'s output term selects among the results only, after the newest
+## attempt is chosen: an errored attempt has no output, so filtering first
+## would drop it and let an older success stand in for it.
+current_results <- function(res, filter = "") {
+  att <- latest_attempts(res)
+  failed <- !is.na(att$error)
+  list(
+    attempts = att,
+    results = filter_results(deepest_per_cell(att[!failed, , drop = FALSE], names(DEPTHS)), filter),
+    errors = att[failed, , drop = FALSE]
+  )
+}
+
+## Every declared cell on every platform the attempts cover, with the depth of
+## its deepest successful sweep and the newest error at its deepest errored
+## depth -- each NA where there is none. A cell with neither was never run.
+coverage_table <- function(g, att) {
+  platforms <- sort(unique(att$platform_key))
+  cols <- c("cell_id", "spec", "backend", "dtype", "kind", "param_set", "flags", "n_outputs")
+  cov <- g[rep(seq_len(nrow(g)), length(platforms)), cols, drop = FALSE]
+  cov$platform_key <- rep(platforms, each = nrow(g))
+  key <- paste(cov$cell_id, cov$platform_key, sep = "\r")
+  rank <- match(att$depth, names(DEPTHS))
+  deepest <- function(rows) {
+    rows <- rows[order(-rank[rows])]
+    rows[!duplicated(paste(att$cell_id[rows], att$platform_key[rows], sep = "\r"))]
+  }
+  ok <- deepest(which(is.na(att$error)))
+  er <- deepest(which(!is.na(att$error)))
+  m_ok <- ok[match(key, paste(att$cell_id[ok], att$platform_key[ok], sep = "\r"))]
+  m_er <- er[match(key, paste(att$cell_id[er], att$platform_key[er], sep = "\r"))]
+  cov$depth <- att$depth[m_ok]
+  cov$error_depth <- att$depth[m_er]
+  cov$error_run_id <- att$run_id[m_er]
+  cov$error <- att$error[m_er]
+  rownames(cov) <- NULL
+  cov
 }
 
 ## The most recent result for each (cell, platform), which is what "current
@@ -217,6 +278,7 @@ resummarise <- function(res, ranges, points) {
   if (!is.null(ranges) && !is.null(ranges$cause)) {
     by <- split(ranges, paste(ranges$run_id, ranges$cell_id, ranges$output, sep = "\r"))
     empty <- ranges[0L, , drop = FALSE]
+    for (f in setdiff(names(region_summary(empty)), names(res))) res[[f]] <- NA
     for (i in which(res$output != "-")) {
       rs <- region_summary(by[[key[i]]] %||% empty)
       for (f in names(rs)) res[[f]][i] <- rs[[f]]
@@ -224,6 +286,7 @@ resummarise <- function(res, ranges, points) {
   }
   if (!is.null(points) && nrow(points)) {
     by <- split(points, paste(points$run_id, points$cell_id, points$output, sep = "\r"))
+    for (f in setdiff(names(point_summary(points[0L, , drop = FALSE])), names(res))) res[[f]] <- NA
     for (i in which(key %in% names(by))) {
       ps <- point_summary(by[[key[i]]])
       for (f in names(ps)) res[[f]][i] <- ps[[f]]
