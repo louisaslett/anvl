@@ -1,0 +1,91 @@
+# Primitive Iota
+
+Creates an array with values increasing along the specified axis.
+
+## Usage
+
+``` r
+prim_iota(axis, shape, dtype, start = 1L, device = NULL)
+```
+
+## Arguments
+
+- axis:
+
+  (`integer(1)`)  
+  Axis along which values increase. Negative values count from the end
+  of `shape`, i.e. `-1` refers to the last axis.
+
+- shape:
+
+  ([`integer()`](https://rdrr.io/r/base/integer.html))  
+  Shape of the output array.
+
+- dtype:
+
+  (`character(1)` \|
+  [`DataType`](https://r-xla.github.io/xlamisc/reference/DataType.html))  
+  Data type of the result. Can be any numeric data type, boolean being
+  the one exception.
+
+- start:
+
+  (`integer(1)`)  
+  Starting value.
+
+- device:
+
+  (`NULL` \| `character(1)` \|
+  [device](https://r-xla.github.io/anvl/reference/nv_device.md))  
+  The device the data lives on, given either as:
+
+  - a *device string* naming the platform (e.g. `"cpu"`, `"cuda"`,
+    `"cuda:<n>"`), which is resolved against the backend in use, or
+
+  - a *device object* as returned by
+    [`nv_device()`](https://r-xla.github.io/anvl/reference/nv_device.md):
+    a
+    [`PJRTDevice`](https://r-xla.github.io/pjrt/reference/pjrt_device.html)
+    for the `"pjrt"` backend or a
+    [`quickr_device`](https://r-xla.github.io/anvl/reference/quickr_device.md)
+    for the `"quickr"` backend. It must belong to the active backend
+    ([`active_backend()`](https://r-xla.github.io/anvl/reference/active_backend.md));
+    a device of another backend is an error.
+
+  The default (`NULL`) uses
+  [`default_device()`](https://r-xla.github.io/anvl/reference/default_device.md).
+
+## Value
+
+([`arrayish`](https://r-xla.github.io/anvl/reference/arrayish.md))  
+Has the given `dtype` and `shape`.
+
+## Implemented Rules
+
+- `stablehlo`
+
+- `quickr`
+
+## StableHLO
+
+Lowers to
+[`hlo_iota()`](https://r-xla.github.io/stablehlo/reference/hlo_iota.html),
+specified under [iota](https://openxla.org/stablehlo/spec#iota).
+
+## See also
+
+[`nv_iota()`](https://r-xla.github.io/anvl/reference/nv_iota.md)
+
+## Examples
+
+``` r
+# the sequence is built at the requested data type
+prim_iota(axis = 1L, shape = 5L, dtype = "i32")
+#> AnvlArray
+#>  1
+#>  2
+#>  3
+#>  4
+#>  5
+#> [ CPUi32{5} ] 
+```

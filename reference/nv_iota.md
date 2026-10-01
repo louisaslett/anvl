@@ -1,0 +1,104 @@
+# Iota
+
+Creates an array with values increasing along the specified axis,
+starting from `start`.
+
+`nv_iota_like()` is a variant where `shape`, `dtype`, and `device`
+default to those of `like`.
+
+## Usage
+
+``` r
+nv_iota(axis, shape, dtype, start = 1L, device = NULL)
+
+nv_iota_like(like, axis, shape = NULL, dtype = NULL, start = 1L, device = NULL)
+```
+
+## Arguments
+
+- axis:
+
+  (`integer(1)`)  
+  Axis along which values increase. Negative values count from the end
+  of `shape`, i.e. `-1L` refers to the last axis.
+
+- shape:
+
+  ([`integer()`](https://rdrr.io/r/base/integer.html))  
+  Shape of the result.
+
+- dtype:
+
+  (`character(1)` \|
+  [`DataType`](https://r-xla.github.io/xlamisc/reference/DataType.html))  
+  Data type of the result, required here. Can be any numeric data type.
+  For `nv_iota_like()` it may be `NULL`, which uses `dtype(like)`.
+
+- start:
+
+  (`integer(1)`)  
+  Starting value (default 1).
+
+- device:
+
+  (`NULL` \| `character(1)` \|
+  [device](https://r-xla.github.io/anvl/reference/nv_device.md))  
+  The device the data lives on, given either as:
+
+  - a *device string* naming the platform (e.g. `"cpu"`, `"cuda"`,
+    `"cuda:<n>"`), which is resolved against the backend in use, or
+
+  - a *device object* as returned by
+    [`nv_device()`](https://r-xla.github.io/anvl/reference/nv_device.md):
+    a
+    [`PJRTDevice`](https://r-xla.github.io/pjrt/reference/pjrt_device.html)
+    for the `"pjrt"` backend or a
+    [`quickr_device`](https://r-xla.github.io/anvl/reference/quickr_device.md)
+    for the `"quickr"` backend. It must belong to the active backend
+    ([`active_backend()`](https://r-xla.github.io/anvl/reference/active_backend.md));
+    a device of another backend is an error.
+
+  The default (`NULL`) uses
+  [`default_device()`](https://r-xla.github.io/anvl/reference/default_device.md).
+
+- like:
+
+  ([`AnvlArray`](https://r-xla.github.io/anvl/reference/AnvlArray.md))  
+  Existing array whose attributes are used as defaults (only for
+  `nv_iota_like()`).
+
+## Value
+
+([`arrayish`](https://r-xla.github.io/anvl/reference/arrayish.md))  
+Has the given `dtype` and `shape`.
+
+## See also
+
+[`nv_seq()`](https://r-xla.github.io/anvl/reference/nv_seq.md) for a
+simpler 1-D sequence,
+[`nv_linspace()`](https://r-xla.github.io/anvl/reference/nv_linspace.md)
+for evenly spaced values,
+[`prim_iota()`](https://r-xla.github.io/anvl/reference/prim_iota.md) for
+the underlying primitive.
+
+## Examples
+
+``` r
+# the sequence is built at the requested data type
+nv_iota(axis = 1L, shape = 5L, dtype = "i32")
+#> AnvlArray
+#>  1
+#>  2
+#>  3
+#>  4
+#>  5
+#> [ CPUi32{5} ] 
+
+# `_like` takes shape, data type and device from an existing array
+x <- nv_fill(0L, shape = c(2, 3))
+nv_iota_like(x, axis = 1L)
+#> AnvlArray
+#>  1 1 1
+#>  2 2 2
+#> [ CPUi32{2,3} ] 
+```
