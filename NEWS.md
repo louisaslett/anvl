@@ -1,4 +1,6 @@
-# anvl (development version)
+# anvl 0.5.1
+
+* Bugfix: Add r-xla r-universe repo to description again.
 
 # anvl 0.5.0
 
