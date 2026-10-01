@@ -19,7 +19,6 @@ precision and application. Algorithm-comparison reports live separately in
 - [Adding a function](#adding-a-function)
 - [Reference validation](REFERENCES.md)
 - [Distributed execution](HPC.md)
-- [Historical measurements and design notes](DESIGN.md)
 
 ## Quick start
 
@@ -119,7 +118,6 @@ R/validate.R   reference validation against MPFR
 sweeps/        function specs and shared helpers
 REFERENCES.md  reference validation and analytic formulas
 HPC.md         cluster execution
-DESIGN.md      historical measurements and design rationale
 ```
 
 ## Coverage and result selection
@@ -138,8 +136,7 @@ absent from the sweep. Separate exact-point checks cover them at every depth.
 | `full` | 1 | 4,294,967,296 | exhaustive f32 or stratified f64 coverage |
 
 These counts exclude exact-point checks. Time representative cells on your
-setup before scheduling a full run. Earlier timings lack enough environment
-details to serve as current estimates; they are recorded in [DESIGN.md](DESIGN.md#sweep-timings).
+setup before scheduling a full run.
 
 In `f32`, `full` enumerates all 2³² bit-pattern indices once. Finite values,
 signed zeros and infinities are delivered exactly. Widening to double quiets
@@ -251,7 +248,6 @@ the largest ulp errors. Non-finite disagreements are retained as regions.
 Per-binade retention preserves examples across input magnitudes instead of
 letting one small interval fill the entire shortlist. Returned detail rows are
 ranked globally and carry `binade` and `sign` to join onto the behaviour bands.
-See [DESIGN.md](DESIGN.md#retained-inputs) for the historical storage comparison.
 
 ### `diff` — did the change help?
 
@@ -591,8 +587,7 @@ depends on the serializer and consumer.
 Export sorts `detail`, `bands`, `hist`, `ranges`, `kinds`, `points` and
 `disputes` by cell/output and starts a row group at each cell boundary. Readers
 that support selective row-group access can fetch a cell without reading the
-whole table. Transfer size depends on the data and reader; historical HTTP
-measurements are in [DESIGN.md](DESIGN.md#browser-export-measurements).
+whole table. Transfer size depends on the data and reader.
 
 ### The store
 

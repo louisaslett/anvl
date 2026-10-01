@@ -202,9 +202,7 @@ normal family's are built to avoid the ways the obvious evaluation fails:
   fraction below, not a difference of two logs of ~−z²/2.
 
 The normal-family specs currently declare a **16 f64 ulp** bound for gradient
-reference validation. An earlier sampled check reported a maximum of eight
-ulps; that [historical observation](DESIGN.md#reference-evaluation) is not the
-configured bound or a current verdict. Run `validate-refs` and inspect the
-records for the reference identity in use. `selftest` also checks selected
+reference validation. Run `validate-refs` and inspect the records for the
+reference identity in use. `selftest` also checks selected
 regression cases against recorded MPFR values.
 
