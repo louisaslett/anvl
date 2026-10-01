@@ -200,7 +200,7 @@ See [DESIGN.md](DESIGN.md#retained-inputs) for the historical storage comparison
 ### `diff` — did the change help?
 
 ```bash
-Rscript run.R diff                       # newest run vs the previous result per cell
+Rscript run.R diff                       # newest run vs each cell's previous attempt
 Rscript run.R diff --from <run> --to <run>
 Rscript run.R diff --filter spec=nv_qnorm
 ```
@@ -226,6 +226,16 @@ Results pair by cell, output, platform **and depth**. A smoke result and a full
 result sample different inputs, so pairing across depths would report the extra
 coverage as a regression; an unpaired result is reported as having nothing to
 compare against instead.
+
+Each cell is compared with its **previous attempt** at that platform and depth:
+the most recent earlier run that swept it, whether it succeeded or errored. A
+cell that errors where its previous attempt succeeded is a regression, listed
+first; a cell that succeeds where its previous attempt errored is an
+improvement, never compared with an older result from before the error. A cell
+that errored both times is listed as still erroring, with the earlier message
+where it differs, and one that errors on its first attempt is listed apart. As
+with `status`, an output filter narrows the successful results only, since an
+errored cell has no output to select.
 
 ## Reading what a disagreement means
 

@@ -1224,8 +1224,44 @@ cmd_selftest <- function(opt) {
     })
   )
 
+  ## What `diff` pairs each row of a new run with: the cell's previous attempt
+  ## at the same platform and depth. E succeeded and now errors, F errored and
+  ## now succeeds although an older run of it succeeded too, G keeps erroring,
+  ## H errors on its first attempt, and I is compared as usual.
+  cat("\ndiff pairing:\n")
+  dpast <- data.frame(
+    cell_id = c("E", "F", "F", "G", "I"),
+    output = c("value", "value", "-", "-", "value"),
+    platform_key = "p", depth = "smoke",
+    run_id = c("r1", "r1", "r2", "r2", "r2"),
+    started_at = c("t1", "t1", "t2", "t2", "t2"),
+    error = c(NA, NA, "boom F", "boom G1", NA)
+  )
+  dcur <- data.frame(
+    cell_id = c("E", "F", "G", "H", "I"),
+    output = c("-", "value", "-", "-", "value"),
+    platform_key = "p", depth = "smoke", run_id = "r3", started_at = "t3",
+    error = c("boom E", NA, "boom G2", "boom H", NA)
+  )
+  dpr <- diff_pairs(dcur, dpast)
+  chg <- stats::setNames(dpr$errors$change, dpr$errors$cell_id)
+  dfs <- c(
+    check("a cell that errors where its previous attempt succeeded is newly erroring",
+      identical(unname(chg["E"]), "newly") && identical(dpr$errors$before_run[dpr$errors$cell_id == "E"], "r1")),
+    check("a result whose previous attempt errored has recovered, not been compared across the error", {
+      f <- dpr$now$cell_id == "F"
+      isTRUE(dpr$recovered[f]) && !dpr$fresh[f] && is.na(dpr$before$run_id[f]) &&
+        identical(dpr$recovered_from$error[f], "boom F")
+    }),
+    check("an error after an error is still erroring, with the earlier message kept",
+      identical(unname(chg["G"]), "still") && identical(dpr$errors$before_error[dpr$errors$cell_id == "G"], "boom G1")),
+    check("an error on a first attempt is new", identical(unname(chg["H"]), "new")),
+    check("a result after a result is paired with it",
+      identical(dpr$before$run_id[dpr$now$cell_id == "I"], "r2") && !dpr$fresh[dpr$now$cell_id == "I"])
+  )
+
   cat("\nassertions:\n")
-  ok <- c(sp, ca0, ca, zv, ec, sw, stt, dp, idr, gr, vl, cs,
+  ok <- c(sp, ca0, ca, zv, ec, sw, stt, dp, idr, gr, vl, cs, dfs,
     check(
       "clean f64 value reproduces the reference exactly",
       get(sprintf(p, "f64", "value", "clean", "FALSE"))$worst_rel_err == 0
@@ -1295,6 +1331,43 @@ results_with_time <- function(dir) {
 ## extra coverage as a regression.
 diff_key <- function(d) paste(d$cell_id, d$output, d$platform_key, d$depth, sep = "\r")
 
+## Pair one run's rows (`cur`) with what came before them (`past`). A cell's
+## comparison point is its previous attempt at the same platform and depth --
+## the most recent earlier run that swept it -- so a result is never compared
+## with an older one across an error in between.
+##
+##   now, before   the successful results, each beside its previous result
+##                 (NA where there is none)
+##   fresh         results with no previous attempt at all
+##   recovered     results whose previous attempt errored, and that error
+##   errors        the errored cells, with `change` "newly" (the previous
+##                 attempt succeeded), "still" (it errored too) or "new" (no
+##                 previous attempt), and `before_run` / `before_error`
+diff_pairs <- function(cur, past) {
+  past <- latest_attempts(past)
+  attempt <- function(d) paste(d$cell_id, d$platform_key, d$depth, sep = "\r")
+  p_ok <- past[is.na(past$error), , drop = FALSE]
+  p_err <- past[!is.na(past$error), , drop = FALSE]
+  now <- cur[is.na(cur$error), , drop = FALSE]
+  err <- cur[!is.na(cur$error), , drop = FALSE]
+
+  i <- match(diff_key(now), diff_key(p_ok))
+  j <- match(attempt(now), attempt(p_err))
+  e_ok <- match(attempt(err), attempt(p_ok))
+  e_err <- match(attempt(err), attempt(p_err))
+  err$change <- ifelse(!is.na(e_ok), "newly", ifelse(!is.na(e_err), "still", "new"))
+  err$before_run <- ifelse(!is.na(e_ok), p_ok$run_id[e_ok], p_err$run_id[e_err])
+  err$before_error <- p_err$error[e_err]
+  list(
+    now = now,
+    before = p_ok[i, , drop = FALSE],
+    fresh = is.na(i) & is.na(j),
+    recovered = is.na(i) & !is.na(j),
+    recovered_from = p_err[j, , drop = FALSE],
+    errors = err
+  )
+}
+
 cmd_diff <- function(opt) {
   dir <- store_dir(opt$store)
   all <- results_with_time(dir)
@@ -1306,9 +1379,11 @@ cmd_diff <- function(opt) {
 
   specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
   g <- apply_filter(build_grid(specs, store_backends(opt, all)), opt$filter, extra = "output")
+  ## An errored attempt has no output for an output term to select, so the
+  ## filter's output term narrows the successful rows only.
   matching <- function(id) {
     r <- all[all$run_id == id & all$cell_id %in% g$cell_id, , drop = FALSE]
-    filter_results(r, opt$filter)
+    rbind(filter_results(r[is.na(r$error), , drop = FALSE], opt$filter), r[!is.na(r$error), , drop = FALSE])
   }
 
   ## The newest run that actually contains matching results, not simply the
@@ -1319,67 +1394,93 @@ cmd_diff <- function(opt) {
     if (!to_id %in% all$run_id) {
       stop("no results for run '", to_id, "'", call. = FALSE)
     }
-    now <- matching(to_id)
-    if (!nrow(now)) {
+    cur <- matching(to_id)
+    if (!nrow(cur)) {
       stop("run '", to_id, "' has no results matching the filter", call. = FALSE)
     }
   } else {
-    now <- NULL
+    cur <- NULL
     for (id in runs$run_id) {
       cand <- matching(id)
       if (nrow(cand)) {
         to_id <- id
-        now <- cand
+        cur <- cand
         break
       }
     }
-    if (is.null(now)) {
+    if (is.null(cur)) {
       stop("no run contains results matching that filter", call. = FALSE)
     }
   }
 
-  ## The comparison point: an explicit --from, or otherwise the most recent
-  ## earlier result for each cell, which handles partial re-runs without
-  ## needing them to line up as whole runs.
-  t_now <- now$started_at[1L]
-  past <- all[all$started_at < t_now, , drop = FALSE]
+  ## The comparison point: an explicit --from, or otherwise each cell's
+  ## previous attempt, which handles partial re-runs without needing them to
+  ## line up as whole runs.
+  t_now <- cur$started_at[1L]
+  past <- all[(all$started_at < t_now) %in% TRUE & all$cell_id %in% g$cell_id, , drop = FALSE]
   if (!is.null(opt$from)) {
     past <- past[past$run_id == opt$from, , drop = FALSE]
     if (!nrow(past)) stop("no earlier results for run '", opt$from, "'", call. = FALSE)
   }
-  past <- past[order(past$started_at, decreasing = TRUE), , drop = FALSE]
-  past <- past[!duplicated(diff_key(past)), , drop = FALSE]
+  dp <- diff_pairs(cur, past)
+  now <- dp$now
+  before <- dp$before
+  fresh <- dp$fresh
+  recovered <- dp$recovered
+  err <- dp$errors
+  compared <- !fresh & !recovered
 
-  i <- match(diff_key(now), diff_key(past))
-  fresh <- is.na(i)
-  before <- past[i, , drop = FALSE]
-
-  cat("\nanvl distribution sweeps \u2014 diff\n")
-  if (any(!fresh)) {
-    b <- before[!fresh, , drop = FALSE]
+  cat("\nanvl distribution sweeps — diff\n")
+  earlier <- unique(c(before$run_id[compared], dp$recovered_from$run_id[recovered], err$before_run))
+  earlier <- earlier[!is.na(earlier)]
+  if (length(earlier)) {
+    shas <- all$anvl_sha[match(earlier, all$run_id)]
     cat(sprintf(
-      "  from  %s  anvl %s  (%s)\n",
-      if (length(unique(b$run_id)) == 1L) unique(b$run_id) else sprintf("%d earlier runs", length(unique(b$run_id))),
-      paste(unique(substr(b$anvl_sha, 1L, 7L)), collapse = ","),
-      paste(unique(b$depth), collapse = ",")
+      "  from  %s  anvl %s\n",
+      if (length(earlier) == 1L) earlier else sprintf("%d earlier runs", length(earlier)),
+      paste(unique(substr(shas, 1L, 7L)), collapse = ",")
     ))
   }
   cat(sprintf(
     "  to    %s  anvl %s  (%s)\n",
     to_id,
-    substr(now$anvl_sha[1L], 1L, 7L),
-    paste(unique(now$depth), collapse = ",")
+    substr(cur$anvl_sha[1L], 1L, 7L),
+    paste(unique(cur$depth), collapse = ",")
   ))
-  if (all(fresh)) {
+
+  label <- function(d, k) {
+    row <- g[g$cell_id == d$cell_id[k], , drop = FALSE][1L, , drop = FALSE]
+    what <- if (d$kind[k] == "value") "value" else if (d$output[k] == "-") "grad" else sprintf("d/d%s", d$output[k])
+    sprintf("\n  %-9s %-7s %-4s %s\n", d$spec[k], what, d$dtype[k], short_cell(row))
+  }
+  first_line <- function(e) vapply(strsplit(e, "\n", fixed = TRUE), `[`, "", 1L)
+  err_lines <- function(k, note) {
+    for (j in k) {
+      cat(label(err, j))
+      cat(sprintf("    error                %s\n", first_line(err$error[j])))
+      n <- note(j)
+      if (nzchar(n)) cat(sprintf("    %s\n", n))
+    }
+  }
+  newly <- which(err$change == "newly")
+  still <- which(err$change == "still")
+  new_err <- which(err$change == "new")
+
+  if (!any(compared) && !any(recovered) && !length(newly) && !length(still)) {
     ## Nothing to compare against is the normal state after a store reset or a
     ## first run, and reads as an error if the screen does not say so.
     cat(sprintf(
       paste0(
         "\n  Nothing to compare against: all %d result(s) are the first of their\n",
-        "  cell at this depth. Re-run after a code change to see what moved.\n\n"
+        "  cell at this depth. Re-run after a code change to see what moved.\n"
       ),
-      nrow(now)
+      nrow(now) + nrow(err)
     ))
+    if (length(new_err)) {
+      rule(sprintf("ERRORED (%d)", length(new_err)))
+      err_lines(new_err, function(j) "")
+    }
+    cat("\n")
     return(invisible(NULL))
   }
   cat("\n  The sweep is deterministic, so on one machine any difference below was\n")
@@ -1410,23 +1511,15 @@ cmd_diff <- function(opt) {
   same_counts <- Reduce(`&`, lapply(counts, function(nm) cnt(now, nm) == cnt(before, nm)))
   more <- Reduce(`|`, lapply(weighs, function(nm) cnt(now, nm) > cnt(before, nm)))
   fewer <- Reduce(`|`, lapply(weighs, function(nm) cnt(now, nm) < cnt(before, nm)))
-  same <- !fresh &
+  same <- compared &
     (now$worst_rel_err == before$worst_rel_err | (is.na(now$worst_rel_err) & is.na(before$worst_rel_err))) &
     same_counts
-  worse <- !fresh & !same & (now$worst_rel_err > before$worst_rel_err | more) %in% TRUE
-  better <- !fresh & !same & !worse & (now$worst_rel_err < before$worst_rel_err | fewer) %in% TRUE
-  moved <- !fresh & !same & !worse & !better
+  worse <- compared & !same & (now$worst_rel_err > before$worst_rel_err | more) %in% TRUE
+  better <- compared & !same & !worse & (now$worst_rel_err < before$worst_rel_err | fewer) %in% TRUE
+  moved <- compared & !same & !worse & !better
 
   line <- function(k) {
-    what <- if (now$kind[k] == "value") "value" else sprintf("d/d%s", now$output[k])
-    row <- g[g$cell_id == now$cell_id[k], , drop = FALSE][1L, , drop = FALSE]
-    cat(sprintf(
-      "\n  %-9s %-7s %-4s %s\n",
-      now$spec[k],
-      what,
-      now$dtype[k],
-      short_cell(row)
-    ))
+    cat(label(now, k))
     a <- before$worst_rel_err[k]
     z <- now$worst_rel_err[k]
     note <- if (is.na(a) || is.na(z)) {
@@ -1457,12 +1550,8 @@ cmd_diff <- function(opt) {
     }
   }
 
-  section <- function(which, title) {
+  results <- function(which) {
     k <- which(which)
-    if (!length(k)) {
-      return(invisible(NULL))
-    }
-    rule(sprintf("%s (%d)", title, length(k)))
     k <- k[order(
       -abs(
         log10(pmax(now$worst_rel_err[k], 1e-300)) -
@@ -1474,22 +1563,68 @@ cmd_diff <- function(opt) {
     }
     if (length(k) > 15L) cat(sprintf("\n  ... and %d more.\n", length(k) - 15L))
   }
+  rec <- which(recovered)
+  rec_lines <- function() {
+    for (k in rec) {
+      cat(label(now, k))
+      cat(sprintf(
+        "    no longer errors     run %s: %s\n",
+        dp$recovered_from$run_id[k],
+        first_line(dp$recovered_from$error[k])
+      ))
+    }
+  }
 
-  section(worse, "REGRESSED")
-  section(better, "IMPROVED")
-  section(moved, "CHANGED (conventions or signed zeros only)")
+  ## A cell that errors where its previous attempt succeeded is the plainest
+  ## regression there is, so it leads.
+  n_worse <- length(newly) + sum(worse)
+  if (n_worse) {
+    rule(sprintf("REGRESSED (%d)", n_worse))
+    err_lines(newly, function(j) sprintf("succeeded in run %s", err$before_run[j]))
+    results(worse)
+  }
+  n_better <- length(rec) + sum(better)
+  if (n_better) {
+    rule(sprintf("IMPROVED (%d)", n_better))
+    rec_lines()
+    results(better)
+  }
+  if (any(moved)) {
+    rule(sprintf("CHANGED (conventions or signed zeros only) (%d)", sum(moved)))
+    results(moved)
+  }
+  if (length(still)) {
+    rule(sprintf("STILL ERRORING (%d)", length(still)))
+    err_lines(still, function(j) {
+      if (identical(err$error[j], err$before_error[j])) "" else sprintf("was: %s", first_line(err$before_error[j]))
+    })
+  }
+  if (length(new_err)) {
+    rule(sprintf("ERRORED, NO EARLIER ATTEMPT (%d)", length(new_err)))
+    err_lines(new_err, function(j) "")
+  }
 
   rule("SUMMARY")
-  cat(sprintf("  %4d regressed\n", sum(worse)))
-  cat(sprintf("  %4d improved\n", sum(better)))
+  cat(sprintf("  %4d regressed%s\n", n_worse, if (length(newly)) sprintf(" (%d newly erroring)", length(newly)) else ""))
+  cat(sprintf("  %4d improved%s\n", n_better, if (length(rec)) sprintf(" (%d no longer erroring)", length(rec)) else ""))
   if (any(moved)) cat(sprintf("  %4d changed in conventions or signed zeros only\n", sum(moved)))
   cat(sprintf("  %4d unchanged (bit-identical to the earlier run)\n", sum(same)))
-  cat(sprintf("  %4d had no earlier result to compare against\n", sum(fresh)))
+  if (length(still)) cat(sprintf("  %4d still erroring\n", length(still)))
+  cat(sprintf("  %4d had no earlier result to compare against\n", sum(fresh) + length(new_err)))
   cat("\n")
-  invisible(data.frame(
-    cell_id = now$cell_id,
-    output = now$output,
-    change = ifelse(fresh, "new", ifelse(same, "same", ifelse(worse, "regressed", ifelse(better, "improved", "changed"))))
+  invisible(rbind(
+    data.frame(
+      cell_id = now$cell_id,
+      output = now$output,
+      change = ifelse(fresh, "new", ifelse(recovered, "improved", ifelse(same, "same",
+        ifelse(worse, "regressed", ifelse(better, "improved", "changed")))))
+    ),
+    data.frame(
+      cell_id = err$cell_id,
+      output = err$output,
+      change = c(newly = "regressed", still = "still erroring", new = "new error")[err$change],
+      row.names = NULL
+    )
   ))
 }
 
