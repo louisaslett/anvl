@@ -3,9 +3,9 @@
 This guide describes the harness's requirements and behaviour when work is split
 across processes or machines. For image builds, Slurm submission, calibration,
 monitoring and release ZIP creation, use the
-[anvl-bench cluster guide](../../../anvl-bench/hpc/README.md) in the sibling
-checkout. The [harness README](README.md) describes scoring, result selection
-and the export schema; [Reference validation](REFERENCES.md) describes the
+[anvl-bench cluster guide](https://github.com/r-xla/anvl-bench/blob/main/hpc/README.md).
+The [harness README](README.md) describes scoring, result selection and the
+export schema; [Reference validation](REFERENCES.md) describes the
 MPFR checks.
 
 ## Keep value and gradient cells together

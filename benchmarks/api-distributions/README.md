@@ -9,6 +9,20 @@ The benchmark measures accuracy; interpreting an error depends on the function,
 precision and application. Algorithm-comparison reports live separately in
 [`../nv_pnorm/`](../nv_pnorm/) and [`../nv_qnorm/`](../nv_qnorm/).
 
+Results are read on the [anvl-bench site](https://github.com/r-xla/anvl-bench/blob/main/README.md),
+which renders an `export` from this harness. The harness has three uses:
+
+- **Producing the site's data:** `run`, `validate-refs`, `status`, then
+  `export`. Run it on one machine ([Quick start](#quick-start); the site's
+  [local development](https://github.com/r-xla/anvl-bench/blob/main/README.md#local-development) section
+  shows how to view the export), or across a cluster ([HPC.md](HPC.md)).
+- **Comparing a change while working on an implementation:** rerun the sweep
+  after reinstalling anvl, then `diff` against the previous run
+  ([Comparing a change](#comparing-a-change)).
+- **Taking failing inputs into tests:** `query.R` reads the store directly and
+  returns the worst inputs with their bit patterns, ready for a regression test
+  ([Reading the store directly](#reading-the-store-directly)).
+
 ## Contents
 
 - [Quick start](#quick-start)
@@ -42,8 +56,26 @@ Rscript run.R status
 Rscript run.R export --out /absolute/path/to/sweep-export
 ```
 
-The [anvl-bench site](../../../anvl-bench/README.md#how-the-results-get-here)
-reads the export. The publication guide explains how to make it available there.
+The anvl-bench site reads the export. To view it locally, export into the
+site's `data/` directory and serve it, as its
+[local development](https://github.com/r-xla/anvl-bench/blob/main/README.md#local-development)
+section describes.
+
+To publish it, zip the **contents** of the `--out` directory, not the directory
+itself, so `manifest.json` and the Parquet files sit at the root of the zip.
+Name the zip after the platform the sweep ran on, which is also the
+`platforms` entry in `manifest.json`:
+
+```bash
+cd /absolute/path/to/sweep-export
+zip -q -r ../darwin-arm64-cpu.zip . -x '.*'
+```
+
+Then attach the zip to an anvl-bench release and deploy it, as
+[How the results get here](https://github.com/r-xla/anvl-bench/blob/main/README.md#how-the-results-get-here)
+describes; its
+[release asset layout](https://github.com/r-xla/anvl-bench/blob/main/README.md#release-asset-layout)
+section describes the layout the site expects.
 
 ### Comparing a change
 
@@ -199,7 +231,7 @@ not guarantees that the selected data forms a coherent snapshot.
 
 ## Inspecting results
 
-Results are read on the anvl-bench site, which renders an `export`. The
+Results themselves are read on the site (see the top of this README). The
 harness's own commands check the store and compare runs.
 
 ### `status` — is the store complete?
