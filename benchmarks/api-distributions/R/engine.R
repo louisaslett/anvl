@@ -222,8 +222,14 @@ same_value <- function(a, b) {
 ## against an accuracy verdict is the category, below.
 
 CAUSES <- c(
-  "nan_input", "input_flushing", "flush_inherits_zero_error", "domain_boundary",
-  "outside_domain", "zero_input", "inf_input", "unidentified"
+  "nan_input",
+  "input_flushing",
+  "flush_inherits_zero_error",
+  "domain_boundary",
+  "outside_domain",
+  "zero_input",
+  "inf_input",
+  "unidentified"
 )
 CAUSE_CATEGORY <- c(
   nan_input = "failure",
@@ -260,7 +266,9 @@ sweep_context <- function(fun, ref, dtype, outputs, domain = c(-Inf, Inf)) {
 ## the flush, and are not the flush's alone.
 context_from <- function(f0, g0, dtype, outputs, domain) {
   bounds <- domain[is.finite(domain)]
-  if (dtype == "f32") bounds <- as_f32(bounds)
+  if (dtype == "f32") {
+    bounds <- as_f32(bounds)
+  }
   list(
     dtype = dtype,
     domain = domain,
@@ -296,7 +304,9 @@ sample_facts <- function(x, fx, gx, s, ctx, o) {
   ## logical NA index recycles, returning both zeros' results instead of one.
   zsub <- ifelse(x[sub] > 0, 1L, 2L)
   flush_same <- logical(n)
-  if (length(sub)) flush_same[sub] <- same_value(fx[sub], z$value[zsub])
+  if (length(sub)) {
+    flush_same[sub] <- same_value(fx[sub], z$value[zsub])
+  }
   in_domain <- if (ctx$domain[1L] == -Inf && ctx$domain[2L] == Inf) {
     !nanx
   } else {
@@ -418,7 +428,9 @@ dispute_facts <- function(fx, gx, sx, dtype, bound_ulp64) {
 
   ## The exact rule, where no ulp comparison is meaningful.
   exact <- sx == 0 | is.infinite(sx)
-  if (dtype == "f32") exact <- exact | abs(sx) >= F32_OVERFLOW
+  if (dtype == "f32") {
+    exact <- exact | abs(sx) >= F32_OVERFLOW
+  }
   exact <- which(exact) # NA (a NaN s) drops out
   if (length(exact)) {
     target <- if (dtype == "f32") as_f32(sx[exact]) else sx[exact]
@@ -431,7 +443,9 @@ dispute_facts <- function(fx, gx, sx, dtype, bound_ulp64) {
   ## Usually a small subset, so tested there alone.
   shared <- logical(length(fx))
   j <- which(!a_ok & !is.na(sx) & !is.na(fx))
-  if (length(j)) shared[j] <- same_value(fx[j], gx[j])
+  if (length(j)) {
+    shared[j] <- same_value(fx[j], gx[j])
+  }
   list(candidate = cand, shared = shared, d_anvl = da, d_base = dr, t_anvl = ta, t_base = tr)
 }
 
@@ -461,19 +475,61 @@ DEPARSE <- c("keepNA", "keepInteger", "niceNames", "showAttributes", "hexNumeric
 ## functions are not traversed (their behaviour is pinned by the R build), so
 ## this applies to the harness and spec code a stable reference reaches.
 DYNAMIC_CALLS <- c(
-  "get", "get0", "mget", "exists", "match.fun", "do.call", "eval", "evalq", "eval.parent",
-  "sys.function", "sys.call", "parent.frame", "environment", "environment<-", "assign",
-  "<<-", "library", "require", "requireNamespace", "loadNamespace", "attachNamespace",
-  "getExportedValue", "source", "sys.source", "body<-", "formals<-", "UseMethod",
-  "NextMethod", "standardGeneric", "Recall", "import"
+  "get",
+  "get0",
+  "mget",
+  "exists",
+  "match.fun",
+  "do.call",
+  "eval",
+  "evalq",
+  "eval.parent",
+  "sys.function",
+  "sys.call",
+  "parent.frame",
+  "environment",
+  "environment<-",
+  "assign",
+  "<<-",
+  "library",
+  "require",
+  "requireNamespace",
+  "loadNamespace",
+  "attachNamespace",
+  "getExportedValue",
+  "source",
+  "sys.source",
+  "body<-",
+  "formals<-",
+  "UseMethod",
+  "NextMethod",
+  "standardGeneric",
+  "Recall",
+  "import"
 )
 
 ## Functions that take a function argument, where a character string would
 ## name the function to call -- sapply(x, "get") -- which no reading of the code
 ## can follow either.
 FUN_TAKERS <- c(
-  "lapply", "sapply", "vapply", "mapply", "Map", "Reduce", "Filter", "Find", "Position",
-  "apply", "tapply", "outer", "Vectorize", "ave", "aggregate", "rapply", "eapply", "by"
+  "lapply",
+  "sapply",
+  "vapply",
+  "mapply",
+  "Map",
+  "Reduce",
+  "Filter",
+  "Find",
+  "Position",
+  "apply",
+  "tapply",
+  "outer",
+  "Vectorize",
+  "ave",
+  "aggregate",
+  "rapply",
+  "eapply",
+  "by"
 )
 
 ## The calls in an expression, including `pkg::fn` and `pkg:::fn`, which
@@ -495,11 +551,15 @@ calls_in <- function(e) {
       if (!is.null(fn) && fn %in% FUN_TAKERS && any(vapply(as.list(x)[-1L], is.character, TRUE))) {
         out[[length(out) + 1L]] <<- list(ns = NA_character_, fn = fn, strings = TRUE)
       }
-      for (a in as.list(x)) walk(a)
+      for (a in as.list(x)) {
+        walk(a)
+      }
     } else if (is.function(x)) {
       walk(body(x))
     } else if (is.pairlist(x) || is.list(x)) {
-      for (a in x) if (!missing(a)) walk(a)
+      for (a in x) {
+        if (!missing(a)) walk(a)
+      }
     }
   }
   walk(e)
@@ -511,7 +571,9 @@ code_identity <- function(roots) {
   out <- character(0)
   where <- function(name, env) {
     while (!identical(env, emptyenv())) {
-      if (exists(name, envir = env, inherits = FALSE)) return(env)
+      if (exists(name, envir = env, inherits = FALSE)) {
+        return(env)
+      }
       env <- parent.env(env)
     }
     NULL
@@ -527,25 +589,42 @@ code_identity <- function(roots) {
     ## forms that make the code unreadable, refused
     for (cl in c(calls_in(formals(f)), calls_in(body(f)))) {
       if (isTRUE(cl$strings)) {
-        stop(sprintf("`%s` passes a function name as a string to %s(), which the identity cannot follow", name, cl$fn),
-          call. = FALSE)
+        stop(
+          sprintf("`%s` passes a function name as a string to %s(), which the identity cannot follow", name, cl$fn),
+          call. = FALSE
+        )
       }
       ## however it is qualified: base::get is get
       if (cl$fn %in% DYNAMIC_CALLS) {
-        stop(sprintf("`%s` calls %s%s(), which the identity cannot follow", name,
-          if (is.na(cl$ns)) "" else paste0(cl$ns, "::"), cl$fn), call. = FALSE)
+        stop(
+          sprintf(
+            "`%s` calls %s%s(), which the identity cannot follow",
+            name,
+            if (is.na(cl$ns)) "" else paste0(cl$ns, "::"),
+            cl$fn
+          ),
+          call. = FALSE
+        )
       }
       if (!is.na(cl$ns)) out <<- c(out, paste(pkg(cl$ns), "::", cl$fn))
     }
     g <- codetools::findGlobals(f, merge = FALSE)
     for (v in sort(c(g$functions, g$variables))) {
-      if (v %in% c("::", ":::")) next
+      if (v %in% c("::", ":::")) {
+        next
+      }
       e <- where(v, env)
-      if (is.null(e)) next
+      if (is.null(e)) {
+        next
+      }
       en <- environmentName(e)
-      if (en %in% BASE_ENVS || identical(e, baseenv())) next
+      if (en %in% BASE_ENVS || identical(e, baseenv())) {
+        next
+      }
       key <- paste(en, format(e), v)
-      if (key %in% seen) next
+      if (key %in% seen) {
+        next
+      }
       seen <<- c(seen, key)
       val <- get(v, envir = e, inherits = FALSE)
       if (isNamespace(e) || en %in% loadedNamespaces()) {
@@ -561,7 +640,9 @@ code_identity <- function(roots) {
       }
     }
   }
-  for (nm in names(roots)) visit(roots[[nm]], nm)
+  for (nm in names(roots)) {
+    visit(roots[[nm]], nm)
+  }
   out
 }
 
@@ -799,12 +880,15 @@ reducer_runs <- function(stride) {
       describe <- function(t) {
         j <- which(t > 0)
         j <- j[order(-t[j])]
-        paste(sprintf(
-          "%s vs %s: %s",
-          KINDS[(j - 1L) %/% N_KINDS + 1L],
-          KINDS[(j - 1L) %% N_KINDS + 1L],
-          format(t[j], big.mark = ",", scientific = FALSE, trim = TRUE)
-        ), collapse = "; ")
+        paste(
+          sprintf(
+            "%s vs %s: %s",
+            KINDS[(j - 1L) %/% N_KINDS + 1L],
+            KINDS[(j - 1L) %% N_KINDS + 1L],
+            format(t[j], big.mark = ",", scientific = FALSE, trim = TRUE)
+          ),
+          collapse = "; "
+        )
       }
       top <- function(t) which.max(t)
       data.frame(
@@ -840,7 +924,9 @@ reducer_disputes <- function(dtype, k = 10L) {
   store <- new.env(parent = emptyenv())
   cut <- new.env(parent = emptyenv())
   keep <- function(kind, i, by, ch, fx, gx, sx, d, sgn) {
-    if (!length(i)) return()
+    if (!length(i)) {
+      return()
+    }
     ## indices arrive in order, so each binade's samples are one contiguous
     ## slice; zero, keyed -1, is the first of its chunk
     b <- floor(ch$idx[i] / span)
@@ -850,13 +936,28 @@ reducer_disputes <- function(dtype, k = 10L) {
       j <- i[g$from[q]:g$to[q]]
       key <- paste(kind, sgn, g$key[q])
       c0 <- cut[[key]]
-      if (!is.null(c0)) j <- j[by[j] > c0]
-      if (!length(j)) next
-      if (length(j) > k) j <- j[order(by[j], decreasing = TRUE)[seq_len(k)]]
+      if (!is.null(c0)) {
+        j <- j[by[j] > c0]
+      }
+      if (!length(j)) {
+        next
+      }
+      if (length(j) > k) {
+        j <- j[order(by[j], decreasing = TRUE)[seq_len(k)]]
+      }
       cand <- data.frame(
-        kind = kind, sign = sgn, binade = max(g$key[q], 0), x = ch$x[j], value = fx[j],
-        reference = gx[j], stable = sx[j], d_anvl = d$d_anvl[j], d_base = d$d_base[j],
-        t_anvl = d$t_anvl[j], t_base = d$t_base[j], by = by[j]
+        kind = kind,
+        sign = sgn,
+        binade = max(g$key[q], 0),
+        x = ch$x[j],
+        value = fx[j],
+        reference = gx[j],
+        stable = sx[j],
+        d_anvl = d$d_anvl[j],
+        d_base = d$d_base[j],
+        t_anvl = d$t_anvl[j],
+        t_base = d$t_base[j],
+        by = by[j]
       )
       all <- rbind(store[[key]], cand)
       all <- utils::head(all[order(all$by, decreasing = TRUE), , drop = FALSE], k)
@@ -872,7 +973,9 @@ reducer_disputes <- function(dtype, k = 10L) {
         r
       }
       i <- which(d$candidate)
-      if (length(i)) keep("candidate", i, over(d$d_base, d$t_base), ch, fx, gx, sx, d, sgn)
+      if (length(i)) {
+        keep("candidate", i, over(d$d_base, d$t_base), ch, fx, gx, sx, d, sgn)
+      }
       i <- which(d$shared)
       if (length(i)) keep("shared", i, over(d$d_anvl, d$t_anvl), ch, fx, gx, sx, d, sgn)
     },
@@ -998,10 +1101,18 @@ reducer_bands <- function(dtype) {
       a$n[, 1L] <- a$n[, 1L] + tab(same)
       a$n[, 2L] <- a$n[, 2L] + tab(fin & !same)
       a$n[, 3L] <- a$n[, 3L] + tab(!fin)
-      if (any(s$rounded)) a$rounded <- a$rounded + tab(s$rounded)
-      if (any(s$zero_sign)) a$zero_sign <- a$zero_sign + tab(s$zero_sign)
-      if (any(s$flushed)) a$flushed <- a$flushed + tab(s$flushed)
-      if (any(s$flushed_zero_error)) a$flushed_zero_error <- a$flushed_zero_error + tab(s$flushed_zero_error)
+      if (any(s$rounded)) {
+        a$rounded <- a$rounded + tab(s$rounded)
+      }
+      if (any(s$zero_sign)) {
+        a$zero_sign <- a$zero_sign + tab(s$zero_sign)
+      }
+      if (any(s$flushed)) {
+        a$flushed <- a$flushed + tab(s$flushed)
+      }
+      if (any(s$flushed_zero_error)) {
+        a$flushed_zero_error <- a$flushed_zero_error + tab(s$flushed_zero_error)
+      }
 
       ## Kinds: the bulk -- normal against normal inside the domain -- is never
       ## reported, so only the rest is tallied.
@@ -1043,7 +1154,9 @@ reducer_bands <- function(dtype) {
         g <- group_slices(e[pos])
         a$worst_excl[g$key] <- pmax(a$worst_excl[g$key], rel[pos][group_extreme(g, rel[pos], which.max)])
       }
-      if (any(s$ref_shared)) a$ref_shared <- a$ref_shared + tab(s$ref_shared)
+      if (any(s$ref_shared)) {
+        a$ref_shared <- a$ref_shared + tab(s$ref_shared)
+      }
 
       ## Samples whose reference is a normal float: counts, and the worst
       ## with the sample that produced it.
@@ -1158,7 +1271,11 @@ binade_profile <- function(bands, dtype) {
     ## binade 0 holds only the subnormals, so its edge nearest zero is the
     ## smallest subnormal, not zero
     sub <- !zero & bin == 1L
-    if (sgn > 0) x_from[sub] <- SUBNORMAL_MIN[[dtype]] else x_to[sub] <- -SUBNORMAL_MIN[[dtype]]
+    if (sgn > 0) {
+      x_from[sub] <- SUBNORMAL_MIN[[dtype]]
+    } else {
+      x_to[sub] <- -SUBNORMAL_MIN[[dtype]]
+    }
 
     data.frame(
       sign = sgn,
@@ -1262,8 +1379,14 @@ kinds_table <- function(bands) {
   })
   out <- do.call(rbind, out)
   if (is.null(out)) {
-    out <- data.frame(sign = numeric(0), binade = numeric(0), in_domain = logical(0),
-      value_kind = character(0), reference_kind = character(0), n = numeric(0))
+    out <- data.frame(
+      sign = numeric(0),
+      binade = numeric(0),
+      in_domain = logical(0),
+      value_kind = character(0),
+      reference_kind = character(0),
+      n = numeric(0)
+    )
   }
   out
 }
@@ -1335,8 +1458,16 @@ universal_points <- function(dtype) {
   smin <- SUBNORMAL_MIN[[dtype]]
   nmin <- SMALLEST_NORMAL[[dtype]]
   big <- if (dtype == "f32") (2 - 2^-23) * 2^127 else .Machine$double.xmax
-  v <- c(zero = 0, inf = Inf, subnormal_min = smin, subnormal_max = nmin - smin,
-    normal_min = nmin, finite_max = big, half = 0.5, one = 1)
+  v <- c(
+    zero = 0,
+    inf = Inf,
+    subnormal_min = smin,
+    subnormal_max = nmin - smin,
+    normal_min = nmin,
+    finite_max = big,
+    half = 0.5,
+    one = 1
+  )
   c(stats::setNames(v, paste0("+", names(v))), stats::setNames(-v, paste0("-", names(v))), nan = NaN)
 }
 
@@ -1375,9 +1506,16 @@ exact_points <- function(dtype, domain = c(-Inf, Inf), support = NULL, branch = 
 
 ## A points table with no rows, for results that have none (a failed cell).
 NO_POINTS <- data.frame(
-  label = character(0), x = numeric(0), rel_err = numeric(0), identical = logical(0),
-  zero_sign = logical(0), rounded = logical(0), failure = logical(0), category = character(0),
-  ref_candidate = logical(0), ref_shared = logical(0)
+  label = character(0),
+  x = numeric(0),
+  rel_err = numeric(0),
+  identical = logical(0),
+  zero_sign = logical(0),
+  rounded = logical(0),
+  failure = logical(0),
+  category = character(0),
+  ref_candidate = logical(0),
+  ref_shared = logical(0)
 )
 
 ## Returns the points' results with, as attribute "context", the context the
@@ -1390,7 +1528,11 @@ run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf), sta
   pz <- which(pts$x == 0 & 1 / pts$x > 0)[1L]
   nz <- which(pts$x == 0 & 1 / pts$x < 0)[1L]
   ctx <- context_from(
-    lapply(fx, `[`, c(pz, nz)), lapply(gx, `[`, c(pz, nz)), dtype, outputs, domain
+    lapply(fx, `[`, c(pz, nz)),
+    lapply(gx, `[`, c(pz, nz)),
+    dtype,
+    outputs,
+    domain
   )
   out <- lapply(outputs, function(o) {
     s <- score_pair(fx[[o]], gx[[o]], dtype)
@@ -1439,13 +1581,25 @@ run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf), sta
 ## `stable`, when given, is list(fun, bound_ulp64): a stable reference for
 ## some outputs (a named list like `ref`'s, possibly covering fewer), tested
 ## against every sample of those outputs -- see dispute_facts().
-run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 10L,
-                      domain = c(-Inf, Inf), ctx = NULL, stable = NULL) {
+run_sweep <- function(
+  fun,
+  ref,
+  dtype,
+  depth,
+  outputs,
+  progress = TRUE,
+  topk = 10L,
+  domain = c(-Inf, Inf),
+  ctx = NULL,
+  stable = NULL
+) {
   plan <- sweep_plan(dtype, depth)
   ## The behaviour at +-0 is taken before seeding, so it cannot shift the
   ## random stream that the f64 samples are drawn from. A caller that has
   ## already evaluated the exact points passes it in (see run_points()).
-  if (is.null(ctx)) ctx <- sweep_context(fun, ref, dtype, outputs, domain)
+  if (is.null(ctx)) {
+    ctx <- sweep_context(fun, ref, dtype, outputs, domain)
+  }
   set.seed(SWEEP_SEED)
 
   acc <- lapply(outputs, function(o) {
@@ -1616,13 +1770,30 @@ decode_runs <- function(runs, dtype) {
   out <- do.call(rbind, out)
   if (is.null(out)) {
     out <- data.frame(
-      bits_from = character(0), bits_to = character(0), x_from = numeric(0), x_to = numeric(0),
-      n_patterns = numeric(0), bounds_are_samples = logical(0), sampled_from = numeric(0),
-      sampled_to = numeric(0), sampled_bits_from = character(0), sampled_bits_to = character(0),
-      n_failing = numeric(0), sign = numeric(0), binade_from = numeric(0), binade_to = numeric(0),
-      cause = character(0), category = character(0), ref_candidate = logical(0), value_kind = character(0),
-      reference_kind = character(0), pairs = character(0), rep_x = numeric(0),
-      rep_bits = character(0), rep_value = numeric(0), rep_reference = numeric(0),
+      bits_from = character(0),
+      bits_to = character(0),
+      x_from = numeric(0),
+      x_to = numeric(0),
+      n_patterns = numeric(0),
+      bounds_are_samples = logical(0),
+      sampled_from = numeric(0),
+      sampled_to = numeric(0),
+      sampled_bits_from = character(0),
+      sampled_bits_to = character(0),
+      n_failing = numeric(0),
+      sign = numeric(0),
+      binade_from = numeric(0),
+      binade_to = numeric(0),
+      cause = character(0),
+      category = character(0),
+      ref_candidate = logical(0),
+      value_kind = character(0),
+      reference_kind = character(0),
+      pairs = character(0),
+      rep_x = numeric(0),
+      rep_bits = character(0),
+      rep_value = numeric(0),
+      rep_reference = numeric(0),
       stringsAsFactors = FALSE
     )
   }
@@ -1765,7 +1936,7 @@ resolve_domain_conventions <- function(ranges, kinds) {
     k <- paste(ranges$run_id[i], vid, ranges$sign[i], b, sep = "\r")
     tt <- total[k]
     nn <- both_nan[k]
-    if (all(!is.na(tt)) && all(tt > 0) && all(nn == tt)) {
+    if (!anyNA(tt) && all(tt > 0) && all(nn == tt)) {
       ranges$category[i] <- "undefined_domain"
       ranges$evidence[i] <- "value cell, same run: both forward values NaN throughout"
     } else {
@@ -1805,7 +1976,7 @@ resolve_domain_conventions <- function(ranges, kinds) {
 ## either sign, so "wholly outside" is exact.
 
 input_class <- function(bands, lo, hi) {
-  zero <- if (is.null(bands$zero)) rep(FALSE, nrow(bands)) else bands$zero
+  zero <- bands$zero %||% rep(FALSE, nrow(bands))
   cls <- rep("normal", nrow(bands))
   cls[bands$binade == 0L] <- "subnormal"
   cls[zero] <- "zero"
@@ -1827,7 +1998,7 @@ category_table <- function(bands, detail, bounds) {
   bands$input_class <- input_class(bands, lo, hi)
   ## NA for a band from a store written before a column existed: unknown, and
   ## summed as unknown rather than as zero
-  col <- function(nm) if (is.null(bands[[nm]])) NA_real_ else bands[[nm]]
+  col <- function(nm) bands[[nm]] %||% NA_real_
 
   grp <- paste(bands$run_id, bands$cell_id, bands$output, bands$input_class, sep = "\r")
   counts <- rowsum(
@@ -1854,12 +2025,18 @@ category_table <- function(bands, detail, bounds) {
   out <- cbind(out, counts[grp[first], , drop = FALSE])
 
   ## a detail row belongs to its band, and a zero input to the zero band
-  bzero <- if (is.null(bands$zero)) rep(FALSE, nrow(bands)) else bands$zero
+  bzero <- bands$zero %||% rep(FALSE, nrow(bands))
   bkey <- paste(bands$run_id, bands$cell_id, bands$output, bands$sign, bands$binade, bzero, sep = "\r")
-  dkey <- paste(detail$run_id, detail$cell_id, detail$output, detail$sign, detail$binade,
-    !is.null(bands$zero) & detail$x %in% 0, sep = "\r")
-  dgrp <- paste(detail$run_id, detail$cell_id, detail$output,
-    bands$input_class[match(dkey, bkey)], sep = "\r")
+  dkey <- paste(
+    detail$run_id,
+    detail$cell_id,
+    detail$output,
+    detail$sign,
+    detail$binade,
+    !is.null(bands$zero) & detail$x %in% 0,
+    sep = "\r"
+  )
+  dgrp <- paste(detail$run_id, detail$cell_id, detail$output, bands$input_class[match(dkey, bkey)], sep = "\r")
   o <- order(dgrp, -detail$rel_err)
   top <- o[!duplicated(dgrp[o])]
   m <- match(grp[first], dgrp[top])
@@ -1926,10 +2103,14 @@ resolve_point_conventions <- function(points) {
   if (!length(cand)) {
     return(points)
   }
-  vid <- vapply(seg[cand], function(p) {
-    p[4L] <- "value"
-    paste(p, collapse = "/")
-  }, "")
+  vid <- vapply(
+    seg[cand],
+    function(p) {
+      p[4L] <- "value"
+      paste(p, collapse = "/")
+    },
+    ""
+  )
   vals <- points[points$output == "value", , drop = FALSE]
   j <- match(
     paste(points$run_id[cand], vid, points$bits[cand], sep = "\r"),

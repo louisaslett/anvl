@@ -32,7 +32,10 @@ sweep_spec(
   family = "_selftest",
   dtypes = c("f32", "f64"),
   params = list(
-    clean = list(err = 0), nudged = list(err = 1), pinhole = list(err = -1), weakref = list(err = -2)
+    clean = list(err = 0),
+    nudged = list(err = 1),
+    pinhole = list(err = -1),
+    weakref = list(err = -2)
   ),
   flags = list(broken = c(FALSE, TRUE)),
 

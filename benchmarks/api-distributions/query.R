@@ -73,8 +73,16 @@ sw_worst <- function(n = 20, metric = c("rel", "ulp"), ...) {
   r$worst_any <- result_state(r)$worst_any
   col <- if (metric == "rel") "worst_any" else "worst_ulp_err"
   r <- r[order(-r[[col]]), , drop = FALSE]
-  cols <- c("cell_id", "output", "dtype", "worst_rel_err", "worst_point_rel_err", "worst_ulp_err",
-    "n_runs_unclassified", "n_points_failure")
+  cols <- c(
+    "cell_id",
+    "output",
+    "dtype",
+    "worst_rel_err",
+    "worst_point_rel_err",
+    "worst_ulp_err",
+    "n_runs_unclassified",
+    "n_points_failure"
+  )
   utils::head(r[intersect(cols, names(r))], n)
 }
 
@@ -126,13 +134,34 @@ sw_points <- function(cell_id = NULL, output = NULL, failing = FALSE, category =
   if (is.null(p)) {
     return(NULL)
   }
-  if (!is.null(cell_id)) p <- p[p$cell_id %in% cell_id, , drop = FALSE]
-  if (!is.null(output)) p <- p[p$output %in% output, , drop = FALSE]
-  if (isTRUE(failing) || !is.null(category)) p <- p[p$failure, , drop = FALSE]
-  if (!is.null(category)) p <- p[p$category %in% category, , drop = FALSE]
+  if (!is.null(cell_id)) {
+    p <- p[p$cell_id %in% cell_id, , drop = FALSE]
+  }
+  if (!is.null(output)) {
+    p <- p[p$output %in% output, , drop = FALSE]
+  }
+  if (isTRUE(failing) || !is.null(category)) {
+    p <- p[p$failure, , drop = FALSE]
+  }
+  if (!is.null(category)) {
+    p <- p[p$category %in% category, , drop = FALSE]
+  }
   rownames(p) <- NULL
-  p[c("cell_id", "output", "label", "x", "bits", "value", "reference", "rel_err", "zero_sign",
-    "failure", "cause", "category", intersect("evidence", names(p)))]
+  p[c(
+    "cell_id",
+    "output",
+    "label",
+    "x",
+    "bits",
+    "value",
+    "reference",
+    "rel_err",
+    "zero_sign",
+    "failure",
+    "cause",
+    "category",
+    intersect("evidence", names(p))
+  )]
 }
 
 ## The error distribution for one cell: is the worst case one pathological
@@ -162,7 +191,9 @@ merge_bands <- function(b) {
   if (is.null(b) || !nrow(b)) {
     return(b)
   }
-  if (is.null(b$zero)) b$zero <- FALSE
+  if (is.null(b$zero)) {
+    b$zero <- FALSE
+  }
   b <- b[order(b$special, b$sign, b$binade, !b$zero), , drop = FALSE]
   key <- paste(b$sign, b$special, b$behaviour, b$m_worst)
   ## the Inf/NaN field and each sign's zero are rows of their own, never
@@ -243,19 +274,22 @@ sw_bands <- function(cell_id = NULL, output = NULL, merged = TRUE) {
   }
   b <- b[order(b$cell_id, b$output, b$special, b$sign, b$binade), , drop = FALSE]
   rownames(b) <- NULL
-  b[intersect(c(
-    "cell_id",
-    "output",
-    "sign",
-    "binade",
-    "zero",
-    "x_from",
-    "x_to",
-    "behaviour",
-    "m_worst",
-    "m_best",
-    "worst_rel_err"
-  ), names(b))]
+  b[intersect(
+    c(
+      "cell_id",
+      "output",
+      "sign",
+      "binade",
+      "zero",
+      "x_from",
+      "x_to",
+      "behaviour",
+      "m_worst",
+      "m_best",
+      "worst_rel_err"
+    ),
+    names(b)
+  )]
 }
 
 sw_runs <- function() {
@@ -323,7 +357,12 @@ if (!interactive() && length(commandArgs(trailingOnly = TRUE))) {
     results = sw_results(spec = kv$spec, dtype = kv$dtype),
     detail = sw_detail(kv$cell, kv$output, n = num(kv$n, 20)),
     ranges = sw_ranges(cell_id = kv$cell, category = kv$category, cause = kv$cause, class = kv$class),
-    points = sw_points(cell_id = kv$cell, output = kv$output, failing = identical(kv$failing, "1"), category = kv$category),
+    points = sw_points(
+      cell_id = kv$cell,
+      output = kv$output,
+      failing = identical(kv$failing, "1"),
+      category = kv$category
+    ),
     hist = sw_hist(kv$cell, kv$output %||% "value"),
     bands = sw_bands(cell_id = kv$cell, output = kv$output, merged = !identical(kv$raw, "1")),
     runs = sw_runs(),

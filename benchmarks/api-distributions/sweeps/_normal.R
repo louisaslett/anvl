@@ -94,7 +94,9 @@ inv_mills <- function(z) {
   if (length(far)) {
     t <- -z[far]
     v <- t
-    for (n in 40:1) v <- t + n / v
+    for (n in 40:1) {
+      v <- t + n / v
+    }
     out[far] <- v
   }
   out
@@ -126,7 +128,9 @@ phi_times <- function(z, m, lo = 0) {
   ## only where lo is non-zero: at z = +-Inf, Inf * 0 would make it NaN
   lo <- rep_len(lo, length(z))
   j <- which(lo != 0)
-  if (length(j)) m[j] <- m[j] * exp(-(z[j] + 0.5 * lo[j]) * lo[j])
+  if (length(j)) {
+    m[j] <- m[j] * exp(-(z[j] + 0.5 * lo[j]) * lo[j])
+  }
   out <- 0 * sign(m)
   i <- which(!is.na(z) & abs(z) <= 40)
   if (length(i)) {
@@ -145,7 +149,9 @@ phi_recip <- function(z, m, lo = 0) {
   ## 1/phi(z + lo) = exp((z + lo/2) lo) / phi(z), folded into m where lo != 0
   lo <- rep_len(lo, length(z))
   j <- which(lo != 0)
-  if (length(j)) m[j] <- m[j] * exp((z[j] + 0.5 * lo[j]) * lo[j])
+  if (length(j)) {
+    m[j] <- m[j] * exp((z[j] + 0.5 * lo[j]) * lo[j])
+  }
   out <- sign(m) * Inf
   i <- which(!is.na(z) & abs(z) <= 40)
   if (length(i)) {
@@ -221,7 +227,9 @@ std_q <- function(pr, lower, log_p) {
   cen <- which(ok & (if (log_p) abs(pr + log(2)) < 0.4 else abs(pr - 0.5) < 0.25))
   if (length(cen)) {
     d <- if (log_p) 0.5 * expm1((pr[cen] + LN2_HI) + LN2_LO) else pr[cen] - 0.5
-    if (!lower) d <- -d
+    if (!lower) {
+      d <- -d
+    }
     lo[cen] <- (d - phi_half(hi[cen])) / ph[cen]
   }
   ## In the far tails the probability target is corrected without R's pnorm,
@@ -232,11 +240,15 @@ std_q <- function(pr, lower, log_p) {
   if (!log_p) {
     far_t <- which(ok & abs(hi) > 20)
   } else {
-    far_t <- which(ok & !(pr < -1) & abs(hi) > 20)
+    far_t <- which(ok & pr >= -1 & abs(hi) > 20)
   }
   if (length(far_t)) {
     zf <- hi[far_t]
-    tf <- if (log_p) ifelse(pr[far_t] <= -log(2), exp(pr[far_t]), -expm1(pr[far_t])) else ifelse(pr[far_t] <= 0.5, pr[far_t], 1 - pr[far_t])
+    tf <- if (log_p) {
+      ifelse(pr[far_t] <= -log(2), exp(pr[far_t]), -expm1(pr[far_t]))
+    } else {
+      ifelse(pr[far_t] <= 0.5, pr[far_t], 1 - pr[far_t])
+    }
     low <- zf < 0 # the small tail of z is its lower tail
     step <- function(z) ifelse(low, phi_recip(z, tf) - 1 / inv_mills(z), 1 / inv_mills(-z) - phi_recip(z, tf))
     ## base R's qnorm() is itself ~5e-3 out at the smallest subnormal p, too
@@ -245,7 +257,9 @@ std_q <- function(pr, lower, log_p) {
     for (k in 1:4) {
       d <- step(zf)
       big <- is.finite(d) & abs(d) > 1e-12 * abs(zf)
-      if (!any(big)) break
+      if (!any(big)) {
+        break
+      }
       zf[big] <- zf[big] + d[big]
     }
     hi[far_t] <- zf
@@ -284,7 +298,9 @@ mp_phi <- function(z) exp(-z * z / 2) / sqrt(2 * Rmpfr::Const("pi", mp_prec(z)))
 mp_phi_times <- function(z, m) {
   out <- m * mp_phi(z)
   zi <- which(is.infinite(mp_num(z)))
-  if (length(zi)) out[zi] <- Rmpfr::mpfr(0 * sign(mp_num(m[zi])), mp_prec(z))
+  if (length(zi)) {
+    out[zi] <- Rmpfr::mpfr(0 * sign(mp_num(m[zi])), mp_prec(z))
+  }
   out
 }
 
@@ -296,12 +312,16 @@ mp_imills <- function(z, terms = 120L) {
   zn <- mp_num(z)
   out <- z
   near <- which(!is.na(zn) & zn >= -30)
-  if (length(near)) out[near] <- mp_phi(z[near]) / Rmpfr::pnorm(z[near])
+  if (length(near)) {
+    out[near] <- mp_phi(z[near]) / Rmpfr::pnorm(z[near])
+  }
   far <- which(!is.na(zn) & zn < -30)
   if (length(far)) {
     t <- -z[far]
     v <- t
-    for (n in terms:1) v <- t + n / v
+    for (n in terms:1) {
+      v <- t + n / v
+    }
     out[far] <- v
   }
   out
@@ -313,9 +333,13 @@ mp_log_Phi <- function(z) {
   zn <- mp_num(z)
   out <- z
   near <- which(!is.na(zn) & zn >= -30 & zn <= 0)
-  if (length(near)) out[near] <- log(Rmpfr::pnorm(z[near]))
+  if (length(near)) {
+    out[near] <- log(Rmpfr::pnorm(z[near]))
+  }
   pos <- which(!is.na(zn) & zn > 0)
-  if (length(pos)) out[pos] <- log1p(-Rmpfr::pnorm(-z[pos]))
+  if (length(pos)) {
+    out[pos] <- log1p(-Rmpfr::pnorm(-z[pos]))
+  }
   far <- which(!is.na(zn) & zn < -30)
   if (length(far)) {
     zf <- z[far]
@@ -346,14 +370,16 @@ mp_qnorm <- function(pr, lower, log_p, prec) {
     } else {
       m <- mp_imills(zs)
       zn <- mp_num(zs)
-      F <- zs
+      lcdf <- zs
       far <- which(zn < -30)
       nr <- which(zn >= -30)
       if (length(far)) {
-        F[far] <- -zs[far] * zs[far] / 2 - log(sqrt(2 * Rmpfr::Const("pi", prec))) - log(m[far])
+        lcdf[far] <- -zs[far] * zs[far] / 2 - log(sqrt(2 * Rmpfr::Const("pi", prec))) - log(m[far])
       }
-      if (length(nr)) F[nr] <- mp_log_Phi(zs[nr])
-      zk <- zk - (F - tgt) / (s * m)
+      if (length(nr)) {
+        lcdf[nr] <- mp_log_Phi(zs[nr])
+      }
+      zk <- zk - (lcdf - tgt) / (s * m)
     }
   }
   z[ok] <- zk

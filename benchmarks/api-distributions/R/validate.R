@@ -52,7 +52,9 @@ random_patterns <- function(dtype, per_binade, focus_binades, focus_per_binade, 
     }
   }
   x <- unlist(lapply(0:(nexp - 1L), function(e) one(e, per_binade)))
-  if (length(focus_binades)) x <- c(x, unlist(lapply(focus_binades, function(e) one(e, focus_per_binade))))
+  if (length(focus_binades)) {
+    x <- c(x, unlist(lapply(focus_binades, function(e) one(e, focus_per_binade))))
+  }
   x <- c(x, one(sample.int(nexp, n_random, replace = TRUE) - 1L, 1L))
   c(x, -x)
 }
@@ -84,7 +86,9 @@ compare_to_truth <- function(ref, truth, bound) {
     pass[exact_nf] <- same_value(ref[exact_nf], t[exact_nf])
   }
   z <- which(tfin & tzero)
-  if (length(z)) pass[z] <- ref[z] %in% 0
+  if (length(z)) {
+    pass[z] <- ref[z] %in% 0
+  }
   o <- which(tfin & !tzero & is.finite(ref))
   if (length(o)) {
     e <- abs(Rmpfr::mpfr(ref[o], mp_prec(truth)) - truth[o]) / Rmpfr::mpfr(ulp_size(t[o], "f64"), mp_prec(truth))
@@ -108,10 +112,24 @@ truth_identity <- function(fun, output) {
 ## validation made by any other method is ignored -- in particular every one
 ## made before the comparator kept its arithmetic in MPFR.
 VALIDATION_METHOD_FUNS <- c(
-  "compare_to_truth", "validate_reference", "random_patterns", "seed_of",
-  "reference_under_test", "truth_identity", "mp_num", "mp_prec", "mp_fill",
-  "ulp_size", "same_value", "bits_of", "f32_from_bits", "f64_from_words",
-  "rand_word32", "parse_hex_params", "hex_params", "cmd_validate_refs"
+  "compare_to_truth",
+  "validate_reference",
+  "random_patterns",
+  "seed_of",
+  "reference_under_test",
+  "truth_identity",
+  "mp_num",
+  "mp_prec",
+  "mp_fill",
+  "ulp_size",
+  "same_value",
+  "bits_of",
+  "f32_from_bits",
+  "f64_from_words",
+  "rand_word32",
+  "parse_hex_params",
+  "hex_params",
+  "cmd_validate_refs"
 )
 validation_method_id <- local({
   cached <- NULL
@@ -122,7 +140,10 @@ validation_method_id <- local({
       }))
       tf <- tempfile()
       on.exit(unlink(tf))
-      writeLines(c(src, sprintf("defaults: %s", paste(names(VALIDATION_DEFAULTS), VALIDATION_DEFAULTS, collapse = ","))), tf)
+      writeLines(
+        c(src, sprintf("defaults: %s", paste(names(VALIDATION_DEFAULTS), VALIDATION_DEFAULTS, collapse = ","))),
+        tf
+      )
       cached <<- unname(tools::md5sum(tf))
     }
     cached
@@ -141,7 +162,11 @@ reference_under_test <- function(spec, row, r) {
       reference = "stable",
       stored = r$ref_stable_id,
       unsupported = r$ref_stable_unsupported %||% NA_character_,
-      now = if (length(params)) stable_identity(spec$ref_stable, spec$ref_stable_bound_ulp64, params, flags, row$dtype) else NA,
+      now = if (length(params)) {
+        stable_identity(spec$ref_stable, spec$ref_stable_bound_ulp64, params, flags, row$dtype)
+      } else {
+        NA
+      },
       fun = function(x) spec$ref_stable(x, params, flags),
       truth = spec$ref_stable_mpfr,
       output = NULL,
@@ -154,7 +179,11 @@ reference_under_test <- function(spec, row, r) {
       reference = "gradient",
       stored = r$ref_grad_id %||% NA_character_,
       unsupported = r$ref_grad_unsupported %||% NA_character_,
-      now = if (length(params)) grad_identity(spec$ref_grad, spec$ref_grad_bound_ulp64, params, flags, row$dtype) else NA,
+      now = if (length(params)) {
+        grad_identity(spec$ref_grad, spec$ref_grad_bound_ulp64, params, flags, row$dtype)
+      } else {
+        NA
+      },
       fun = function(x) spec$ref_grad(x, params, flags)[[r$output]],
       ## the spec's own function; the output is selected on evaluation, and
       ## recorded in the truth's identity separately
@@ -207,8 +236,10 @@ validate_reference <- function(ru, r, fixed, focus_binades, opt) {
     return(fail("no MPFR truth declared for this reference"))
   }
   if (is.na(base$truth_id)) {
-    return(fail(sprintf("the MPFR truth has no identity: %s",
-      attr(truth_identity(ru$truth, ru$output %||% "value"), "unsupported") %||% "unknown")))
+    return(fail(sprintf(
+      "the MPFR truth has no identity: %s",
+      attr(truth_identity(ru$truth, ru$output %||% "value"), "unsupported") %||% "unknown"
+    )))
   }
   if (!is.numeric(ru$bound)) {
     return(fail("no error bound declared for this reference"))
@@ -231,30 +262,57 @@ validate_reference <- function(ru, r, fixed, focus_binades, opt) {
   ref <- ru$fun(x)
   mp_params <- lapply(ru$params, function(v) Rmpfr::mpfr(v, opt$prec))
   truth <- ru$truth(Rmpfr::mpfr(x, opt$prec), mp_params, ru$flags)
-  if (!is.null(ru$output)) truth <- truth[[ru$output]]
-  if (!methods::is(truth, "mpfr")) truth <- Rmpfr::mpfr(truth, opt$prec)
+  if (!is.null(ru$output)) {
+    truth <- truth[[ru$output]]
+  }
+  if (!methods::is(truth, "mpfr")) {
+    truth <- Rmpfr::mpfr(truth, opt$prec)
+  }
   cmp <- compare_to_truth(ref, truth, ru$bound)
   err <- cmp$err
   w <- which.max(err)
   base$seed <- seed
   base$selection <- sprintf(
     "exact points, retained disputes, the two worst retained inputs per binade and every earlier counterexample for this cell (%d); %d random per binade over all %d exponent fields and both signs; %d more in each of %d binade(s) of interest; %d uniform over all patterns; both signs; deduplicated by bit pattern",
-    nrow(fixed), opt$per_binade, if (dtype == "f32") 256L else 2048L, opt$focus_per_binade,
-    length(focus_binades), opt$random
+    nrow(fixed),
+    opt$per_binade,
+    if (dtype == "f32") 256L else 2048L,
+    opt$focus_per_binade,
+    length(focus_binades),
+    opt$random
   )
   base$n_samples <- length(x)
   base$max_err_ulp64 <- err[w]
   base$max_err_x <- x[w]
   base$max_err_bits <- bits[w]
   base$pass <- all(cmp$pass)
-  base$reason <- if (base$pass) "" else sprintf("bound exceeded: %s ulp at x = %s (%s) against a bound of %s", fmt_num(err[w]), format(x[w], digits = 17), bits[w], ru$bound)
+  base$reason <- if (base$pass) {
+    ""
+  } else {
+    sprintf(
+      "bound exceeded: %s ulp at x = %s (%s) against a bound of %s",
+      fmt_num(err[w]),
+      format(x[w], digits = 17),
+      bits[w],
+      ru$bound
+    )
+  }
   o <- order(-err)
   top <- o[seq_len(min(20L, length(o)))]
   top <- union(top, utils::head(which(!cmp$pass), 200L))
   samples <- data.frame(
-    reference = ru$reference, cell_id = r$cell_id, output = r$output, ref_id = ru$stored,
-    source = src[top], x = x[top], bits = bits[top], ref = ref[top], truth = cmp$truth[top],
-    err_ulp64 = err[top], pass = cmp$pass[top], stringsAsFactors = FALSE
+    reference = ru$reference,
+    cell_id = r$cell_id,
+    output = r$output,
+    ref_id = ru$stored,
+    source = src[top],
+    x = x[top],
+    bits = bits[top],
+    ref = ref[top],
+    truth = cmp$truth[top],
+    err_ulp64 = err[top],
+    pass = cmp$pass[top],
+    stringsAsFactors = FALSE
   )
   list(record = base, samples = samples)
 }
@@ -285,7 +343,13 @@ status_of <- function(v) {
   }
   latest <- v$truth_id[which.max(as.POSIXct(v$validated_at, format = "%Y-%m-%dT%H:%M:%S%z"))]
   v <- v[v$truth_id %in% latest, , drop = FALSE]
-  if (any(!v$pass)) "failed" else if (any(v$pass & v$identity_matches)) "validated" else "not validated"
+  if (!all(v$pass)) {
+    "failed"
+  } else if (any(v$pass & v$identity_matches)) {
+    "validated"
+  } else {
+    "not validated"
+  }
 }
 
 reference_status <- function(ids, unsupported, reference, validations, outputs = NULL) {
@@ -296,7 +360,9 @@ reference_status <- function(ids, unsupported, reference, validations, outputs =
   v <- validations[validations$reference == reference, , drop = FALSE]
   for (i in which(!is.na(ids))) {
     sel <- v$ref_id %in% ids[i]
-    if (!is.null(outputs)) sel <- sel & v$output == outputs[i]
+    if (!is.null(outputs)) {
+      sel <- sel & v$output == outputs[i]
+    }
     out[i] <- status_of(v[sel, , drop = FALSE])
   }
   out
@@ -349,7 +415,9 @@ replay_counterexamples <- function(prev) {
 validation_units <- function(keys, shard = NA_integer_, shards = NA_integer_) {
   u <- sort(unique(keys))
   if (!is.na(shards)) {
-    if (is.na(shard)) stop("--shards needs --shard", call. = FALSE)
+    if (is.na(shard)) {
+      stop("--shards needs --shard", call. = FALSE)
+    }
     u <- u[(seq_along(u) - 1L) %% shards == (shard - 1L)]
   }
   u
@@ -359,10 +427,14 @@ cmd_validate_refs <- function(opt) {
   if (!requireNamespace("Rmpfr", quietly = TRUE)) {
     stop("validate-refs needs the Rmpfr package; run it where Rmpfr is installed", call. = FALSE)
   }
-  for (nm in names(VALIDATION_DEFAULTS)) opt[[nm]] <- opt[[nm]] %||% VALIDATION_DEFAULTS[[nm]]
+  for (nm in names(VALIDATION_DEFAULTS)) {
+    opt[[nm]] <- opt[[nm]] %||% VALIDATION_DEFAULTS[[nm]]
+  }
   dir <- store_dir(opt$store)
   res <- latest_results(dir)
-  if (is.null(res)) stop("store is empty; run a sweep first", call. = FALSE)
+  if (is.null(res)) {
+    stop("store is empty; run a sweep first", call. = FALSE)
+  }
   ## Validate what the store holds: every backend in it unless --backends
   ## says otherwise (the anvl-only default of `run` would skip every JAX
   ## result, as it once did for export).
@@ -370,23 +442,44 @@ cmd_validate_refs <- function(opt) {
   specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
   g <- apply_filter(build_grid(specs, backends), opt$filter, extra = "output")
   res <- current_results(res[res$cell_id %in% g$cell_id, , drop = FALSE], opt$filter)$results
-  if (!is.null(opt$run)) res <- res[res$run_id == opt$run, , drop = FALSE]
-  if (!nrow(res)) stop("no results to validate for that filter", call. = FALSE)
+  if (!is.null(opt$run)) {
+    res <- res[res$run_id == opt$run, , drop = FALSE]
+  }
+  if (!nrow(res)) {
+    stop("no results to validate for that filter", call. = FALSE)
+  }
   res <- res[order(res$cell_id, res$output), , drop = FALSE]
 
   ## what each result would validate, and the unit it belongs to
   rows <- lapply(seq_len(nrow(res)), function(i) g[g$cell_id == res$cell_id[i], , drop = FALSE][1L, , drop = FALSE])
-  rus <- lapply(seq_len(nrow(res)), function(i) reference_under_test(specs[[rows[[i]]$spec]], rows[[i]], res[i, , drop = FALSE]))
+  rus <- lapply(seq_len(nrow(res)), function(i) {
+    reference_under_test(specs[[rows[[i]]$spec]], rows[[i]], res[i, , drop = FALSE])
+  })
   has <- !vapply(rus, is.null, TRUE)
-  key <- vapply(seq_len(nrow(res)), function(i) {
-    ru <- rus[[i]]
-    if (is.null(ru)) return(NA_character_)
-    if (is.na(ru$stored)) paste("unidentified", res$cell_id[i], res$output[i]) else paste(ru$reference, ru$stored, res$output[i])
-  }, "")
+  key <- vapply(
+    seq_len(nrow(res)),
+    function(i) {
+      ru <- rus[[i]]
+      if (is.null(ru)) {
+        return(NA_character_)
+      }
+      if (is.na(ru$stored)) {
+        paste("unidentified", res$cell_id[i], res$output[i])
+      } else {
+        paste(ru$reference, ru$stored, res$output[i])
+      }
+    },
+    ""
+  )
   units <- validation_units(key[has], opt$shard, opt$shards)
   if (!is.na(opt$shards)) {
-    cat(sprintf("shard %d/%d: %d of %d reference unit(s)\n", opt$shard, opt$shards, length(units),
-      length(unique(key[has]))))
+    cat(sprintf(
+      "shard %d/%d: %d of %d reference unit(s)\n",
+      opt$shard,
+      opt$shards,
+      length(units),
+      length(unique(key[has]))
+    ))
   }
 
   ## every earlier failing sample, for any reference or truth version of the
@@ -400,17 +493,25 @@ cmd_validate_refs <- function(opt) {
   dtl <- store_read(dir, "detail")
   bnd <- store_read(dir, "bands")
   pick <- function(tbl, r) {
-    if (is.null(tbl)) return(NULL)
+    if (is.null(tbl)) {
+      return(NULL)
+    }
     tbl[tbl$run_id == r$run_id & tbl$cell_id == r$cell_id & tbl$output == r$output, , drop = FALSE]
   }
   inputs_of <- function(r, ru) {
+    p <- pick(pts, r)
+    ds <- if (ru$reference == "stable") pick(dsp, r)
+    c0 <- if (!is.null(prev)) prev[prev$cell_id == r$cell_id & prev$output == r$output, , drop = FALSE]
+    d <- pick(dtl, r)
     fixed <- rbind(
-      if (!is.null(p <- pick(pts, r)) && nrow(p)) data.frame(x = p$x, source = "exact point"),
-      if (ru$reference == "stable" && !is.null(d <- pick(dsp, r)) && nrow(d)) data.frame(x = d$x, source = paste("dispute", d$kind)),
-      if (!is.null(prev) && nrow(c0 <- prev[prev$cell_id == r$cell_id & prev$output == r$output, , drop = FALSE])) {
+      if (!is.null(p) && nrow(p)) data.frame(x = p$x, source = "exact point"),
+      if (!is.null(ds) && nrow(ds)) {
+        data.frame(x = ds$x, source = paste("dispute", ds$kind))
+      },
+      if (!is.null(c0) && nrow(c0)) {
         data.frame(x = c0$x, source = "earlier counterexample")
       },
-      if (!is.null(d <- pick(dtl, r)) && nrow(d)) {
+      if (!is.null(d) && nrow(d)) {
         ## the two worst retained inputs of each binade
         d <- d[order(d$sign, d$binade, -d$rel_err), , drop = FALSE]
         d <- d[stats::ave(seq_along(d$x), d$sign, d$binade, FUN = seq_along) <= 2L, , drop = FALSE]
@@ -418,7 +519,9 @@ cmd_validate_refs <- function(opt) {
       }
     )
     b <- pick(bnd, r)
-    focus <- if (is.null(b) || !nrow(b)) integer(0) else {
+    focus <- if (is.null(b) || !nrow(b)) {
+      integer(0)
+    } else {
       ## Stable: every binade with a dispute. Gradient: binades whose worst
       ## finite error is within 1e3 of the result's worst -- where the result
       ## and the reference part company most. (Not every binade with a
@@ -435,7 +538,10 @@ cmd_validate_refs <- function(opt) {
   }
 
   vid <- sprintf(
-    "%s-%s-%04d%s", format(Sys.time(), "%Y%m%dT%H%M%S"), Sys.info()[["nodename"]], sample.int(9999L, 1L),
+    "%s-%s-%04d%s",
+    format(Sys.time(), "%Y%m%dT%H%M%S"),
+    Sys.info()[["nodename"]],
+    sample.int(9999L, 1L),
     if (is.na(opt$shards)) "" else sprintf("-s%dof%d", opt$shard, opt$shards)
   )
   recs <- list()
@@ -447,18 +553,38 @@ cmd_validate_refs <- function(opt) {
     ru <- rus[[i]]
     ins <- lapply(members, function(j) inputs_of(res[j, , drop = FALSE], rus[[j]]))
     fixed <- do.call(rbind, lapply(ins, `[[`, "fixed"))
-    if (is.null(fixed)) fixed <- data.frame(x = numeric(0), source = character(0))
+    if (is.null(fixed)) {
+      fixed <- data.frame(x = numeric(0), source = character(0))
+    }
     focus <- sort(unique(unlist(lapply(ins, `[[`, "focus"))))
     v <- validate_reference(ru, r, fixed, focus, opt)
     v$record$validation_id <- vid
     v$record$covers <- paste(unique(res$cell_id[members]), collapse = " ")
     recs[[length(recs) + 1L]] <- v$record
-    if (!is.null(v$samples)) smps[[length(smps) + 1L]] <- cbind(validation_id = vid, v$samples)
+    if (!is.null(v$samples)) {
+      smps[[length(smps) + 1L]] <- cbind(validation_id = vid, v$samples)
+    }
     cat(sprintf(
-      "[%3d/%3d] %-4s %-8s %-62s %s\n", k, length(units), if (v$record$pass) "PASS" else "FAIL", ru$reference,
-      paste0(r$cell_id, if (r$output != "value") paste0(" d/d", r$output) else "",
-        if (length(members) > 1L) sprintf(" (+%d)", length(members) - 1L) else ""),
-      if (v$record$pass) sprintf("max %s ulp of %s (%d samples)", fmt_num(v$record$max_err_ulp64), v$record$bound_ulp64, v$record$n_samples) else v$record$reason
+      "[%3d/%3d] %-4s %-8s %-62s %s\n",
+      k,
+      length(units),
+      if (v$record$pass) "PASS" else "FAIL",
+      ru$reference,
+      paste0(
+        r$cell_id,
+        if (r$output != "value") paste0(" d/d", r$output) else "",
+        if (length(members) > 1L) sprintf(" (+%d)", length(members) - 1L) else ""
+      ),
+      if (v$record$pass) {
+        sprintf(
+          "max %s ulp of %s (%d samples)",
+          fmt_num(v$record$max_err_ulp64),
+          v$record$bound_ulp64,
+          v$record$n_samples
+        )
+      } else {
+        v$record$reason
+      }
     ))
   }
   if (!length(recs)) {
@@ -472,10 +598,16 @@ cmd_validate_refs <- function(opt) {
   rec$rmpfr_version <- as.character(utils::packageVersion("Rmpfr"))
   rec$mpfr_version <- as.character(Rmpfr::mpfrVersion())
   store_write(dir, "validations", vid, "all", rec)
-  if (length(smps)) store_write(dir, "validation_samples", vid, "all", do.call(rbind, smps))
+  if (length(smps)) {
+    store_write(dir, "validation_samples", vid, "all", do.call(rbind, smps))
+  }
   cat(sprintf(
     "\nvalidation %s: %d passed, %d failed (%d stable, %d gradient references)\n",
-    vid, sum(rec$pass), sum(!rec$pass), sum(rec$reference == "stable"), sum(rec$reference == "gradient")
+    vid,
+    sum(rec$pass),
+    sum(!rec$pass),
+    sum(rec$reference == "stable"),
+    sum(rec$reference == "gradient")
   ))
   invisible(rec)
 }

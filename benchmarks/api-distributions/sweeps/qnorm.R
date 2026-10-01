@@ -67,11 +67,9 @@ sweep_spec(
   ## side. Tested on p, or on log p when log_p = TRUE. See R/api-distributions.R.
   branch_points = function(p, f, dtype) {
     if (isTRUE(f$log_p)) {
-      c(lower_central = -2, upper_central = log1p(-exp(-2)),
-        lower_far = -32, upper_far = log1p(-exp(-32)))
+      c(lower_central = -2, upper_central = log1p(-exp(-2)), lower_far = -32, upper_far = log1p(-exp(-32)))
     } else {
-      c(lower_central = exp(-2), upper_central = 1 - exp(-2),
-        lower_far = exp(-32), upper_far = 1 - exp(-32))
+      c(lower_central = exp(-2), upper_central = 1 - exp(-2), lower_far = exp(-32), upper_far = 1 - exp(-32))
     }
   },
   value = function(x, dtype, p, f) {

@@ -155,7 +155,9 @@ sweep_spec(
       other <- if (lower) v else u
       half <- mp_num(small) <= 0.5
       r <- log1p(-other)
-      if (any(half)) r[half] <- log(small[half])
+      if (any(half)) {
+        r[half] <- log(small[half])
+      }
       out[i] <- r
     }
     out

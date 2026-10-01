@@ -92,8 +92,7 @@ sweep_spec <- function(...) {
     if (is.null(s[[nm]])) s[nm] <- SPEC_FIELDS_OPTIONAL[nm]
   }
   if (!is.null(s$ref_stable) && (!is.numeric(s$ref_stable_bound_ulp64) || is.null(s$ref_stable_note))) {
-    stop("spec '", s$name, "' declares ref_stable without ref_stable_bound_ulp64 and ref_stable_note",
-      call. = FALSE)
+    stop("spec '", s$name, "' declares ref_stable without ref_stable_bound_ulp64 and ref_stable_note", call. = FALSE)
   }
   if (!is.null(s$ref_grad_mpfr) && !is.numeric(s$ref_grad_bound_ulp64)) {
     stop("spec '", s$name, "' declares ref_grad_mpfr without ref_grad_bound_ulp64", call. = FALSE)

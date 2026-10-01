@@ -173,5 +173,5 @@ collect_provenance <- function(depth, device = NULL) {
 }
 
 provenance_row <- function(pv) {
-  as.data.frame(lapply(pv, function(v) if (is.null(v)) NA else v))
+  as.data.frame(lapply(pv, function(v) v %||% NA))
 }

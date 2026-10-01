@@ -142,8 +142,12 @@ parse_args <- function(argv) {
         o$topk <- as.integer(val())
         i <- i + 1L
       },
-      `dry-run` = o$dry_run <- TRUE,
-      quiet = o$quiet <- TRUE,
+      `dry-run` = {
+        o$dry_run <- TRUE
+      },
+      quiet = {
+        o$quiet <- TRUE
+      },
       stop("unknown option: ", a, call. = FALSE)
     )
     i <- i + 1L
@@ -184,8 +188,10 @@ cell_functions <- function(spec, row) {
     fn <- if (row$backend == "jax") spec$jax_value else spec$value
     ## A stable reference, where the spec declares one for these flags: it
     ## sees exactly the parameters base R sees, and never replaces it.
-    stable <- if (!is.null(spec$ref_stable) &&
-      (is.null(spec$ref_stable_covers) || isTRUE(spec$ref_stable_covers(flags)))) {
+    stable <- if (
+      !is.null(spec$ref_stable) &&
+        (is.null(spec$ref_stable_covers) || isTRUE(spec$ref_stable_covers(flags)))
+    ) {
       list(
         fun = function(x) list(value = spec$ref_stable(x, rparams, flags)),
         outputs = "value",
@@ -412,8 +418,16 @@ run_cell <- function(spec, row, opt, pv, dir) {
         worst_rel_err_excl = r$summary$worst_rel_err_excl,
         worst_out_normal_excl = r$summary$worst_out_normal_excl,
         ## what a validation must match before any candidate is excluded
-        ref_stable_id = if (!is.null(cf$stable) && o %in% cf$stable$outputs) as.character(cf$stable$id) else NA_character_,
-        ref_stable_bound_ulp64 = if (!is.null(cf$stable) && o %in% cf$stable$outputs) cf$stable$bound_ulp64 else NA_real_,
+        ref_stable_id = if (!is.null(cf$stable) && o %in% cf$stable$outputs) {
+          as.character(cf$stable$id)
+        } else {
+          NA_character_
+        },
+        ref_stable_bound_ulp64 = if (!is.null(cf$stable) && o %in% cf$stable$outputs) {
+          cf$stable$bound_ulp64
+        } else {
+          NA_real_
+        },
         ref_stable_note = if (!is.null(cf$stable) && o %in% cf$stable$outputs) cf$stable$note else NA_character_,
         ## the exact parameters the reference received, as hex doubles, so a
         ## later validation (or anyone) can reproduce them without re-running
@@ -427,7 +441,11 @@ run_cell <- function(spec, row, opt, pv, dir) {
           NA_character_
         },
         ref_grad_id = if (row$kind == "grad") as.character(cf$ref_id) else NA_character_,
-        ref_grad_unsupported = if (row$kind == "grad") attr(cf$ref_id, "unsupported") %||% NA_character_ else NA_character_,
+        ref_grad_unsupported = if (row$kind == "grad") {
+          attr(cf$ref_id, "unsupported") %||% NA_character_
+        } else {
+          NA_character_
+        },
         n_inf_runs = r$summary$n_inf_runs,
         ## regions whose category is "failure" -- the name predates categories
         n_runs_unclassified = rs$n_runs_unclassified,
@@ -579,7 +597,13 @@ cmd_status <- function(opt) {
         n,
         nrow(g),
         paste0(
-          if (n == nrow(g)) "(complete)" else if (n == 0L) "(not run)" else "(partial)",
+          if (n == nrow(g)) {
+            "(complete)"
+          } else if (n == 0L) {
+            "(not run)"
+          } else {
+            "(partial)"
+          },
           if (ne) sprintf(", %d errored", ne) else ""
         )
       ))
@@ -608,11 +632,18 @@ cmd_status <- function(opt) {
     cat("  none\n")
   }
   for (i in seq_len(min(nrow(err), 20L))) {
-    cat(sprintf("  %s\n    %s %s, run %s\n    %s\n",
-      err$cell_id[i], err$platform_key[i], err$depth[i], err$run_id[i],
-      strsplit(err$error[i], "\n", fixed = TRUE)[[1L]][1L]))
+    cat(sprintf(
+      "  %s\n    %s %s, run %s\n    %s\n",
+      err$cell_id[i],
+      err$platform_key[i],
+      err$depth[i],
+      err$run_id[i],
+      strsplit(err$error[i], "\n", fixed = TRUE)[[1L]][1L]
+    ))
   }
-  if (nrow(err) > 20L) cat(sprintf("  ... and %d more.\n", nrow(err) - 20L))
+  if (nrow(err) > 20L) {
+    cat(sprintf("  ... and %d more.\n", nrow(err) - 20L))
+  }
 
   ## ---- references ----------------------------------------------------------
   res <- cur$results
@@ -622,7 +653,9 @@ cmd_status <- function(opt) {
   cat("not validated is still used, and its figures are only as good as it is.\n\n")
   tally <- function(v) {
     v <- v[!is.na(v)]
-    if (!length(v)) return("none")
+    if (!length(v)) {
+      return("none")
+    }
     t <- table(factor(v, levels = c("validated", "failed", "not validated", "no identity")))
     paste(sprintf("%d %s", t[t > 0], names(t)[t > 0]), collapse = ", ")
   }
@@ -638,7 +671,9 @@ cmd_status <- function(opt) {
       if (bad$output[i] != "value") paste0(" d/d", bad$output[i]) else ""
     ))
   }
-  if (nrow(bad) > 20L) cat(sprintf("    ... and %d more.\n", nrow(bad) - 20L))
+  if (nrow(bad) > 20L) {
+    cat(sprintf("    ... and %d more.\n", nrow(bad) - 20L))
+  }
   cat("\n")
   invisible(att)
 }
@@ -672,21 +707,35 @@ cmd_selftest <- function(opt) {
   negzero <- function(x) x == 0 & 1 / x < 0
   cat("\nscoring:\n")
   sp <- c(
-    check("f32: overflow threshold rounds to +-Inf, the tie included",
-      identical(as_f32(c(1e40, -1e40, fmax + 2^103, fmax + 2^103 * 0.99)), c(Inf, -Inf, Inf, fmax))),
-    check("f32: below half the smallest subnormal rounds to 0, sign kept, the tie included",
-      all(as_f32(c(1e-46, smin / 2)) == 0) && negzero(as_f32(-1e-46)) && as_f32(smin * 0.51) == smin),
+    check(
+      "f32: overflow threshold rounds to +-Inf, the tie included",
+      identical(as_f32(c(1e40, -1e40, fmax + 2^103, fmax + 2^103 * 0.99)), c(Inf, -Inf, Inf, fmax))
+    ),
+    check(
+      "f32: below half the smallest subnormal rounds to 0, sign kept, the tie included",
+      all(as_f32(c(1e-46, smin / 2)) == 0) && negzero(as_f32(-1e-46)) && as_f32(smin * 0.51) == smin
+    ),
     check("f32 overflow that is correctly rounded is a match, its error still infinite", {
-      x <- sc(Inf, 1e40, "f32"); x$rounded && !x$bad && is.infinite(x$rel) }),
+      x <- sc(Inf, 1e40, "f32")
+      x$rounded && !x$bad && is.infinite(x$rel)
+    }),
     check("f32 underflow that is correctly rounded is a match, its error still 1", {
-      x <- sc(0, 1e-46, "f32"); x$rounded && !x$bad && x$rel == 1 }),
+      x <- sc(0, 1e-46, "f32")
+      x$rounded && !x$bad && x$rel == 1
+    }),
     check("f32 overflow where the value fits is a failure", {
-      x <- sc(Inf, 1e30, "f32"); !x$rounded && x$bad }),
+      x <- sc(Inf, 1e30, "f32")
+      !x$rounded && x$bad
+    }),
     check("f64 flushing a subnormal is not correct rounding: a finite error of 1", {
-      x <- sc(0, 1e-310, "f64"); !x$rounded && !x$bad && x$rel == 1 }),
+      x <- sc(0, 1e-310, "f64")
+      !x$rounded && !x$bad && x$rel == 1
+    }),
     check("f64 -Inf against a finite reference is a failure", sc(-Inf, 2.5, "f64")$bad),
     check("f64 difference overflow is measured, not infinite", {
-      x <- sc(-1e308, 1e308, "f64"); !x$bad && x$rel == 2 }),
+      x <- sc(-1e308, 1e308, "f64")
+      !x$bad && x$rel == 2
+    }),
     check("f64 relative error overflowing a tiny reference is a failure", sc(1e-10, 5e-324, "f64")$bad),
     check("an ordinary error is unchanged", sc(1.0000001, 1, "f64")$rel == 1.0000001 - 1),
     check("nothing is left with a non-finite score and no route", {
@@ -702,7 +751,9 @@ cmd_selftest <- function(opt) {
   facts <- function(x, fx, gx, domain, zero_value, zero_fails, dtype = "f64") {
     z <- c(0, NEG_ZERO)
     ctx <- list(
-      dtype = dtype, domain = domain, boundaries = domain[is.finite(domain)],
+      dtype = dtype,
+      domain = domain,
+      boundaries = domain[is.finite(domain)],
       zero_is_boundary = any(domain[is.finite(domain)] == 0),
       zero = list(v = list(value = zero_value, reference = z, validated = !zero_fails))
     )
@@ -713,34 +764,63 @@ cmd_selftest <- function(opt) {
   whole <- c(-Inf, Inf)
   unit <- c(0, 1)
   cat("\ncauses:\n")
-  ca0 <- check("negative zero survives inside the compiled harness (NEG_ZERO)",
-    1 / sweep_context(function(x) list(v = x), function(x) list(v = x), "f64", "v")$zero$v$value[2] == -Inf)
+  ca0 <- check(
+    "negative zero survives inside the compiled harness (NEG_ZERO)",
+    1 / sweep_context(function(x) list(v = x), function(x) list(v = x), "f64", "v")$zero$v$value[2] == -Inf
+  )
   ca <- c(
-    check("the seven value kinds, judged at the result's precision", identical(
-      value_kind(c(NaN, Inf, -Inf, 0, NEG_ZERO, 1e-40, 1, 1e-40), "f32")[1:7],
-      1:7) && value_kind(1e-40, "f64") == 7L),
-    check("-0 and +0 are not the same value; two NaNs are",
-      !same_value(0, NEG_ZERO) && same_value(NEG_ZERO, NEG_ZERO) && same_value(NaN, NaN)),
-    check("a NaN input is a nan_input failure, never excused",
-      facts(NaN, 0, NaN, whole, c(1, 1), c(FALSE, FALSE)) == "nan_input"),
-    check("a subnormal that behaves exactly as +0, where +0 is right, is input flushing",
-      facts(sub, 5, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "input_flushing"),
-    check("the same subnormal, where +0 itself is wrong, inherits the error at zero",
-      facts(sub, 5, Inf, whole, c(5, 5), c(TRUE, TRUE)) == "flush_inherits_zero_error"),
-    check("... and is boundary behaviour when zero is a domain endpoint",
-      facts(sub, 5, Inf, unit, c(5, 5), c(TRUE, TRUE)) == "domain_boundary"),
-    check("a subnormal that does not behave as its signed zero is not excused as flushing",
-      facts(sub, 6, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "unidentified"),
-    check("-0 is not +0 for the flush test: a negative subnormal must match f(-0)",
-      facts(-sub, 5, Inf, whole, c(5, 7), c(FALSE, FALSE)) == "unidentified"),
-    check("zero is a failure in its own right, not a subnormal",
-      facts(0, 5, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "zero_input"),
-    check("an infinite input inside the domain is a failure",
-      facts(Inf, 5, NaN, whole, c(5, 5), c(FALSE, FALSE)) == "inf_input"),
-    check("outside the valid input domain is recorded as such",
-      facts(c(2, -3, Inf), c(1, 1, 1), c(NaN, NaN, NaN), unit, c(5, 5), c(FALSE, FALSE)) %in% "outside_domain" |> all()),
-    check("a domain endpoint is boundary behaviour",
-      facts(1, 5, Inf, unit, c(5, 5), c(FALSE, FALSE)) == "domain_boundary")
+    check(
+      "the seven value kinds, judged at the result's precision",
+      identical(
+        value_kind(c(NaN, Inf, -Inf, 0, NEG_ZERO, 1e-40, 1, 1e-40), "f32")[1:7],
+        1:7
+      ) &&
+        value_kind(1e-40, "f64") == 7L
+    ),
+    check(
+      "-0 and +0 are not the same value; two NaNs are",
+      !same_value(0, NEG_ZERO) && same_value(NEG_ZERO, NEG_ZERO) && same_value(NaN, NaN)
+    ),
+    check(
+      "a NaN input is a nan_input failure, never excused",
+      facts(NaN, 0, NaN, whole, c(1, 1), c(FALSE, FALSE)) == "nan_input"
+    ),
+    check(
+      "a subnormal that behaves exactly as +0, where +0 is right, is input flushing",
+      facts(sub, 5, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "input_flushing"
+    ),
+    check(
+      "the same subnormal, where +0 itself is wrong, inherits the error at zero",
+      facts(sub, 5, Inf, whole, c(5, 5), c(TRUE, TRUE)) == "flush_inherits_zero_error"
+    ),
+    check(
+      "... and is boundary behaviour when zero is a domain endpoint",
+      facts(sub, 5, Inf, unit, c(5, 5), c(TRUE, TRUE)) == "domain_boundary"
+    ),
+    check(
+      "a subnormal that does not behave as its signed zero is not excused as flushing",
+      facts(sub, 6, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "unidentified"
+    ),
+    check(
+      "-0 is not +0 for the flush test: a negative subnormal must match f(-0)",
+      facts(-sub, 5, Inf, whole, c(5, 7), c(FALSE, FALSE)) == "unidentified"
+    ),
+    check(
+      "zero is a failure in its own right, not a subnormal",
+      facts(0, 5, Inf, whole, c(5, 5), c(FALSE, FALSE)) == "zero_input"
+    ),
+    check(
+      "an infinite input inside the domain is a failure",
+      facts(Inf, 5, NaN, whole, c(5, 5), c(FALSE, FALSE)) == "inf_input"
+    ),
+    check(
+      "outside the valid input domain is recorded as such",
+      facts(c(2, -3, Inf), c(1, 1, 1), c(NaN, NaN, NaN), unit, c(5, 5), c(FALSE, FALSE)) %in% "outside_domain" |> all()
+    ),
+    check(
+      "a domain endpoint is boundary behaviour",
+      facts(1, 5, Inf, unit, c(5, 5), c(FALSE, FALSE)) == "domain_boundary"
+    )
   )
 
   ## A zero result is validated only when it is identical or correctly rounded:
@@ -758,14 +838,19 @@ cmd_selftest <- function(opt) {
   zfo <- sample_facts(zx, c(1, 1), c(0, 1.5), score_pair(c(1, 1), c(0, 1.5), "f64"), zok, "v")
   zv <- c(
     check("a zero result with a finite 100% error is not validated", !any(zc$zero$v$validated)),
-    check("a zero result one ulp off is not validated either",
-      !any(zctx(c(1 + 2^-52, 1 + 2^-52), c(1, 1))$zero$v$validated)),
-    check("a subnormal flushed onto that zero inherits its error: a failure, not the backend",
-      CAUSES[zfa$cause[1]] == "flush_inherits_zero_error" && CAUSE_CATEGORY[["flush_inherits_zero_error"]] == "failure"),
-    check("flushing onto an unvalidated zero is counted apart from flushing onto a validated one",
-      !any(zfa$flushed) && all(zfa$flushed_zero_error) && all(zfo$flushed) && !any(zfo$flushed_zero_error)),
-    check("the same flush onto a validated zero is input flushing",
-      CAUSES[zfo$cause[1]] == "input_flushing")
+    check(
+      "a zero result one ulp off is not validated either",
+      !any(zctx(c(1 + 2^-52, 1 + 2^-52), c(1, 1))$zero$v$validated)
+    ),
+    check(
+      "a subnormal flushed onto that zero inherits its error: a failure, not the backend",
+      CAUSES[zfa$cause[1]] == "flush_inherits_zero_error" && CAUSE_CATEGORY[["flush_inherits_zero_error"]] == "failure"
+    ),
+    check(
+      "flushing onto an unvalidated zero is counted apart from flushing onto a validated one",
+      !any(zfa$flushed) && all(zfa$flushed_zero_error) && all(zfo$flushed) && !any(zfo$flushed_zero_error)
+    ),
+    check("the same flush onto a validated zero is input flushing", CAUSES[zfo$cause[1]] == "input_flushing")
   )
 
   cat("\nexact points and conventions:\n")
@@ -773,56 +858,95 @@ cmd_selftest <- function(opt) {
   lab <- function(l) ep$x[grepl(paste0("(^|\\+)", l, "($|\\+)"), ep$label)]
   rg <- data.frame(
     run_id = c("A", "A", "B"),
-    cell_id = "s/anvl/f64/grad/p/f", output = "x", cause = "outside_domain",
-    category = "failure", sign = 1, binade_from = c(1030, 1040, 1030), binade_to = c(1031, 1040, 1031))
+    cell_id = "s/anvl/f64/grad/p/f",
+    output = "x",
+    cause = "outside_domain",
+    category = "failure",
+    sign = 1,
+    binade_from = c(1030, 1040, 1030),
+    binade_to = c(1031, 1040, 1031)
+  )
   kd <- data.frame(
     run_id = "A",
-    cell_id = "s/anvl/f64/value/p/f", output = "value", sign = 1, binade = c(1030, 1031, 1040, 1040),
-    in_domain = FALSE, value_kind = c("nan", "nan", "nan", "normal"),
-    reference_kind = c("nan", "nan", "nan", "nan"), n = c(10, 10, 5, 1))
+    cell_id = "s/anvl/f64/value/p/f",
+    output = "value",
+    sign = 1,
+    binade = c(1030, 1031, 1040, 1040),
+    in_domain = FALSE,
+    value_kind = c("nan", "nan", "nan", "normal"),
+    reference_kind = c("nan", "nan", "nan", "nan"),
+    n = c(10, 10, 5, 1)
+  )
   rr <- resolve_domain_conventions(rg, kd)
   pt <- data.frame(
     run_id = c("A", "A", "B", "A"),
     cell_id = c("s/anvl/f64/grad/p/f", "s/anvl/f64/value/p/f", "s/anvl/f64/grad/p/f", "s/anvl/f64/grad/p/f"),
-    output = c("x", "value", "x", "x"), label = c("+inf", "+inf", "+inf", "+one"),
+    output = c("x", "value", "x", "x"),
+    label = c("+inf", "+inf", "+inf", "+one"),
     bits = c("0x7FF0000000000000", "0x7FF0000000000000", "0x7FF0000000000000", "0x7FF0000000000000"),
-    failure = c(TRUE, FALSE, TRUE, TRUE), cause = c("outside_domain", NA, "outside_domain", "outside_domain"),
+    failure = c(TRUE, FALSE, TRUE, TRUE),
+    cause = c("outside_domain", NA, "outside_domain", "outside_domain"),
     category = c("failure", NA, "failure", "failure"),
-    value_kind = c("normal", "nan", "normal", "normal"), reference_kind = c("nan", "nan", "nan", "nan"))
+    value_kind = c("normal", "nan", "normal", "normal"),
+    reference_kind = c("nan", "nan", "nan", "nan")
+  )
   pr <- resolve_point_conventions(pt)
   ec <- c(
-    check("exact points include +-0, +-Inf and NaN, each once",
-      sum(ep$x == 0, na.rm = TRUE) == 2 && sum(is.infinite(ep$x)) == 2 && sum(is.nan(ep$x)) == 1 &&
-        !anyDuplicated(ep$bits)),
-    check("a domain edge comes with both representable neighbours",
-      all(c(1 - 2^-24, 1, 1 + 2^-23) %in% ep$x)),
-    check("an f32 cell's support edge is the edge after conversion to f32",
-      as_f32(-pi) %in% ep$x && !(-pi %in% ep$x)),
-    check("a gradient outside the domain is a convention only where both values are NaN",
-      rr$category[1] == "undefined_domain"),
-    check("... and stays a failure where the value cell found a finite value",
-      rr$category[2] == "failure"),
-    check("evidence from another run never settles a convention, and says why",
-      rr$category[3] == "failure" && grepl("no value cell", rr$evidence[3])),
-    check("a gradient point is a convention only against the same run's value point, by bits",
+    check(
+      "exact points include +-0, +-Inf and NaN, each once",
+      sum(ep$x == 0, na.rm = TRUE) == 2 &&
+        sum(is.infinite(ep$x)) == 2 &&
+        sum(is.nan(ep$x)) == 1 &&
+        !anyDuplicated(ep$bits)
+    ),
+    check("a domain edge comes with both representable neighbours", all(c(1 - 2^-24, 1, 1 + 2^-23) %in% ep$x)),
+    check("an f32 cell's support edge is the edge after conversion to f32", as_f32(-pi) %in% ep$x && !(-pi %in% ep$x)),
+    check(
+      "a gradient outside the domain is a convention only where both values are NaN",
+      rr$category[1] == "undefined_domain"
+    ),
+    check("... and stays a failure where the value cell found a finite value", rr$category[2] == "failure"),
+    check(
+      "evidence from another run never settles a convention, and says why",
+      rr$category[3] == "failure" && grepl("no value cell", rr$evidence[3])
+    ),
+    check(
+      "a gradient point is a convention only against the same run's value point, by bits",
       identical(pr$category, c("undefined_domain", NA, "failure", "undefined_domain")) &&
-        grepl("no value cell", pr$evidence[3])),
-    check("the universal points 1/2 and 1 come with both neighbours",
-      all(c(0.5 - 2^-25, 0.5, 0.5 + 2^-24, 1 - 2^-24, 1 + 2^-23) %in% exact_points("f32")$x)),
+        grepl("no value cell", pr$evidence[3])
+    ),
+    check(
+      "the universal points 1/2 and 1 come with both neighbours",
+      all(c(0.5 - 2^-25, 0.5, 0.5 + 2^-24, 1 - 2^-24, 1 + 2^-23) %in% exact_points("f32")$x)
+    ),
     check("nv_punif declares its log/log1p switch at the midpoint, with neighbours", {
       sp_all <- load_specs()
-      if (is.null(sp_all$nv_punif)) TRUE else {
+      if (is.null(sp_all$nv_punif)) {
+        TRUE
+      } else {
         bp <- sp_all$nv_punif$branch_points(list(min = -1, max = 3), list(log_p = TRUE), "f64")
         e <- exact_points("f64", branch = bp)
-        bp == 1 && sum(grepl("branch_", e$label)) == 3 &&
+        bp == 1 &&
+          sum(grepl("branch_", e$label)) == 3 &&
           is.null(sp_all$nv_punif$branch_points(list(min = -1, max = 3), list(log_p = FALSE), "f64"))
       }
     }),
     check("the reference sees f32-rounded parameters in an f32 cell", {
       sp_all <- load_specs()
-      if (is.null(sp_all$nv_dunif)) TRUE else {
-        cf <- cell_functions(sp_all$nv_dunif, list(spec = "nv_dunif", backend = "anvl", dtype = "f32",
-          kind = "value", param_set = names(sp_all$nv_dunif$params)[1], flags = "log=FALSE"))
+      if (is.null(sp_all$nv_dunif)) {
+        TRUE
+      } else {
+        cf <- cell_functions(
+          sp_all$nv_dunif,
+          list(
+            spec = "nv_dunif",
+            backend = "anvl",
+            dtype = "f32",
+            kind = "value",
+            param_set = names(sp_all$nv_dunif$params)[1],
+            flags = "log=FALSE"
+          )
+        )
         identical(unname(unlist(cf$ref_params)), as_f32(unname(unlist(cf$params))))
       }
     })
@@ -839,12 +963,16 @@ cmd_selftest <- function(opt) {
   p <- "selftest/anvl/%s/%s/%s/broken=%s"
   cat("\nwhat the sweep stored:\n")
   sw <- c(
-    check("every cell stored its exact points, +-0 among them",
-      nrow(pts) > 0 && all(tapply(pts$x %in% 0, paste(pts$cell_id, pts$output), sum) == 2)),
-    check("the clean selftest cells pass every exact point",
-      !any(pts$failure[grepl("broken=FALSE", pts$cell_id) & !grepl("/(pinhole|weakref)/", pts$cell_id)])),
+    check(
+      "every cell stored its exact points, +-0 among them",
+      nrow(pts) > 0 && all(tapply(pts$x %in% 0, paste(pts$cell_id, pts$output), sum) == 2)
+    ),
+    check(
+      "the clean selftest cells pass every exact point",
+      !any(pts$failure[grepl("broken=FALSE", pts$cell_id) & !grepl("/(pinhole|weakref)/", pts$cell_id)])
+    ),
     check("the f32 break at +Inf is recorded as an infinite-input failure, returning 0 against Inf", {
-      r <- rng[rng$cell_id == sprintf("selftest/anvl/f32/value/clean/broken=TRUE"), , drop = FALSE]
+      r <- rng[rng$cell_id == "selftest/anvl/f32/value/clean/broken=TRUE", , drop = FALSE]
       nrow(r) == 1 && r$cause == "inf_input" && r$category == "failure" && grepl("+0 vs +inf", r$pairs, fixed = TRUE)
     }),
     check("what each side returned is tallied for every cell", nrow(knd) > 0),
@@ -852,7 +980,9 @@ cmd_selftest <- function(opt) {
       b <- bnd[grepl("/f32/value/clean/broken=FALSE", bnd$cell_id), , drop = FALSE]
       z <- b[b$zero, , drop = FALSE]
       s0 <- b[!b$zero & b$binade == 0, , drop = FALSE]
-      nrow(z) == 2 && all(z$x_from == 0 & z$x_to == 0) && all(z$n_identical == 1) &&
+      nrow(z) == 2 &&
+        all(z$x_from == 0 & z$x_to == 0) &&
+        all(z$n_identical == 1) &&
         all(abs(s0$x_from) > 0 & abs(s0$x_to) > 0) &&
         sum(b$n_identical + b$n_differ + b$n_nonfinite) == get(sprintf(p, "f32", "value", "clean", "FALSE"))$n_samples
     }),
@@ -869,18 +999,32 @@ cmd_selftest <- function(opt) {
       tk$add(list(idx = 0:10, x = x), sc, fx, gx, 1)
       bd$add(0:10, sc, 1, x, fx, gx)
       tag <- function(d) cbind(data.frame(run_id = "r", cell_id = "c", output = "v"), d)
-      ct <- category_table(tag(binade_profile(bd, "f32")), tag(tk$get()),
-        data.frame(cell_id = "c", domain_lo = -Inf, domain_hi = Inf))
+      ct <- category_table(
+        tag(binade_profile(bd, "f32")),
+        tag(tk$get()),
+        data.frame(cell_id = "c", domain_lo = -Inf, domain_hi = Inf)
+      )
       z <- ct[ct$input_class == "zero", ]
-      abs(z$worst_rel_err - 0.1) < 1e-6 && z$worst_x == 0 &&
-        ct$worst_rel_err[ct$input_class == "subnormal"] == 1
+      abs(z$worst_rel_err - 0.1) < 1e-6 && z$worst_x == 0 && ct$worst_rel_err[ct$input_class == "subnormal"] == 1
     }),
     check("... and a class of their own in the categories", {
       b <- bnd[grepl("/f32/value/clean/broken=FALSE", bnd$cell_id), , drop = FALSE]
-      ct <- category_table(b, data.frame(run_id = character(0), cell_id = character(0),
-        output = character(0), sign = numeric(0), binade = numeric(0), x = numeric(0),
-        rel_err = numeric(0), bits = character(0), value = numeric(0), reference = numeric(0)),
-        data.frame(cell_id = b$cell_id[1], domain_lo = -Inf, domain_hi = Inf))
+      ct <- category_table(
+        b,
+        data.frame(
+          run_id = character(0),
+          cell_id = character(0),
+          output = character(0),
+          sign = numeric(0),
+          binade = numeric(0),
+          x = numeric(0),
+          rel_err = numeric(0),
+          bits = character(0),
+          value = numeric(0),
+          reference = numeric(0)
+        ),
+        data.frame(cell_id = b$cell_id[1], domain_lo = -Inf, domain_hi = Inf)
+      )
       identical(ct$n[ct$input_class == "zero"], 2) && "subnormal" %in% ct$input_class
     })
   )
@@ -892,24 +1036,46 @@ cmd_selftest <- function(opt) {
   one <- function(id, out = "value") lr[lr$cell_id == id & lr$output == out, , drop = FALSE]
   ph <- one(sprintf(p, "f64", "value", "pinhole", "FALSE"))
   row <- function(...) {
-    base <- list(n_samples = 100, n_exact = 100, n_zero_sign = 0, worst_rel_err = 0,
-      n_runs_unclassified = 0, n_regions_boundary = 0, n_regions_backend = 0, n_regions_domain = 0,
-      n_failing_domain = 0, n_points = 5, n_points_identical = 5, n_points_failure = 0,
-      n_points_boundary = 0, n_points_backend = 0, n_points_domain = 0, worst_point_rel_err = 0)
+    base <- list(
+      n_samples = 100,
+      n_exact = 100,
+      n_zero_sign = 0,
+      worst_rel_err = 0,
+      n_runs_unclassified = 0,
+      n_regions_boundary = 0,
+      n_regions_backend = 0,
+      n_regions_domain = 0,
+      n_failing_domain = 0,
+      n_points = 5,
+      n_points_identical = 5,
+      n_points_failure = 0,
+      n_points_boundary = 0,
+      n_points_backend = 0,
+      n_points_domain = 0,
+      worst_point_rel_err = 0
+    )
     as.data.frame(utils::modifyList(base, list(...)))
   }
   stt <- c(
-    check("a failure only at x = 1 is caught by the exact points while the f64 sweep sees nothing",
-      nrow(ph) == 1 && ph$n_inf == 0 && ph$worst_rel_err == 0 && ph$n_points_failure == 1 &&
-        ph$first_point_failure %in% c("+one", "+one+domain_hi")),
+    check(
+      "a failure only at x = 1 is caught by the exact points while the f64 sweep sees nothing",
+      nrow(ph) == 1 &&
+        ph$n_inf == 0 &&
+        ph$worst_rel_err == 0 &&
+        ph$n_points_failure == 1 &&
+        ph$first_point_failure %in% c("+one", "+one+domain_hi")
+    ),
     check("... and makes the result failing, and not bit-identical", {
-      s <- result_state(ph); s$failing && !s$identical
+      s <- result_state(ph)
+      s$failing && !s$identical
     }),
     check("a boundary region alone makes a result not bit-identical, and is shown", {
-      s <- result_state(row(n_exact = 99, n_regions_boundary = 1)); s$boundary && !s$identical && !s$failing
+      s <- result_state(row(n_exact = 99, n_regions_boundary = 1))
+      s$boundary && !s$identical && !s$failing
     }),
     check("a failing exact point alone does too", {
-      s <- result_state(row(n_points_identical = 4, n_points_boundary = 1)); s$boundary && !s$identical
+      s <- result_state(row(n_points_identical = 4, n_points_boundary = 1))
+      s$boundary && !s$identical
     }),
     check("a signed-zero difference is not bit-identical", !result_state(row(n_zero_sign = 1))$identical),
     check("undefined-domain conventions alone are set aside, and said so", {
@@ -923,39 +1089,52 @@ cmd_selftest <- function(opt) {
   df <- function(f, g, st, dtype = "f64", b = 0) dispute_facts(f, g, st, dtype, b)
   u32 <- 2^-23
   dp <- c(
-    check("the ulp spacing just below a power of two is that binade's, not the next",
-      all(ulp_size(2^(-3:3) * (1 - 2^-53), "f64") == 2^((-3:3) - 53)) && is.nan(ulp_size(Inf, "f64"))),
+    check(
+      "the ulp spacing just below a power of two is that binade's, not the next",
+      all(ulp_size(2^(-3:3) * (1 - 2^-53), "f64") == 2^((-3:3) - 53)) && is.nan(ulp_size(Inf, "f64"))
+    ),
     check("the f32 spacing derived from the f64 one matches ulp_size(, \"f32\") everywhere", {
       v <- c(10^seq(-50, 38, length.out = 4001), 2^(-150:127), 2^(-150:127) * (1 - 2^-53), 1e-46)
       identical(pmax(ulp_size(v, "f64") * 2^29, SUBNORMAL_MIN[["f32"]]), ulp_size(v, "f32"))
     }),
-    check("base R 0 where log1p(-1e-100) = -1e-100 and anvl has it: a candidate",
-      df(-1e-100, 0, -1e-100)$candidate),
+    check("base R 0 where log1p(-1e-100) = -1e-100 and anvl has it: a candidate", df(-1e-100, 0, -1e-100)$candidate),
     check("anvl and base R equally wrong is never a candidate, and is recorded as shared", {
-      d <- df(0, 0, -1e-100); !d$candidate && d$shared
+      d <- df(0, 0, -1e-100)
+      !d$candidate && d$shared
     }),
-    check("anvl beyond its tolerance is not a candidate, however wrong base R is",
-      !df(as_f32(1 + 3 * u32), 5, 1, "f32")$candidate),
-    check("anvl within tolerance but further than base R is not a candidate",
-      !df(as_f32(1 + u32), 1 + 1e-12, 1, "f32")$candidate && df(as_f32(1 + u32), 1 + 1e-6, 1, "f32")$candidate),
-    check("NaN on any side is never a dispute",
-      !any(df(c(NaN, 1, 1), c(1, NaN, 2), c(1, 1, NaN))$candidate)),
+    check(
+      "anvl beyond its tolerance is not a candidate, however wrong base R is",
+      !df(as_f32(1 + 3 * u32), 5, 1, "f32")$candidate
+    ),
+    check(
+      "anvl within tolerance but further than base R is not a candidate",
+      !df(as_f32(1 + u32), 1 + 1e-12, 1, "f32")$candidate && df(as_f32(1 + u32), 1 + 1e-6, 1, "f32")$candidate
+    ),
+    check("NaN on any side is never a dispute", !any(df(c(NaN, 1, 1), c(1, NaN, 2), c(1, 1, NaN))$candidate)),
     check("a stable +-Inf or +-0 needs anvl to match exactly, down to the sign", {
-      d <- df(c(Inf, NEG_ZERO, 0), c(1e300, 1, 1), c(Inf, 0, 0)); identical(d$candidate, c(TRUE, FALSE, TRUE))
+      d <- df(c(Inf, NEG_ZERO, 0), c(1e300, 1, 1), c(Inf, 0, 0))
+      identical(d$candidate, c(TRUE, FALSE, TRUE))
     }),
     check("an f32 cell's stable value beyond the f32 range needs anvl to be its rounding, +-Inf", {
       d <- df(c(Inf, as_f32(3.4e38), Inf), c(0, 0, 1e39), c(1e39, 1e39, 1e39), "f32")
       identical(d$candidate, c(TRUE, FALSE, FALSE))
     }),
     check("the stable reference's identity changes with its bound", {
-      f <- function(x, p, fl) abs(x); stable_identity(f, 1) != stable_identity(f, 2)
+      f <- function(x, p, fl) abs(x)
+      stable_identity(f, 1) != stable_identity(f, 2)
     }),
     {
       wr <- one(sprintf(p, "f64", "value", "weakref", "FALSE"))
-      check("a sweep records a wrong reference as candidates, with the filtered figures beside",
-        nrow(wr) == 1 && wr$n_ref_candidate > 0 && wr$n_ref_candidate_nonfinite > 0 &&
-          wr$worst_rel_err > 0 && wr$worst_rel_err_excl == 0 && !is.na(wr$ref_stable_id) &&
-          wr$n_ref_shared == 0)
+      check(
+        "a sweep records a wrong reference as candidates, with the filtered figures beside",
+        nrow(wr) == 1 &&
+          wr$n_ref_candidate > 0 &&
+          wr$n_ref_candidate_nonfinite > 0 &&
+          wr$worst_rel_err > 0 &&
+          wr$worst_rel_err_excl == 0 &&
+          !is.na(wr$ref_stable_id) &&
+          wr$n_ref_shared == 0
+      )
     },
     check("... and flags its no-finite-error region as a candidate, leaving its category alone", {
       r <- rng[grepl("/f64/value/weakref/broken=FALSE", rng$cell_id), , drop = FALSE]
@@ -964,7 +1143,10 @@ cmd_selftest <- function(opt) {
     check("... and keeps the evidence for each candidate: all three values and both distances", {
       d <- store_read(store_dir(opt$store), "disputes")
       d <- d[d$run_id == run_id & grepl("/f64/value/weakref/broken=FALSE", d$cell_id), , drop = FALSE]
-      nrow(d) > 0 && all(d$kind == "candidate") && all(d$d_anvl <= d$t_anvl) && all(d$d_base > d$t_base) &&
+      nrow(d) > 0 &&
+        all(d$kind == "candidate") &&
+        all(d$d_anvl <= d$t_anvl) &&
+        all(d$d_base > d$t_base) &&
         all(d$beyond_tolerance > 1)
     }),
     check("a candidate is an exclusion only under a validated stable reference; failed or absent keeps it", {
@@ -973,24 +1155,47 @@ cmd_selftest <- function(opt) {
         res1 <- data.frame(run_id = r$run_id[1], cell_id = r$cell_id[1], output = "value", ref_stable_status = status)
         apply_reference_validation(r, res1)$category
       }
-      all(at("not validated") == "failure") && all(at("failed") == "failure") &&
-        all(at(NA_character_) == "failure") && all(at("validated") == "reference_limitation")
+      all(at("not validated") == "failure") &&
+        all(at("failed") == "failure") &&
+        all(at(NA_character_) == "failure") &&
+        all(at("validated") == "reference_limitation")
     }),
     check("validation status fails closed: any failure of the latest truth wins, a changed truth supersedes", {
-      v <- function(truth, pass, t) data.frame(reference = "stable", ref_id = "A", output = "value", truth_id = truth,
-        pass = pass, identity_matches = TRUE, validated_at = sprintf("2026-09-26T10:%02d:00+0000", t),
-        method_id = validation_method_id())
+      v <- function(truth, pass, t) {
+        data.frame(
+          reference = "stable",
+          ref_id = "A",
+          output = "value",
+          truth_id = truth,
+          pass = pass,
+          identity_matches = TRUE,
+          validated_at = sprintf("2026-09-26T10:%02d:00+0000", t),
+          method_id = validation_method_id()
+        )
+      }
       st <- function(...) reference_status("A", NA, "stable", rbind(...))
-      st(v("t1", TRUE, 1)) == "validated" && st(v("t1", TRUE, 1), v("t1", FALSE, 2)) == "failed" &&
-        st(v("t1", FALSE, 1), v("t1", TRUE, 2)) == "failed" && st(v("t1", FALSE, 1), v("t2", TRUE, 2)) == "validated" &&
+      st(v("t1", TRUE, 1)) == "validated" &&
+        st(v("t1", TRUE, 1), v("t1", FALSE, 2)) == "failed" &&
+        st(v("t1", FALSE, 1), v("t1", TRUE, 2)) == "failed" &&
+        st(v("t1", FALSE, 1), v("t2", TRUE, 2)) == "validated" &&
         reference_status(NA, "uses get()", "stable", v("t1", TRUE, 1)) == "no identity" &&
         reference_status("B", NA, "stable", v("t1", TRUE, 1)) == "not validated" &&
-        st(data.frame(reference = "stable", ref_id = "A", output = "value", truth_id = "t1", pass = TRUE,
-          identity_matches = FALSE, validated_at = "2026-09-26T10:00:00+0000",
-          method_id = validation_method_id())) == "not validated"
+        st(data.frame(
+          reference = "stable",
+          ref_id = "A",
+          output = "value",
+          truth_id = "t1",
+          pass = TRUE,
+          identity_matches = FALSE,
+          validated_at = "2026-09-26T10:00:00+0000",
+          method_id = validation_method_id()
+        )) ==
+          "not validated"
     }),
-    check("cells without a stable reference have no candidate figures, not copies",
-      all(is.na(lr$worst_rel_err_excl[lr$kind == "grad"])))
+    check(
+      "cells without a stable reference have no candidate figures, not copies",
+      all(is.na(lr$worst_rel_err_excl[lr$kind == "grad"]))
+    )
   )
 
   ## What a stage-two validation relies on, and two measurement reductions.
@@ -1026,7 +1231,10 @@ cmd_selftest <- function(opt) {
   ug <- c(1, 1.99)
   uf <- ug + c(3, 4) * 2^-52
   us <- score_pair(uf, ug, "f64")
-  us <- c(us, sample_facts(ug, uf, ug, us, context_from(list(v = c(1, 1)), list(v = c(1, 1)), "f64", "v", c(-Inf, Inf)), "v"))
+  us <- c(
+    us,
+    sample_facts(ug, uf, ug, us, context_from(list(v = c(1, 1)), list(v = c(1, 1)), "f64", "v", c(-Inf, Inf)), "v")
+  )
   ub <- reducer_bands("f64")
   ut <- reducer_topk("f64", 1L)
   uidx <- floor(ug * 0) + 1023 * 2^20 + c(0, 1)
@@ -1035,8 +1243,10 @@ cmd_selftest <- function(opt) {
   idr <- c(
     check("the stable identity sees a change in a helper the classifier calls (same_value)", id_sv != id0),
     check("... and a constant captured in the stable reference's closure", id_c0 != id0),
-    check("... and a one-ulp change in a reference parameter",
-      stable_identity(cl, 8, list(min = -pi, max = 2 * pi * (1 + 2^-52)), fl, "f64") != id0),
+    check(
+      "... and a one-ulp change in a reference parameter",
+      stable_identity(cl, 8, list(min = -pi, max = 2 * pi * (1 + 2^-52)), fl, "f64") != id0
+    ),
     check("... and a captured primitive changed from abs to sqrt", {
       f1 <- local({
         helper <- abs
@@ -1055,15 +1265,23 @@ cmd_selftest <- function(opt) {
     check("a reference whose dependencies cannot be read has no identity, so can never validate", {
       a <- stable_identity(function(x, p, f) do.call("abs", list(x)), 8, pp, fl, "f64")
       b <- stable_identity(function(x, p, f) get("abs")(x), 8, pp, fl, "f64")
-      is.na(a) && is.na(b) && grepl("do.call", attr(a, "unsupported")) &&
+      is.na(a) &&
+        is.na(b) &&
+        grepl("do.call", attr(a, "unsupported")) &&
         reference_status(a, attr(a, "unsupported"), "stable", NULL) == "no identity"
     }),
-    check("stored parameters round-trip exactly from hex",
-      identical(parse_hex_params(hex_params(list(min = -pi, max = 2 * pi))), list(min = -pi, max = 2 * pi))),
-    check("each result carries its reference's exact parameters, as hex doubles",
-      identical(hx, "err=0x1p+0") && nrow(wr) == 1 && identical(wr$ref_params, "err=-0x1p+1")),
-    check("histogram counters count past 2^31 instead of turning NA",
-      identical(hh$get()$count[16], 2^31) && identical(hh$get()$count_ref_candidate[16], 2^31)),
+    check(
+      "stored parameters round-trip exactly from hex",
+      identical(parse_hex_params(hex_params(list(min = -pi, max = 2 * pi))), list(min = -pi, max = 2 * pi))
+    ),
+    check(
+      "each result carries its reference's exact parameters, as hex doubles",
+      identical(hx, "err=0x1p+0") && nrow(wr) == 1 && identical(wr$ref_params, "err=-0x1p+1")
+    ),
+    check(
+      "histogram counters count past 2^31 instead of turning NA",
+      identical(hh$get()$count[16], 2^31) && identical(hh$get()$count_ref_candidate[16], 2^31)
+    ),
     check("the worst ulp error has its own maximum, not the relative-error shortlist's", {
       identical(max(binade_profile(ub, "f64")$worst_ulp_err), 4) && identical(ut$get()$ulp_err, 3)
     })
@@ -1080,17 +1298,31 @@ cmd_selftest <- function(opt) {
     sp_all$nv_pnorm$ref_grad(z, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = TRUE))$q
   }
   gr <- c(
-    check("dnorm d/dsd at x = 38.6 is the subnormal 1.709467e-321, not 0",
-      near(sp_all$nv_dnorm$ref_grad(38.6, list(mean = 0, sd = 1), list(log = FALSE))$sd, 346 * 2^-1074)),
-    check("dnorm d/dsd at x = 1e155 is 0, not NaN",
-      identical(sp_all$nv_dnorm$ref_grad(1e155, list(mean = 0, sd = 1), list(log = FALSE))$sd, 0)),
-    check("log dnorm d/dsd at x = 1e155, mean = -pi, sd = 2 pi is 4.031442e307, not Inf",
-      near(sp_all$nv_dnorm$ref_grad(1e155, list(mean = -pi, sd = 2 * pi), list(log = TRUE))$sd, 0x1.cb46efba3778dp+1021)),
-    check("pnorm d/dsd at q = 38.6 is the subnormal -4.446591e-323, not 0",
-      near(sp_all$nv_pnorm$ref_grad(38.6, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))$sd, -9 * 2^-1074)),
+    check(
+      "dnorm d/dsd at x = 38.6 is the subnormal 1.709467e-321, not 0",
+      near(sp_all$nv_dnorm$ref_grad(38.6, list(mean = 0, sd = 1), list(log = FALSE))$sd, 346 * 2^-1074)
+    ),
+    check(
+      "dnorm d/dsd at x = 1e155 is 0, not NaN",
+      identical(sp_all$nv_dnorm$ref_grad(1e155, list(mean = 0, sd = 1), list(log = FALSE))$sd, 0)
+    ),
+    check(
+      "log dnorm d/dsd at x = 1e155, mean = -pi, sd = 2 pi is 4.031442e307, not Inf",
+      near(sp_all$nv_dnorm$ref_grad(1e155, list(mean = -pi, sd = 2 * pi), list(log = TRUE))$sd, 0x1.cb46efba3778dp+1021)
+    ),
+    check(
+      "pnorm d/dsd at q = 38.6 is the subnormal -4.446591e-323, not 0",
+      near(
+        sp_all$nv_pnorm$ref_grad(38.6, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))$sd,
+        -9 * 2^-1074
+      )
+    ),
     check("qnorm d/dp at p = 1e-100 uses the true quantile, not base R's rounded one", {
-      near(sp_all$nv_qnorm$ref_grad(1e-100, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))$p,
-        4.6903754148377423e98, 2)
+      near(
+        sp_all$nv_qnorm$ref_grad(1e-100, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))$p,
+        4.6903754148377423e98,
+        2
+      )
     }),
     check("qnorm at a subnormal p: d/dp at 4.04e-310 and z at the smallest subnormal, from the true quantile", {
       qs <- function(pr) sp_all$nv_qnorm$ref_grad(pr, list(mean = 0, sd = 1), list(lower_tail = TRUE, log_p = FALSE))
@@ -1100,16 +1332,23 @@ cmd_selftest <- function(opt) {
     check("no normal-family gradient reference is NaN at x = +-Inf", {
       pp2 <- list(list(mean = 0, sd = 1), list(mean = -pi, sd = 2 * pi))
       fl2 <- list(
-        list(sp_all$nv_dnorm, list(log = FALSE)), list(sp_all$nv_dnorm, list(log = TRUE)),
+        list(sp_all$nv_dnorm, list(log = FALSE)),
+        list(sp_all$nv_dnorm, list(log = TRUE)),
         list(sp_all$nv_pnorm, list(lower_tail = TRUE, log_p = FALSE)),
         list(sp_all$nv_pnorm, list(lower_tail = TRUE, log_p = TRUE)),
         list(sp_all$nv_pnorm, list(lower_tail = FALSE, log_p = FALSE)),
         list(sp_all$nv_pnorm, list(lower_tail = FALSE, log_p = TRUE))
       )
-      !any(vapply(fl2, function(sf) any(vapply(pp2, function(q) anyNA(unlist(sf[[1]]$ref_grad(c(-Inf, Inf), q, sf[[2]]))), TRUE)), TRUE))
+      !any(vapply(
+        fl2,
+        function(sf) any(vapply(pp2, function(q) anyNA(unlist(sf[[1]]$ref_grad(c(-Inf, Inf), q, sf[[2]]))), TRUE)),
+        TRUE
+      ))
     }),
-    check("the inverse Mills ratio is within a few ulp at z = -50 and -100",
-      near(inv_mills_ref(-50), 0x1.9028ed635bd0cp+5) && near(inv_mills_ref(-100), 0x1.900a3cea7d44dp+6))
+    check(
+      "the inverse Mills ratio is within a few ulp at z = -50 and -100",
+      near(inv_mills_ref(-50), 0x1.9028ed635bd0cp+5) && near(inv_mills_ref(-100), 0x1.900a3cea7d44dp+6)
+    )
   )
 
   ## The validator itself: what it identifies, and how it compares.
@@ -1123,32 +1362,67 @@ cmd_selftest <- function(opt) {
   qe$mp_qnorm <- mq
   gq <- build_grid(list(nv_qnorm = sq), "anvl")
   rowq <- gq[gq$kind == "grad", , drop = FALSE][1L, , drop = FALSE]
-  rq <- data.frame(run_id = "A", cell_id = rowq$cell_id, output = "p", ref_params = hex_params(list(mean = 0, sd = 1)),
-    ref_grad_id = "X", ref_grad_unsupported = NA_character_)
+  rq <- data.frame(
+    run_id = "A",
+    cell_id = rowq$cell_id,
+    output = "p",
+    ref_params = hex_params(list(mean = 0, sd = 1)),
+    ref_grad_id = "X",
+    ref_grad_unsupported = NA_character_
+  )
   ru_a <- reference_under_test(sq, rowq, rq)
   rq$run_id <- "B"
   ru_b <- reference_under_test(sq, rowq, rq)
-  bad_truth <- list(reference = "gradient", stored = "X", now = "X", unsupported = NA, fun = identity,
-    truth = function(x, p, f) base::get("abs")(x), output = "p", bound = 4, params = list(), flags = list())
-  vb <- validate_reference(bad_truth, rq, data.frame(x = numeric(0), source = character(0)), integer(0), VALIDATION_DEFAULTS)
+  bad_truth <- list(
+    reference = "gradient",
+    stored = "X",
+    now = "X",
+    unsupported = NA,
+    fun = identity,
+    truth = function(x, p, f) base::get("abs")(x),
+    output = "p",
+    bound = 4,
+    params = list(),
+    flags = list()
+  )
+  vb <- validate_reference(
+    bad_truth,
+    rq,
+    data.frame(x = numeric(0), source = character(0)),
+    integer(0),
+    VALIDATION_DEFAULTS
+  )
   vl <- c(
     check("a truth's identity is its own function and dependencies, not the run that asked", {
       identical(truth_identity(ru_a$truth, ru_a$output), truth_identity(ru_b$truth, ru_b$output)) &&
         identical(truth_identity(ru_a$truth, ru_a$output), truth_now)
     }),
     check("... and changes when a helper it calls changes (mp_qnorm)", truth_changed != truth_now),
-    check("a truth that cannot be identified fails validation before anything is evaluated",
-      !vb$record$pass && is.na(vb$record$truth_id) && grepl("truth has no identity", vb$record$reason)),
+    check(
+      "a truth that cannot be identified fails validation before anything is evaluated",
+      !vb$record$pass && is.na(vb$record$truth_id) && grepl("truth has no identity", vb$record$reason)
+    ),
     check("namespace qualification does not get past the dynamic-call refusal", {
       i1 <- stable_identity(function(x, p, f) base::get("abs")(x), 8, pp, fl, "f64")
       i2 <- stable_identity(function(x, p, f) sapply(x, "abs"), 8, pp, fl, "f64")
       is.na(i1) && is.na(i2)
     }),
     check("validations by another validation method count for nothing", {
-      v <- data.frame(reference = "stable", ref_id = "A", output = "value", truth_id = "t1", pass = TRUE,
-        identity_matches = TRUE, validated_at = "2026-09-26T10:00:00+0000", method_id = "old")
+      v <- data.frame(
+        reference = "stable",
+        ref_id = "A",
+        output = "value",
+        truth_id = "t1",
+        pass = TRUE,
+        identity_matches = TRUE,
+        validated_at = "2026-09-26T10:00:00+0000",
+        method_id = "old"
+      )
       reference_status("A", NA, "stable", v) == "not validated" &&
-        { v$method_id <- validation_method_id(); reference_status("A", NA, "stable", v) == "validated" }
+        {
+          v$method_id <- validation_method_id()
+          reference_status("A", NA, "stable", v) == "validated"
+        }
     }),
     check("validation shards partition the reference units: disjoint, complete, and the same everywhere", {
       k <- c(sprintf("gradient id%02d x", 1:10), "gradient id03 x", "stable s1 value")
@@ -1162,8 +1436,11 @@ cmd_selftest <- function(opt) {
       identical(replay_counterexamples(pv)$x, c(1L, 2L, 4L)) && identical(replay_counterexamples(old)$x, 1:4)
     }),
     check("qunif d/dp at log p = -745.2 and -732.1773 (wide, lower) keeps w exp(p) from underflowing early", {
-      r <- sp_all$nv_qunif$ref_grad(c(-745.2, -732.17730000000006), list(min = -pi, max = 2 * pi),
-        list(lower_tail = TRUE, log_p = TRUE))$p
+      r <- sp_all$nv_qunif$ref_grad(
+        c(-745.2, -732.17730000000006),
+        list(min = -pi, max = 2 * pi),
+        list(lower_tail = TRUE, log_p = TRUE)
+      )$p
       identical(r, c(4, 1994919) * 2^-1074)
     }),
     if (requireNamespace("Rmpfr", quietly = TRUE)) {
@@ -1174,8 +1451,11 @@ cmd_selftest <- function(opt) {
         ## units against an exact zero
         c1 <- compare_to_truth(c(0, 0, 0, 4) * 2^-1074, tr, 4)
         c2 <- compare_to_truth(0, tr[3], 0.3)
-        identical(c1$pass, c(FALSE, FALSE, TRUE, FALSE)) && abs(c1$err[1] - 4.4) < 1e-9 &&
-          abs(c1$err[2] - 4.49) < 1e-9 && abs(c1$err[3] - 0.4) < 1e-9 && !c2$pass
+        identical(c1$pass, c(FALSE, FALSE, TRUE, FALSE)) &&
+          abs(c1$err[1] - 4.4) < 1e-9 &&
+          abs(c1$err[2] - 4.49) < 1e-9 &&
+          abs(c1$err[3] - 0.4) < 1e-9 &&
+          !c2$pass
       })
     } else {
       cat("  skip the comparator checks: Rmpfr is not installed\n")
@@ -1196,22 +1476,35 @@ cmd_selftest <- function(opt) {
     started_at = c("t1", "t2", "t1", "t2", "t1", "t2"),
     error = c(NA, "boom A", "boom B", NA, NA, "boom C")
   )
-  cg <- data.frame(cell_id = c("A", "B", "C", "D"), spec = "s", backend = "anvl", dtype = "f64",
-    kind = "value", param_set = "q", flags = "-", n_outputs = 1L)
+  cg <- data.frame(
+    cell_id = c("A", "B", "C", "D"),
+    spec = "s",
+    backend = "anvl",
+    dtype = "f64",
+    kind = "value",
+    param_set = "q",
+    flags = "-",
+    n_outputs = 1L
+  )
   cr <- current_results(at)
   cv <- coverage_table(cg, cr$attempts)
   cs <- c(
-    check("a result superseded by a newer error is not current; the error is",
-      !"A" %in% cr$results$cell_id && "A" %in% cr$errors$cell_id),
-    check("an error superseded by a newer success is gone",
-      "B" %in% cr$results$cell_id && !"B" %in% cr$errors$cell_id),
-    check("an error at one depth leaves a success at another current, and both are reported",
-      identical(cr$results$depth[cr$results$cell_id == "C"], "full") && "C" %in% cr$errors$cell_id),
-    check("coverage lists every declared cell: swept depth, newest error, or neither",
+    check(
+      "a result superseded by a newer error is not current; the error is",
+      !"A" %in% cr$results$cell_id && "A" %in% cr$errors$cell_id
+    ),
+    check("an error superseded by a newer success is gone", "B" %in% cr$results$cell_id && !"B" %in% cr$errors$cell_id),
+    check(
+      "an error at one depth leaves a success at another current, and both are reported",
+      identical(cr$results$depth[cr$results$cell_id == "C"], "full") && "C" %in% cr$errors$cell_id
+    ),
+    check(
+      "coverage lists every declared cell: swept depth, newest error, or neither",
       identical(cv$cell_id, c("A", "B", "C", "D")) &&
         identical(cv$depth, c(NA, "smoke", "full", NA)) &&
         identical(cv$error, c("boom A", NA, "boom C", NA)) &&
-        identical(cv$error_run_id, c("r2", NA, "r2", NA))),
+        identical(cv$error_run_id, c("r2", NA, "r2", NA))
+    ),
     check("an output filter selects among results, after the newest attempt is chosen", {
       cf <- current_results(at, "output=value")
       !"A" %in% cf$results$cell_id && "A" %in% cf$errors$cell_id
@@ -1232,7 +1525,8 @@ cmd_selftest <- function(opt) {
   dpast <- data.frame(
     cell_id = c("E", "F", "F", "G", "I"),
     output = c("value", "value", "-", "-", "value"),
-    platform_key = "p", depth = "smoke",
+    platform_key = "p",
+    depth = "smoke",
     run_id = c("r1", "r1", "r2", "r2", "r2"),
     started_at = c("t1", "t1", "t2", "t2", "t2"),
     error = c(NA, NA, "boom F", "boom G1", NA)
@@ -1240,28 +1534,52 @@ cmd_selftest <- function(opt) {
   dcur <- data.frame(
     cell_id = c("E", "F", "G", "H", "I"),
     output = c("-", "value", "-", "-", "value"),
-    platform_key = "p", depth = "smoke", run_id = "r3", started_at = "t3",
+    platform_key = "p",
+    depth = "smoke",
+    run_id = "r3",
+    started_at = "t3",
     error = c("boom E", NA, "boom G2", "boom H", NA)
   )
   dpr <- diff_pairs(dcur, dpast)
   chg <- stats::setNames(dpr$errors$change, dpr$errors$cell_id)
   dfs <- c(
-    check("a cell that errors where its previous attempt succeeded is newly erroring",
-      identical(unname(chg["E"]), "newly") && identical(dpr$errors$before_run[dpr$errors$cell_id == "E"], "r1")),
+    check(
+      "a cell that errors where its previous attempt succeeded is newly erroring",
+      identical(unname(chg["E"]), "newly") && identical(dpr$errors$before_run[dpr$errors$cell_id == "E"], "r1")
+    ),
     check("a result whose previous attempt errored has recovered, not been compared across the error", {
       f <- dpr$now$cell_id == "F"
-      isTRUE(dpr$recovered[f]) && !dpr$fresh[f] && is.na(dpr$before$run_id[f]) &&
+      isTRUE(dpr$recovered[f]) &&
+        !dpr$fresh[f] &&
+        is.na(dpr$before$run_id[f]) &&
         identical(dpr$recovered_from$error[f], "boom F")
     }),
-    check("an error after an error is still erroring, with the earlier message kept",
-      identical(unname(chg["G"]), "still") && identical(dpr$errors$before_error[dpr$errors$cell_id == "G"], "boom G1")),
+    check(
+      "an error after an error is still erroring, with the earlier message kept",
+      identical(unname(chg["G"]), "still") && identical(dpr$errors$before_error[dpr$errors$cell_id == "G"], "boom G1")
+    ),
     check("an error on a first attempt is new", identical(unname(chg["H"]), "new")),
-    check("a result after a result is paired with it",
-      identical(dpr$before$run_id[dpr$now$cell_id == "I"], "r2") && !dpr$fresh[dpr$now$cell_id == "I"])
+    check(
+      "a result after a result is paired with it",
+      identical(dpr$before$run_id[dpr$now$cell_id == "I"], "r2") && !dpr$fresh[dpr$now$cell_id == "I"]
+    )
   )
 
   cat("\nassertions:\n")
-  ok <- c(sp, ca0, ca, zv, ec, sw, stt, dp, idr, gr, vl, cs, dfs,
+  ok <- c(
+    sp,
+    ca0,
+    ca,
+    zv,
+    ec,
+    sw,
+    stt,
+    dp,
+    idr,
+    gr,
+    vl,
+    cs,
+    dfs,
     check(
       "clean f64 value reproduces the reference exactly",
       get(sprintf(p, "f64", "value", "clean", "FALSE"))$worst_rel_err == 0
@@ -1450,7 +1768,13 @@ cmd_diff <- function(opt) {
 
   label <- function(d, k) {
     row <- g[g$cell_id == d$cell_id[k], , drop = FALSE][1L, , drop = FALSE]
-    what <- if (d$kind[k] == "value") "value" else if (d$output[k] == "-") "grad" else sprintf("d/d%s", d$output[k])
+    what <- if (d$kind[k] == "value") {
+      "value"
+    } else if (d$output[k] == "-") {
+      "grad"
+    } else {
+      sprintf("d/d%s", d$output[k])
+    }
     sprintf("\n  %-9s %-7s %-4s %s\n", d$spec[k], what, d$dtype[k], short_cell(row))
   }
   first_line <- function(e) vapply(strsplit(e, "\n", fixed = TRUE), `[`, "", 1L)
@@ -1605,19 +1929,38 @@ cmd_diff <- function(opt) {
   }
 
   rule("SUMMARY")
-  cat(sprintf("  %4d regressed%s\n", n_worse, if (length(newly)) sprintf(" (%d newly erroring)", length(newly)) else ""))
-  cat(sprintf("  %4d improved%s\n", n_better, if (length(rec)) sprintf(" (%d no longer erroring)", length(rec)) else ""))
-  if (any(moved)) cat(sprintf("  %4d changed in conventions or signed zeros only\n", sum(moved)))
+  cat(sprintf(
+    "  %4d regressed%s\n",
+    n_worse,
+    if (length(newly)) sprintf(" (%d newly erroring)", length(newly)) else ""
+  ))
+  cat(sprintf(
+    "  %4d improved%s\n",
+    n_better,
+    if (length(rec)) sprintf(" (%d no longer erroring)", length(rec)) else ""
+  ))
+  if (any(moved)) {
+    cat(sprintf("  %4d changed in conventions or signed zeros only\n", sum(moved)))
+  }
   cat(sprintf("  %4d unchanged (bit-identical to the earlier run)\n", sum(same)))
-  if (length(still)) cat(sprintf("  %4d still erroring\n", length(still)))
+  if (length(still)) {
+    cat(sprintf("  %4d still erroring\n", length(still)))
+  }
   cat(sprintf("  %4d had no earlier result to compare against\n", sum(fresh) + length(new_err)))
   cat("\n")
   invisible(rbind(
     data.frame(
       cell_id = now$cell_id,
       output = now$output,
-      change = ifelse(fresh, "new", ifelse(recovered, "improved", ifelse(same, "same",
-        ifelse(worse, "regressed", ifelse(better, "improved", "changed")))))
+      change = ifelse(
+        fresh,
+        "new",
+        ifelse(
+          recovered,
+          "improved",
+          ifelse(same, "same", ifelse(worse, "regressed", ifelse(better, "improved", "changed")))
+        )
+      )
     ),
     data.frame(
       cell_id = err$cell_id,

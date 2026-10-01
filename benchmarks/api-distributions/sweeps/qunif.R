@@ -33,7 +33,9 @@ qunif_grad_ref <- function(pr, p, f) {
     ## below that the product is under half the smallest subnormal anyway.
     e_w <- w * exp(pr)
     lo <- which(!is.nan(pr) & pr < -700)
-    if (length(lo)) e_w[lo] <- ifelse(pr[lo] >= -1400, (w * exp(-700)) * exp(pr[lo] + 700), 0)
+    if (length(lo)) {
+      e_w[lo] <- ifelse(pr[lo] >= -1400, (w * exp(-700)) * exp(pr[lo] + 700), 0)
+    }
     dp <- if (lower) e_w else -e_w
   } else {
     in_range <- !is.nan(pr) & pr >= 0 & pr <= 1

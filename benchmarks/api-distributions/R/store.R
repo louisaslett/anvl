@@ -24,8 +24,17 @@
 ## Every table a run writes. merge() copies exactly these, so a table missing
 ## here would be silently left behind when shards come back from a cluster.
 TABLES <- c(
-  "runs", "results", "detail", "ranges", "hist", "bands", "kinds", "points", "disputes",
-  "validations", "validation_samples"
+  "runs",
+  "results",
+  "detail",
+  "ranges",
+  "hist",
+  "bands",
+  "kinds",
+  "points",
+  "disputes",
+  "validations",
+  "validation_samples"
 )
 
 ## Bumped whenever the shape of an exported artifact changes in a way a reader
@@ -66,7 +75,7 @@ SCHEMA_VERSION <- 8L
 ## tracks: scripts, config and docs. NV_SWEEP_STORE overrides it, which is also
 ## how a compute node is pointed at cluster scratch.
 store_dir <- function(override = NULL) {
-  d <- if (is.null(override)) Sys.getenv("NV_SWEEP_STORE", "") else override
+  d <- override %||% Sys.getenv("NV_SWEEP_STORE", "")
   if (!nzchar(d)) {
     d <- file.path(tools::R_user_dir("anvl-sweeps", "cache"), "store")
   }
@@ -108,7 +117,9 @@ store_read <- function(dir, table, runs = NULL) {
   files <- list.files(d, pattern = "\\.parquet$", recursive = TRUE, full.names = TRUE)
   ## Only these runs' partitions (run=<id>/), for a large table read for a few
   ## results rather than for the whole history.
-  if (!is.null(runs)) files <- files[basename(dirname(files)) %in% paste0("run=", runs)]
+  if (!is.null(runs)) {
+    files <- files[basename(dirname(files)) %in% paste0("run=", runs)]
+  }
   if (!length(files)) {
     return(NULL)
   }
@@ -278,18 +289,26 @@ resummarise <- function(res, ranges, points) {
   if (!is.null(ranges) && !is.null(ranges$cause)) {
     by <- split(ranges, paste(ranges$run_id, ranges$cell_id, ranges$output, sep = "\r"))
     empty <- ranges[0L, , drop = FALSE]
-    for (f in setdiff(names(region_summary(empty)), names(res))) res[[f]] <- NA
+    for (f in setdiff(names(region_summary(empty)), names(res))) {
+      res[[f]] <- NA
+    }
     for (i in which(res$output != "-")) {
       rs <- region_summary(by[[key[i]]] %||% empty)
-      for (f in names(rs)) res[[f]][i] <- rs[[f]]
+      for (f in names(rs)) {
+        res[[f]][i] <- rs[[f]]
+      }
     }
   }
   if (!is.null(points) && nrow(points)) {
     by <- split(points, paste(points$run_id, points$cell_id, points$output, sep = "\r"))
-    for (f in setdiff(names(point_summary(points[0L, , drop = FALSE])), names(res))) res[[f]] <- NA
+    for (f in setdiff(names(point_summary(points[0L, , drop = FALSE])), names(res))) {
+      res[[f]] <- NA
+    }
     for (i in which(key %in% names(by))) {
       ps <- point_summary(by[[key[i]]])
-      for (f in names(ps)) res[[f]][i] <- ps[[f]]
+      for (f in names(ps)) {
+        res[[f]][i] <- ps[[f]]
+      }
     }
   }
   res
@@ -324,7 +343,7 @@ with_legacy_categories <- function(r) {
   if (!any(old)) {
     return(r)
   }
-  cls <- if (is.null(r$class)) rep(NA_character_, nrow(r)) else r$class
+  cls <- r$class %||% rep(NA_character_, nrow(r))
   r$category[old] <- ifelse(cls[old] %in% "unclassified", "failure", "legacy")
   r$cause[old] <- ifelse(is.na(cls[old]), "unrecorded", paste0("old run: ", cls[old]))
   r
@@ -377,13 +396,16 @@ result_state <- function(res) {
     boundary = col("n_regions_boundary") > 0 | col("n_points_boundary") > 0,
     backend = col("n_regions_backend") > 0 | col("n_points_backend") > 0,
     identical = differ == 0 & col("n_zero_sign") == 0 & pts_ok & !is.na(res$n_samples),
-    identical_but_conventions = differ > 0 & differ == col("n_failing_domain") &
+    identical_but_conventions = differ > 0 &
+      differ == col("n_failing_domain") &
       col("n_zero_sign") == 0 &
       col("n_points_identical") + col("n_points_domain") == col("n_points"),
     reference = verified & (col("n_ref_candidate") > 0 | col("n_points_ref_candidate") > 0),
-    identical_but_set_aside = differ > 0 & col("n_zero_sign") == 0 &
+    identical_but_set_aside = differ > 0 &
+      col("n_zero_sign") == 0 &
       differ == col("n_failing_domain") + ifelse(verified, col("n_ref_candidate"), 0) &
-      col("n_points_identical") + col("n_points_domain") + ifelse(verified, col("n_points_ref_candidate"), 0) == col("n_points"),
+      col("n_points_identical") + col("n_points_domain") + ifelse(verified, col("n_points_ref_candidate"), 0) ==
+        col("n_points"),
     ## the same worst error with verified reference limitations left out
     worst_any_set_aside = ifelse(
       verified,
