@@ -30,8 +30,6 @@ nudge <- function(x, lo, hi) {
 sweep_spec(
   name = "selftest",
   family = "_selftest",
-  blurb = "synthetic family exercising the harness contract",
-  primary = "x",
   dtypes = c("f32", "f64"),
   params = list(
     clean = list(err = 0), nudged = list(err = 1), pinhole = list(err = -1), weakref = list(err = -2)

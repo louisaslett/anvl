@@ -1113,10 +1113,11 @@ band_label <- function(n) {
 ## The per-binade profile, unmerged: one row for every binade that was
 ## sampled, carrying its behaviour, its error envelope and its worst error.
 ##
-## Merging happens at *render* time, not here. The terminal wants a dozen rows
-## and a chart wants all 256 (f32) or 2048 (f64) per sign, and deriving the
-## compact view from the full one keeps them consistent; storing only the
-## merged form would make the chart impossible without re-running the sweep.
+## Merging is left to the reader (merge_bands() in query.R). A compact view
+## wants a dozen rows and a chart wants all 256 (f32) or 2048 (f64) per sign,
+## and deriving the compact view from the full one keeps them consistent;
+## storing only the merged form would make the chart impossible without
+## re-running the sweep.
 binade_profile <- function(bands, dtype) {
   span <- bands$span()
   acc <- bands$get()
@@ -1547,8 +1548,6 @@ run_sweep <- function(fun, ref, dtype, depth, outputs, progress = TRUE, topk = 1
         worst_ulp_err = if (nrow(bands)) max(bands$worst_ulp_err) else 0,
         ## The input that produced the worst error, carried on the summary row
         ## so that "how bad is it" and "at what input" can be read together.
-        ## Without it every headline number needs a second lookup to mean
-        ## anything, which is how a status screen stops being read.
         worst_x = if (have) detail$x[1] else NA_real_,
         worst_bits = if (have) detail$bits[1] else NA_character_,
         worst_value = if (have) detail$value[1] else NA_real_,
@@ -1682,7 +1681,7 @@ region_summary <- function(ranges) {
 ## One (cell, output)'s exact points, summarised for its results row. Kept
 ## apart from every sweep count: a point the sweep also visited is not counted
 ## twice, and a point the sweep never visits -- most of them, in f64 -- still
-## reaches the summary and every screen built on it.
+## reaches the summary and everything built on it.
 point_summary <- function(points) {
   n <- nrow(points)
   cat_n <- function(k) sum(points$failure & points$category %in% k)
@@ -1731,7 +1730,7 @@ point_summary <- function(points) {
 ##
 ## `ranges` and `kinds` must be the whole store (or everything for the runs in
 ## question), never a presentation subset: every reader goes through
-## resolved_ranges(), so the terminal and the export see the same evidence.
+## resolved_ranges(), so every reader and the export see the same evidence.
 ##
 ## Each candidate gets an `evidence` note; every other region gets NA.
 resolve_domain_conventions <- function(ranges, kinds) {

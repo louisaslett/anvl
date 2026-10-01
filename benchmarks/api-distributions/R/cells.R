@@ -8,15 +8,14 @@
 ## produces one, a gradient cell produces one per differentiated argument,
 ## because all of them fall out of a single reverse pass.
 ##
-## The cell ID is the join key for everything: the Parquet filename, the
-## expectations lookup, the report cell, and the HPC array index. It is
-## deterministic and identical on every machine, which is what makes shards
-## from different machines merge rather than collide.
+## The cell ID is the join key for everything: the Parquet filename, every
+## table in the store, and HPC sharding. It is deterministic and identical on
+## every machine, which is what makes shards from different machines merge
+## rather than collide.
 ## ---------------------------------------------------------------------------
 
-SPEC_FIELDS_REQUIRED <- c("name", "family", "primary", "value", "ref_value")
+SPEC_FIELDS_REQUIRED <- c("name", "family", "value", "ref_value")
 SPEC_FIELDS_OPTIONAL <- list(
-  blurb = "",
   dtypes = c("f32", "f64"),
   params = list(default = list()),
   flags = list(),

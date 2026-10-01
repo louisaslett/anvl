@@ -49,8 +49,6 @@ grad_dnorm <- anvl::jit(
 sweep_spec(
   name = "nv_dnorm",
   family = "normal",
-  blurb = "normal density against base R dnorm()",
-  primary = "x",
   params = NORM_PARAMS,
   flags = list(log = c(FALSE, TRUE)),
   domain = function(p, f) c(-Inf, Inf),

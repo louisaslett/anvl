@@ -108,8 +108,6 @@ grad_punif <- anvl::jit(
 sweep_spec(
   name = "nv_punif",
   family = "uniform",
-  blurb = "uniform CDF against base R punif()",
-  primary = "q",
   params = UNIF_INTERVALS,
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
 

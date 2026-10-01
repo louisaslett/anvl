@@ -191,3 +191,30 @@ fmt_num <- function(x) {
   }
   if (abs(x) >= 1e-3 && abs(x) < 1e5) format(signif(x, 4), trim = TRUE) else sprintf("%.2e", x)
 }
+
+## A section heading, padded to a fixed width.
+rule <- function(title) {
+  cat("\n", title, " ", strrep("\u2500", max(4L, 68L - nchar(title))), "\n", sep = "")
+}
+
+## A compact one-line identifier for a cell: parameter set plus the flags that
+## are actually on, e.g. "unit/upper,log".
+short_cell <- function(row) {
+  fl <- character(0)
+  if (nzchar(row$flags) && row$flags != "-") {
+    for (kv in strsplit(strsplit(row$flags, ",", fixed = TRUE)[[1L]], "=", fixed = TRUE)) {
+      on <- isTRUE(as.logical(kv[2L]))
+      fl <- c(
+        fl,
+        switch(
+          kv[1L],
+          lower_tail = if (on) "lower" else "upper",
+          log_p = if (on) "log" else NULL,
+          log = if (on) "log" else NULL,
+          if (on) kv[1L] else NULL
+        )
+      )
+    }
+  }
+  paste0(row$param_set, if (length(fl)) paste0("/", paste(fl, collapse = ",")) else "")
+}

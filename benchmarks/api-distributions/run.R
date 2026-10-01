@@ -5,9 +5,11 @@
 ##   Rscript run.R list                       what cells exist
 ##   Rscript run.R run --depth smoke          run them all, coarsely
 ##   Rscript run.R run --filter spec=nv_punif,dtype=f64 --depth full
-##   Rscript run.R status                     what has run, where, and what fails
+##   Rscript run.R status                     coverage and reference statuses
 ##   Rscript run.R selftest                   prove the engine still detects errors
 ##   Rscript run.R validate-refs              check the references against MPFR
+##   Rscript run.R diff                       what changed since the previous run
+##   Rscript run.R export --out <dir>         publish a snapshot for the site
 ##   Rscript run.R merge --from <dir>         fold another machine's store in
 ##
 ## Everything it writes goes to the store (NV_SWEEP_STORE), never into the
@@ -26,7 +28,7 @@ suppressWarnings(suppressMessages({
 }))
 here <- function() HERE
 
-for (f in c("util.R", "engine.R", "cells.R", "render.R", "provenance.R", "store.R", "validate.R")) {
+for (f in c("util.R", "engine.R", "cells.R", "provenance.R", "store.R", "validate.R")) {
   source(file.path(HERE, "R", f))
 }
 
@@ -54,9 +56,6 @@ parse_args <- function(argv) {
     backends_given = FALSE,
     ## worst inputs kept *per binade*, not globally -- see reducer_topk()
     topk = 10L,
-    ## How many full report pages to print before summarising instead. Four is
-    ## about what fits on a screen at a glance.
-    pages = 4L,
     quiet = FALSE,
     ## validate-refs: MPFR precision, random samples per binade, extra samples
     ## per binade of interest, uniform random samples, and one run only
@@ -141,10 +140,6 @@ parse_args <- function(argv) {
       },
       topk = {
         o$topk <- as.integer(val())
-        i <- i + 1L
-      },
-      pages = {
-        o$pages <- as.integer(val())
         i <- i + 1L
       },
       `dry-run` = o$dry_run <- TRUE,
@@ -470,50 +465,9 @@ run_cell <- function(spec, row, opt, pv, dir) {
 ## ---- commands --------------------------------------------------------------
 
 ## Every backend the store holds, unless --backends names some: `run`'s
-## anvl-only default hid every JAX result from every screen, as it once did
-## from `export`.
+## anvl-only default must not hide the JAX results already in the store.
 store_backends <- function(opt, res) {
   if (isTRUE(opt$backends_given) || is.null(res) || !nrow(res)) opt$backends else sort(unique(res$backend))
-}
-
-## The site's headline for each result: the worst relative error for normal
-## inputs with normal outputs -- the `normal` input class (input_class()) and,
-## within it, samples whose reference is a normal float -- with verified base R
-## limitations set aside in `headline_excl`. Computed from the results' own
-## bands, reading only their runs, so the terminal and an export agree.
-with_headlines <- function(dir, res, g, specs) {
-  res$headline <- NA_real_
-  res$headline_excl <- NA_real_
-  if (is.null(res) || !nrow(res)) {
-    return(res)
-  }
-  b <- store_read(dir, "bands", runs = unique(res$run_id))
-  if (is.null(b) || is.null(b$worst_out_normal)) {
-    return(res)
-  }
-  rk <- paste(res$run_id, res$cell_id, res$output, sep = "\r")
-  b <- b[paste(b$run_id, b$cell_id, b$output, sep = "\r") %in% rk, , drop = FALSE]
-  if (!nrow(b)) {
-    return(res)
-  }
-  cells <- unique(b$cell_id)
-  dom <- vapply(cells, function(id) {
-    row <- g[g$cell_id == id, , drop = FALSE]
-    spec <- if (nrow(row)) specs[[row$spec[1L]]] else NULL
-    if (is.null(spec) || is.null(spec$domain)) {
-      return(c(-Inf, Inf))
-    }
-    cf <- cell_functions(spec, row[1L, , drop = FALSE])
-    spec$domain(cf$ref_params, cf$flags)
-  }, numeric(2))
-  m <- match(b$cell_id, cells)
-  nb <- b[input_class(b, dom[1L, m], dom[2L, m]) == "normal", , drop = FALSE]
-  k <- paste(nb$run_id, nb$cell_id, nb$output, sep = "\r")
-  hw <- tapply(nb$worst_out_normal, k, max)
-  he <- if (is.null(nb$worst_out_normal_excl)) hw else tapply(nb$worst_out_normal_excl, k, max)
-  res$headline <- unname(hw[rk])
-  res$headline_excl <- unname(he[rk])
-  res
 }
 
 cmd_list <- function(opt) {
@@ -581,11 +535,8 @@ cmd_run <- function(opt) {
   invisible(pv$run_id)
 }
 
-## The index: what has been swept, and what disagrees with base R most.
-##
-## Measurements only. Nothing here decides whether a result is acceptable --
-## that judgement depends on the function, the precision and what the caller
-## needs, and it belongs to the person reading, not to a file.
+## What the store holds: coverage of the declared grid per platform and
+## depth, and the validation status of every reference the results use.
 cmd_status <- function(opt) {
   dir <- store_dir(opt$store)
   res <- latest_results(dir)
@@ -602,11 +553,10 @@ cmd_status <- function(opt) {
   runs <- store_read(dir, "runs")
 
   ## `all_depths` drives coverage, which is about what has been run. `res` is
-  ## collapsed to the deepest result per cell, because everything else here is
+  ## collapsed to the deepest result per cell, because the references are
   ## about the best evidence available.
   all_depths <- res
   res <- deepest_per_cell(res, names(DEPTHS))
-  res <- with_headlines(dir, res, g, specs)
 
   cat("\nanvl distribution sweeps \u2014 status\n")
   cat("store: ", dir, "\n", sep = "")
@@ -657,177 +607,6 @@ cmd_status <- function(opt) {
     cat(sprintf("  %d cell(s) never swept, e.g. %s\n", length(miss), miss[1L]))
   }
 
-  ## ---- the measurements ----------------------------------------------------
-  ## Every category is shown, and exact points count alongside regions: a
-  ## failure only at p = 1, or only at a point the f64 sweep never lands on,
-  ## must reach this screen. Only undefined-domain conventions are set aside,
-  ## and the closing tally says how many results that applies to.
-  st <- result_state(res)
-  res$worst_any <- st$worst_any
-  where_pt <- function(label, x) sprintf("exact point %s (x = %s)", label, exact_num(x))
-  ## with more than one backend in view, each line says whose result it is
-  multi <- length(unique(res$backend)) > 1L
-  line <- function(r, i, show) {
-    row <- g[g$cell_id == r$cell_id[i], , drop = FALSE][1L, , drop = FALSE]
-    what <- if (r$kind[i] == "value") "value" else paste0("d/d", r$output[i])
-    cat(sprintf(
-      "  %s%-9s %-3s %-7s %-22s %s\n",
-      if (multi) sprintf("%-5s", r$backend[i]) else "",
-      r$spec[i],
-      r$dtype[i],
-      what,
-      short_cell(row),
-      show(r, i)
-    ))
-  }
-  show_failure <- function(r, i) {
-    parts <- character(0)
-    if (isTRUE(r$n_runs_unclassified[i] > 0)) {
-      parts <- c(parts, sprintf(
-        "%d region(s) from %s .. %s",
-        r$n_runs_unclassified[i],
-        fmt_num(min(r$unexplained_from[i], r$unexplained_to[i])),
-        fmt_num(max(r$unexplained_from[i], r$unexplained_to[i]))
-      ))
-    }
-    np <- r$n_points_failure[i] %||% 0
-    if (!is.na(np) && np > 0) {
-      parts <- c(parts, sprintf("%d point(s), first %s", np, where_pt(r$first_point_failure[i], r$first_point_failure_x[i])))
-    }
-    paste(parts, collapse = "; ")
-  }
-  show_counts <- function(regions, pts) {
-    function(r, i) {
-      n1 <- r[[regions]][i] %||% 0
-      n2 <- r[[pts]][i] %||% 0
-      sprintf("%d region(s), %d exact point(s)", n1, if (is.na(n2)) 0L else n2)
-    }
-  }
-  show_error <- function(r, i) {
-    from_pt <- (r$worst_point_rel_err[i] %||% 0) > r$worst_rel_err[i]
-    sprintf(
-      "%-10s %s",
-      fmt_num(result_state(r[i, , drop = FALSE])$worst_any),
-      if (isTRUE(from_pt)) {
-        sprintf("at %s", where_pt(r$worst_point_label[i], r$worst_point_x[i]))
-      } else {
-        sprintf("%s ulp", fmt_num(r$worst_ulp_err[i]))
-      }
-    )
-  }
-  section <- function(r, title, blurb, show, n = 10L) {
-    rule(title)
-    cat(blurb, "\n\n", sep = "")
-    if (!nrow(r)) {
-      cat("  none\n")
-      return(invisible(NULL))
-    }
-    r <- r[order(-r$worst_any), , drop = FALSE]
-    for (i in seq_len(min(nrow(r), n))) {
-      line(r, i, show)
-    }
-    if (nrow(r) > n) cat(sprintf("  ... and %d more.\n", nrow(r) - n))
-  }
-
-  ## Separate kinds of finding. Ranked together, whichever is rarer gets
-  ## buried: 56 failure regions once filled every slot and the largest finite
-  ## errors never appeared at all.
-  section(
-    res[st$failing, , drop = FALSE],
-    sprintf("FAILURES (%d)", sum(st$failing)),
-    paste0(
-      "Inputs where the result differs from base R with no finite error, for no\n",
-      "cause that accounts for it: regions of the sweep, and exact points."
-    ),
-    show_failure
-  )
-  section(
-    res[st$boundary, , drop = FALSE],
-    sprintf("DOMAIN BOUNDARY BEHAVIOUR (%d)", sum(st$boundary)),
-    paste0(
-      "Results at an endpoint of the valid input domain that differ from base R's\n",
-      "convention or limiting value. Visible, and not set aside."
-    ),
-    show_counts("n_regions_boundary", "n_points_boundary")
-  )
-  section(
-    res[st$backend, , drop = FALSE],
-    sprintf("BACKEND LIMITATIONS (%d)", sum(st$backend)),
-    paste0(
-      "Subnormal inputs the backend flushed to a zero whose result is itself\n",
-      "correct. The platform's doing, not the function's; not set aside."
-    ),
-    show_counts("n_regions_backend", "n_points_backend")
-  )
-  section(
-    res[st$reference, , drop = FALSE],
-    sprintf("VERIFIED BASE R LIMITATIONS (%d)", sum(st$reference)),
-    paste0(
-      "Candidate disputes whose stable reference passed validation: base R is off,\n",
-      "anvl is accurate, both against a reference checked at high precision. Set\n",
-      "aside, and shown; the figures against base R are unchanged."
-    ),
-    function(r, i) {
-      sprintf(
-        "%s samples, %d exact point(s); worst rel %s -> %s set aside",
-        human_int(r$n_ref_candidate[i]),
-        as.integer(r$n_points_ref_candidate[i] %||% 0),
-        fmt_num(r$worst_any[i]),
-        fmt_num(result_state(r[i, , drop = FALSE])$worst_any_set_aside)
-      )
-    }
-  )
-  ## Ranked by the site's headline -- normal inputs with normal outputs, set
-  ## aside where verified -- so the two agree on what "largest" means; the
-  ## worst over everything, zero and subnormal outputs included, is beside it.
-  f <- res[!st$failing & st$worst_any > 0, , drop = FALSE]
-  fst <- result_state(f)
-  f$worst_any <- ifelse(is.na(fst$headline), fst$worst_any, fst$headline)
-  section(
-    f,
-    sprintf("LARGEST ERRORS, NORMAL IN AND OUT (%d of %d results differ at all)", sum(st$worst_any > 0), nrow(res)),
-    paste0(
-      "The worst relative error for normal inputs with normal outputs, as the site\n",
-      "reports it (\u2020: verified base R limitations set aside), then the worst over\n",
-      "everything. base R is the reference, not the truth; check which side is right."
-    ),
-    function(r, i) {
-      s1 <- result_state(r[i, , drop = FALSE])
-      sprintf(
-        "rel %-11s any %s",
-        paste0(fmt_num(r$worst_any[i]), if (isTRUE(s1$headline_set_aside)) "\u2020" else ""),
-        show_error(r, i)
-      )
-    }
-  )
-  cat(sprintf(
-    "\n  %d of %d results are bit-identical to base R, down to the sign of zero,\n  at every sampled input and every exact point.\n",
-    sum(st$identical),
-    nrow(res)
-  ))
-  more <- st$identical_but_set_aside & !st$identical_but_conventions
-  if (any(more)) {
-    cat(sprintf(
-      "  %d more differ only by verified base R limitations (and conventions), set aside.\n",
-      sum(more)
-    ))
-  }
-  if (any(st$identical_but_conventions)) {
-    cat(sprintf(
-      "  %d more differ only by undefined-domain conventions, which are set aside.\n",
-      sum(st$identical_but_conventions)
-    ))
-  }
-  nc <- sum((res$n_ref_candidate %||% 0) > 0 & !st$reference, na.rm = TRUE)
-  if (nc) {
-    cat(sprintf(
-      "  %d result(s) have candidate base R disputes whose stable reference is not\n  validated or failed validation; none of those is excluded (see report).\n",
-      nc
-    ))
-  }
-
-  nz <- sum(res$n_zero_sign > 0 | (res$n_points_zero_sign %||% 0) > 0, na.rm = TRUE)
-  if (nz) cat(sprintf("  %d result(s) return a zero of the opposite sign somewhere.\n", nz))
   ## ---- the references themselves ----------------------------------------
   rule("REFERENCES")
   cat("Each reference against 256-bit MPFR (Rscript run.R validate-refs). A failed or\n")
@@ -847,257 +626,9 @@ cmd_status <- function(opt) {
       bad$cell_id[i], if (bad$output[i] != "value") paste0("d/d", bad$output[i]) else ""))
   }
   if (nrow(bad) > 10L) cat(sprintf("    ... and %d more.\n", nrow(bad) - 10L))
-
-  ## ---- what to do next -----------------------------------------------------
-  rule("NEXT")
-  top <- res[order(!st$failing, -res$worst_any), , drop = FALSE][1L, , drop = FALSE]
-  cat("  To see what a sweep actually measured \u2014 sample counts, the error\n")
-  cat("  distribution, where behaviour changes, the worst inputs:\n")
-  cat(sprintf("    Rscript run.R report --filter spec=%s\n", top$spec))
-  cat("    Rscript run.R browse\n")
-  if (!is.null(runs) && nrow(runs) > 1L) {
-    cat("\n  To see what changed since the previous run:\n    Rscript run.R diff\n")
-  }
-  if (all(all_depths$depth == "smoke")) {
-    cat("\n  Everything so far is at 'smoke' depth, the coarsest:\n")
-    cat("    Rscript run.R run --depth quick --jobs 8\n")
-  }
   cat("\n")
   invisible(res)
 }
-
-
-cmd_report <- function(opt) {
-  dir <- store_dir(opt$store)
-  all <- latest_results(dir)
-  if (is.null(all)) {
-    stop("store is empty; run a sweep first", call. = FALSE)
-  }
-  specs <- load_specs(include_selftest = grepl("selftest", opt$filter))
-  g <- apply_filter(build_grid(specs, store_backends(opt, all)), opt$filter, extra = "output")
-  res <- deepest_per_cell(all[all$cell_id %in% g$cell_id, , drop = FALSE], names(DEPTHS))
-  res <- filter_results(res, opt$filter)
-  if (!nrow(res)) {
-    stop("no results for that filter; run a sweep first", call. = FALSE)
-  }
-  res <- with_headlines(dir, res, g, specs)
-
-  detail <- store_read(dir, "detail")
-  ranges <- resolved_ranges(dir)
-  points <- resolved_points(dir)
-  disputes <- store_read(dir, "disputes")
-  validations <- store_read(dir, "validations")
-  hist <- store_read(dir, "hist")
-  bands <- store_read(dir, "bands")
-  key <- function(tbl, r) {
-    if (is.null(tbl)) {
-      return(NULL)
-    }
-    tbl[tbl$run_id == r$run_id & tbl$cell_id == r$cell_id & tbl$output == r$output, , drop = FALSE]
-  }
-
-  res <- res[order(res$cell_id, res$output), , drop = FALSE]
-
-  ## Print a summary rather than every page until the filter has narrowed
-  ## things enough that the pages are readable. The filter itself decides the
-  ## level: whichever axis still has more than one value is the one worth
-  ## summarising by, so narrowing walks down the tree with no separate notion
-  ## of "depth" to keep in sync.
-  axis <- next_axis(res)
-  if (!is.null(axis) && nrow(res) > opt$pages) {
-    cat(sprintf(
-      "\n%d results match%s. Summarising by %s:\n\n",
-      nrow(res),
-      if (nzchar(opt$filter)) sprintf(" '%s'", opt$filter) else "",
-      DRILL_LABEL[[axis]]
-    ))
-    sm <- print_summary(res, axis)
-    cat(sprintf("\nNarrow with --filter %s=<value>, e.g.\n", axis))
-    worst <- sm$key[which.max(pmax(sm$f32_worst, sm$f64_worst, na.rm = TRUE))]
-    nf <- if (nzchar(opt$filter)) paste0(opt$filter, ",") else ""
-    cat(sprintf("  Rscript run.R report --filter '%s%s=%s'\n", nf, axis, worst))
-    cat("  Rscript run.R browse    (to step through interactively)\n")
-    return(invisible(sm))
-  }
-
-  for (i in seq_len(nrow(res))) {
-    r <- res[i, , drop = FALSE]
-    row <- g[g$cell_id == r$cell_id, , drop = FALSE][1L, , drop = FALSE]
-    report_cell(
-      specs[[row$spec]],
-      row,
-      r,
-      key(detail, r),
-      key(ranges, r),
-      key(hist, r),
-      key(bands, r),
-      key(points, r),
-      key(disputes, r),
-      validations
-    )
-  }
-  cat(sprintf("%d cell result(s).\n", nrow(res)))
-  invisible(res)
-}
-
-
-## ---- interactive drill-down ------------------------------------------------
-##
-## A numbered menu rather than arrow keys. R has no usable TUI library, and
-## raw-mode key capture means driving `stty`, which is brittle across terminals
-## and breaks the moment output is piped.
-##
-## Every screen is drawn by print_summary(), the same function `report` uses,
-## so the two can never disagree about what a level looks like.
-cmd_browse <- function(opt) {
-  dir <- store_dir(opt$store)
-  all <- latest_results(dir)
-  if (is.null(all)) {
-    stop("store is empty; run a sweep first", call. = FALSE)
-  }
-  specs <- load_specs()
-  grid <- build_grid(specs, store_backends(opt, all))
-  base <- deepest_per_cell(all[all$cell_id %in% grid$cell_id, , drop = FALSE], names(DEPTHS))
-  base <- with_headlines(dir, base, grid, specs)
-  if (!nrow(base)) {
-    stop("no results yet; run a sweep first", call. = FALSE)
-  }
-
-  con <- file("stdin")
-  open(con)
-  on.exit(close(con))
-
-  detail <- store_read(dir, "detail")
-  ranges <- resolved_ranges(dir)
-  points <- resolved_points(dir)
-  disputes <- store_read(dir, "disputes")
-  validations <- store_read(dir, "validations")
-  hist <- store_read(dir, "hist")
-  bands <- store_read(dir, "bands")
-  keyf <- function(tbl, r) {
-    if (is.null(tbl)) {
-      return(NULL)
-    }
-    tbl[tbl$run_id == r$run_id & tbl$cell_id == r$cell_id & tbl$output == r$output, , drop = FALSE]
-  }
-
-  path <- list()
-  page <- 0L # which page of the worst-inputs list is on screen
-  PAGE <- 20L
-
-  repeat {
-    res <- base
-    for (p in path) {
-      res <- res[res[[p$axis]] == p$value, , drop = FALSE]
-    }
-
-    cat("\n", strrep("─", 72), "\n", sep = "")
-    ## Name every axis that is pinned, by choice or because the whole store has
-    ## only one value for it, so the reader always knows what they are looking
-    ## at. An axis that never varied is left out as noise.
-    pinned <- character(0)
-    for (a in DRILL) {
-      if (length(unique(base[[a]])) < 2L) {
-        next
-      }
-      u <- unique(res[[a]])
-      if (length(u) == 1L) pinned <- c(pinned, u)
-    }
-    crumb <- if (length(pinned)) paste(pinned, collapse = "  ›  ") else "all functions"
-    cat(sprintf("  %s   (%d result%s)\n", crumb, nrow(res), if (nrow(res) == 1L) "" else "s"))
-    cat(strrep("─", 72), "\n", sep = "")
-
-    choices <- character(0)
-    leaf <- NULL
-    if (!nrow(res)) {
-      cat("\n  No results here.\n")
-    } else if (nrow(res) == 1L) {
-      leaf <- res
-      cat("\n")
-      report_cell(
-        specs[[grid$spec[grid$cell_id == leaf$cell_id][1L]]],
-        grid[grid$cell_id == leaf$cell_id, , drop = FALSE][1L, , drop = FALSE],
-        leaf,
-        keyf(detail, leaf),
-        keyf(ranges, leaf),
-        keyf(hist, leaf),
-        keyf(bands, leaf),
-        keyf(points, leaf),
-        keyf(disputes, leaf),
-        validations
-      )
-
-      ## The store keeps the worst 1000 inputs; `d` walks through them.
-      dl <- keyf(detail, leaf)
-      if (!is.null(dl) && nrow(dl) > 0L && page > 0L) {
-        dl <- dl[order(-dl$rel_err), , drop = FALSE]
-        from <- (page - 1L) * PAGE + 1L
-        if (from > nrow(dl)) {
-          page <- 1L
-          from <- 1L
-        }
-        to <- min(from + PAGE - 1L, nrow(dl))
-        cat(sprintf("  WORST INPUTS %d-%d of %d\n", from, to, nrow(dl)))
-        cat(sprintf("  %-6s %-24s %-20s %12s %12s\n", "rank", "x", "bits", "rel err", "ulp"))
-        for (j in from:to) {
-          cat(sprintf(
-            "  %-6d %-24s %-20s %12s %12s\n",
-            j,
-            exact_num(dl$x[j]),
-            dl$bits[j],
-            fmt_num(dl$rel_err[j]),
-            fmt_num(dl$ulp_err[j])
-          ))
-        }
-        cat("\n")
-      }
-    } else {
-      axis <- next_axis(res)
-      cat("\n")
-      sm <- print_summary(res, axis)
-      choices <- sm$key
-      cat("\n")
-      for (i in seq_along(choices)) {
-        cat(sprintf("   %2d) %s\n", i, choices[i]))
-      }
-    }
-
-    opts <- c(
-      if (!is.null(leaf)) sprintf("d) %s worst inputs", if (page > 0L) "more" else "list"),
-      if (length(path)) "b) back",
-      "q) quit"
-    )
-    cat(sprintf("\n   %s\n\n> ", paste(opts, collapse = "   ")))
-    ans <- readLines(con, n = 1L)
-    if (!length(ans)) {
-      cat("\n")
-      break
-    }
-    ans <- tolower(trimws(ans))
-
-    if (ans == "q") {
-      cat("\n")
-      break
-    } else if (ans == "d" && !is.null(leaf)) {
-      page <- page + 1L
-    } else if (ans == "b") {
-      if (length(path)) {
-        path <- path[-length(path)]
-      }
-      page <- 0L
-    } else if (nzchar(ans)) {
-      k <- suppressWarnings(as.integer(ans))
-      if (!is.na(k) && k >= 1L && k <= length(choices)) {
-        path <- c(path, list(list(axis = next_axis(res), value = choices[k])))
-        page <- 0L
-      } else {
-        cat("   ? enter a number from the list, or one of the letters shown\n")
-      }
-    }
-  }
-  invisible(NULL)
-}
-
 
 cmd_selftest <- function(opt) {
   opt$filter <- "spec=selftest"
@@ -1341,8 +872,8 @@ cmd_selftest <- function(opt) {
     })
   )
 
-  ## Every category counts on the status screen, and exact points with them.
-  cat("\nwhat status and report count:\n")
+  ## Every category counts in a result's state, and exact points with them.
+  cat("\nresult state:\n")
   lr <- latest_results(store_dir(opt$store))
   lr <- lr[lr$run_id == run_id, , drop = FALSE]
   one <- function(id, out = "value") lr[lr$cell_id == id & lr$output == out, , drop = FALSE]
@@ -1680,8 +1211,7 @@ cmd_selftest <- function(opt) {
 
 ## ---- comparing two runs -----------------------------------------------------
 ##
-## "Did my fix help?" `status` cannot answer it: it shows the current state
-## only, so an improvement is as invisible there as a regression.
+## "Did my fix help?"
 ##
 ## The sweep is deterministic -- fixed seed, fixed stride, same inputs every
 ## time -- so two runs of the same cell at the same depth on the same machine
@@ -1927,7 +1457,7 @@ cmd_diff <- function(opt) {
 ##                     a few hundred rows, enough to drive the whole index and
 ##                     the cross-function overview
 ##   detail.parquet    the worst inputs, per binade
-##   bands.parquet     the per-binade profile (unmerged; merged on render)
+##   bands.parquet     the per-binade profile, one row per binade
 ##   hist.parquet      the error distribution
 ##   ranges.parquet    the no-finite-error regions
 ##   categories.parquet  per-result figures split by input class: normal,
@@ -2051,12 +1581,12 @@ cmd_export <- function(opt) {
   ## Keyed on exactly the rows kept above, so a detail row from a superseded
   ## run can never leak in beside a newer summary row.
   ##
-  ## Regions and points are taken already resolved against the WHOLE store --
-  ## the same call the terminal makes -- and only then filtered. Resolving
-  ## after filtering let a gradient-only export drop the value cells whose
-  ## evidence settles a convention, turning a terminal convention into an
-  ## exported failure. `res` came from latest_results(), which summarised the
-  ## same resolved tables, so its region and point counts agree with these.
+  ## Regions and points are taken already resolved against the WHOLE store,
+  ## and only then filtered. Resolving after filtering would let a
+  ## gradient-only export drop the value cells whose evidence settles a
+  ## convention, turning that convention into an exported failure. `res`
+  ## came from latest_results(), which summarised the same resolved tables,
+  ## so its region and point counts agree with these.
   keep <- paste(res$run_id, res$cell_id, res$output)
   resolved <- list(ranges = resolved_ranges(dir), points = resolved_points(dir))
   pick <- function(tbl) {
@@ -2168,8 +1698,6 @@ main <- function() {
     run = cmd_run(a$opt),
     status = cmd_status(a$opt),
     selftest = cmd_selftest(a$opt),
-    report = cmd_report(a$opt),
-    browse = cmd_browse(a$opt),
     diff = cmd_diff(a$opt),
     export = cmd_export(a$opt),
     merge = cmd_merge(a$opt),
@@ -2177,7 +1705,7 @@ main <- function() {
     stop(
       "unknown command '",
       a$cmd,
-      "'; expected list, run, report, browse, diff, export, status, selftest, validate-refs or merge",
+      "'; expected list, run, status, diff, export, merge, selftest or validate-refs",
       call. = FALSE
     )
   )

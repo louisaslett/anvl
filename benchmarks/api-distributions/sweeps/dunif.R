@@ -47,8 +47,6 @@ grad_dunif <- anvl::jit(
 sweep_spec(
   name = "nv_dunif",
   family = "uniform",
-  blurb = "uniform density against base R dunif()",
-  primary = "x",
   params = UNIF_INTERVALS,
   flags = list(log = c(FALSE, TRUE)),
 

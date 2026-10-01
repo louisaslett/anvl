@@ -73,8 +73,6 @@ grad_pnorm <- anvl::jit(
 sweep_spec(
   name = "nv_pnorm",
   family = "normal",
-  blurb = "normal CDF against base R pnorm()",
-  primary = "q",
   params = NORM_PARAMS,
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
   domain = function(p, f) c(-Inf, Inf),

@@ -147,11 +147,11 @@ store_merge <- function(from, into) {
 
 ## Collapse to one row per (cell, output): the deepest sweep available.
 ##
-## `latest_results()` keeps a row per depth, which is what the coverage table
-## wants, but every other consumer wants one current result per measurement.
+## `latest_results()` keeps a row per depth, which is what coverage wants, but
+## every other consumer wants one current result per measurement.
 ## A shallower sweep visits a subset of a deeper one's inputs -- same index
 ## space, larger stride -- so the deeper row is strictly better evidence.
-## Shared by `status`, `report`, `browse` and `export` so they can never
+## Shared by `status`, `export` and `validate-refs` so they can never
 ## disagree about what "the current result" is.
 deepest_per_cell <- function(res, depths) {
   if (is.null(res) || !nrow(res)) {
@@ -207,10 +207,10 @@ with_reference_status <- function(res, validations) {
   res
 }
 
-## Region and point counts as every screen must show them: with outside-domain
-## gradients settled against their value cells over the whole store, so the
-## terminal and an export -- which calls this with the same resolved tables,
-## before any filter -- cannot disagree. A result with no regions gets zeros,
+## Region and point counts with outside-domain gradients settled against
+## their value cells over the whole store, so every reader and an export --
+## which calls this with the same resolved tables, before any filter -- cannot
+## disagree. A result with no regions gets zeros,
 ## not whatever the sweep wrote before resolution.
 resummarise <- function(res, ranges, points) {
   key <- paste(res$run_id, res$cell_id, res$output, sep = "\r")
@@ -285,6 +285,7 @@ stable_statuses <- function(dir) {
 ## a statement of fact about the samples and points, and each of the four
 ## categories keeps its own flag: only undefined-domain conventions are
 ## set aside, and `identical_but_conventions` says so rather than hiding it.
+## The site's js/model.js ports this definition.
 ##
 ##   failing      a failure region or a failing exact point
 ##   boundary     a boundary region or point
@@ -305,11 +306,6 @@ result_state <- function(res) {
     v <- res[[nm]]
     if (is.null(v)) rep(d, nrow(res)) else ifelse(is.na(v), d, v)
   }
-  ## a column that may be absent, NA where it is: unknown, not zero
-  opt_col <- function(nm) {
-    v <- res[[nm]]
-    if (is.null(v)) rep(NA_real_, nrow(res)) else v
-  }
   pts_ok <- col("n_points_identical") == col("n_points")
   verified <- (res$ref_stable_status %||% rep(NA_character_, nrow(res))) %in% "validated"
   differ <- col("n_samples") - col("n_exact")
@@ -325,12 +321,6 @@ result_state <- function(res) {
     identical_but_set_aside = differ > 0 & col("n_zero_sign") == 0 &
       differ == col("n_failing_domain") + ifelse(verified, col("n_ref_candidate"), 0) &
       col("n_points_identical") + col("n_points_domain") + ifelse(verified, col("n_points_ref_candidate"), 0) == col("n_points"),
-    ## the site's headline (normal inputs, normal outputs; see with_headlines()
-    ## in run.R), with verified base R limitations set aside where there are
-    ## any -- and whether they were -- or NA where it was not computed
-    headline = ifelse(verified & !is.na(opt_col("headline_excl")), opt_col("headline_excl"), opt_col("headline")),
-    headline_set_aside = verified & !is.na(opt_col("headline_excl")) & !is.na(opt_col("headline")) &
-      opt_col("headline_excl") != opt_col("headline"),
     ## the same worst error with verified reference limitations left out
     worst_any_set_aside = ifelse(
       verified,

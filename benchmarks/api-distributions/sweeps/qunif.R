@@ -58,8 +58,6 @@ grad_qunif <- anvl::jit(
 sweep_spec(
   name = "nv_qunif",
   family = "uniform",
-  blurb = "uniform quantile function against base R qunif()",
-  primary = "p",
   params = UNIF_INTERVALS,
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
 

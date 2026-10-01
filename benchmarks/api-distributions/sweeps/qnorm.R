@@ -59,8 +59,6 @@ grad_qnorm <- anvl::jit(
 sweep_spec(
   name = "nv_qnorm",
   family = "normal",
-  blurb = "normal quantile function against base R qnorm()",
-  primary = "p",
   params = NORM_PARAMS,
   flags = list(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE)),
   domain = function(p, f) if (isTRUE(f$log_p)) c(-Inf, 0) else c(0, 1),
