@@ -17,35 +17,77 @@ precision and application. Algorithm-comparison reports live separately in
 - [Reading what a disagreement means](#reading-what-a-disagreement-means)
 - [Storage and export](#storage-and-export)
 - [Adding a function](#adding-a-function)
+- [Reference validation](REFERENCES.md)
+- [Distributed execution](HPC.md)
 - [Historical measurements and design notes](DESIGN.md)
 
 ## Quick start
 
-Run the examples from `benchmarks/api-distributions`:
+Run the examples from `benchmarks/api-distributions`. Install anvl and its
+sibling dependencies first, plus `nanoparquet`, `cli` and `Rmpfr` for the
+workflow below. JAX cells also need `reticulate` and Python with `jax`.
+`sw_sql()` needs `duckdb` and `DBI`.
+
+The harness calls the **installed `anvl` package**. Reinstall after changing
+anvl. Provenance records the checkout's SHA separately; it does not verify
+that the installed package matches the checkout or capture uncommitted changes.
+
+Choose new store and export directories outside the repository:
+
+```bash
+export NV_SWEEP_STORE=/absolute/path/to/sweep-store
+Rscript run.R run --depth smoke
+Rscript run.R validate-refs
+Rscript run.R status
+# Inspect coverage, errors and reference statuses before exporting.
+Rscript run.R export --out /absolute/path/to/sweep-export
+```
+
+The [anvl-bench site](../../../anvl-bench/README.md#how-the-results-get-here)
+reads the export. The publication guide explains how to make it available there.
+
+### Comparing a change
+
+After editing and reinstalling anvl, rerun the same selection at the same depth
+in the same store:
 
 ```bash
 Rscript run.R run --depth smoke
-Rscript run.R status
-# After editing and reinstalling anvl, rerun the sweep, then compare:
 Rscript run.R diff
 ```
 
-Results are browsed on the anvl-bench site, from an `export`; `status` checks
-what the store holds before you export it.
+Use a fresh store for publication of a particular version. An accumulating
+store can combine results from several versions or depths.
 
-The harness calls the **installed `anvl` package**: Remember to reinstall after
-changing anvl.
-Provenance records the checkout's SHA separately; it does not verify that the
-installed package matches any checkout or capture uncommitted source changes.
+### Checking the harness
 
-Install anvl and its sibling dependencies first. The harness requires
-`nanoparquet` and `cli`; JAX cells also need `reticulate` and Python with `jax`.
-Reference validation needs `Rmpfr`, and `sw_sql()` needs `duckdb` and `DBI`.
-The JAX helpers use the venv in `RETICULATE_PYTHON` if it is set.
+After changing the harness's `R/` files, run its synthetic checks in a separate
+store:
 
-Run `Rscript run.R selftest` after changing the harness's `R/` files. It checks
-known injected errors and writes synthetic results to the selected store.
-Sweep results go to the external store by default; `export` writes to `--out`.
+```bash
+Rscript run.R selftest --store /absolute/path/to/selftest-store
+```
+
+JAX helpers use the interpreter named by `RETICULATE_PYTHON` when set.
+Otherwise they try the sibling `py-benchmarks/.venv` if it exists, then leave
+interpreter selection to reticulate.
+
+### Commands and options
+
+| command | selection and useful options | writes |
+|---|---|---|
+| `list` | current grid; anvl by default; `--filter`, `--backends` | none |
+| `run` | current grid; anvl by default; `--depth`, `--filter`, `--backends`, `--jobs`, `--topk`, `--shard`/`--shards`; `--dry-run` previews it | sweep store, except with `--dry-run` |
+| `status` | current results and attempts; all stored backends by default; `--filter`, `--backends` | none |
+| `diff` | newest matching run against previous attempts; `--from`, `--to`, `--filter`, `--backends` | none |
+| `validate-refs` | current results; `--filter`, `--backends`, `--run`, `--prec`, sampling options, `--shard`/`--shards` | validation records and retained samples |
+| `export` | current results and coverage; `--filter`, `--backends`; requires `--out` | export directory |
+| `merge` | all table files from `--from` | destination store |
+| `selftest` | synthetic cells and harness assertions | selected store |
+
+`--store` selects the store for these commands; `list` does not read it.
+[Result selection](#which-results-are-selected) defines “current” and explains
+how depth, platform and errors affect each reader.
 
 ### Terms
 
@@ -75,6 +117,7 @@ R/store.R      Parquet store and result selection
 R/provenance.R environment fingerprint
 R/validate.R   reference validation against MPFR
 sweeps/        function specs and shared helpers
+REFERENCES.md  reference validation and analytic formulas
 HPC.md         cluster execution
 DESIGN.md      historical measurements and design rationale
 ```
@@ -94,19 +137,21 @@ absent from the sweep. Separate exact-point checks cover them at every depth.
 | `quick` | 128 | 33,554,432 | broader checks |
 | `full` | 1 | 4,294,967,296 | exhaustive f32 or stratified f64 coverage |
 
-These counts exclude exact-point checks. **Time the relevant cells on your
-setup before scheduling a full run!** (Running single core on a modern Intel
-CPU, full depth over Normal and Uniform takes ~36 days).
+These counts exclude exact-point checks. Time representative cells on your
+setup before scheduling a full run. Earlier timings lack enough environment
+details to serve as current estimates; they are recorded in [DESIGN.md](DESIGN.md#sweep-timings).
 
-In `f32`, `full` is genuinely exhaustive: every one of the 2³² float32 values is
-visited exactly once. In `f64`, 2⁶⁴ is out of the question, so `full` takes one
+In `f32`, `full` enumerates all 2³² bit-pattern indices once. Finite values,
+signed zeros and infinities are delivered exactly. Widening to double quiets
+signalling NaNs, and comparisons ignore NaN payloads and signs.
+
+In `f64`, `full` takes one
 sample from each of the 2³² contiguous blocks of 2³² — every (sign, exponent,
 top-20-mantissa-bit) combination, with the low 32 bits drawn from a fixed seed
 so another machine reproduces the same inputs.
 
 `--filter spec=nv_qnorm` selects **32 anvl cells and 64 results**. Its runtime
-depends on the precision, outputs and machine; the old estimate based on 20
-cells is not applicable. See [HPC.md](HPC.md) for distributing larger runs.
+depends on the precision, outputs and machine. See [HPC.md](HPC.md) for distributing larger runs.
 
 ### Selecting what to run
 
@@ -141,7 +186,7 @@ backends represented in the store.
 |---|---|
 | `sw_results()`, `sw_worst()` | latest per cell, output, platform and depth |
 | `status`, `export`, `validate-refs` | newest attempt per cell, platform and depth; of those that succeeded, the deepest per cell/output (`current_results()`) |
-| `diff` | newest matching run versus the previous matching result per cell, output, platform and depth; `--from`/`--to` select runs |
+| `diff` | newest matching run versus each cell's previous attempt at the same platform and depth, succeeded or errored; `--from`/`--to` select runs |
 | `sw_detail()`, `sw_hist()`, `sw_bands()`, `sw_ranges()`, `sw_points()` | matching historical rows, not just the latest run |
 
 An older full sweep can therefore take precedence over a newer smoke sweep in
@@ -173,12 +218,23 @@ Rscript run.R status --filter spec=nv_qnorm --backends anvl,jax
 - **Coverage.** For each platform and depth, how many of the declared cells
   were swept, and which cells have no successful result at any depth. A cell
   counts as swept at a depth when its newest attempt there succeeded.
-- **Errors.** Every cell whose newest attempt errored, with its platform, depth,
-  run and the first line of the error. An error superseded by a later
+- **Errors.** The count of cells whose newest attempt errored, with up to 20
+  entries showing platform, depth, run and the first line of the error. An error superseded by a later
   successful run of the same cell, platform and depth is not listed.
 - **References.** How many stable and gradient references are validated,
   failed, not validated or have no identity, and which results use a failed
   reference or one with no identity.
+
+Terminal lists are truncated: at most 10 cells missing a successful sweep,
+20 errored attempts, and 20 results with failed or unidentified references.
+Omitted entries are counted. For the full list of current errors, read the
+store from R:
+
+```r
+source("query.R")
+attempts <- latest_attempts(latest_results(sw_store()))
+attempts[!is.na(attempts$error), ]
+```
 
 `run` records a cell's error and carries on, so its exit status does not show
 whether a sweep completed; `status` is where that is checked before an export.
@@ -219,8 +275,15 @@ SUMMARY
 
 **Input sampling is deterministic** for a fixed harness, seed, dtype and depth.
 Numerical results also depend on the installed packages, runtime and settings.
-`diff` uses exact comparisons of the recorded metrics; a change is evidence to
-investigate, not by itself proof that anvl source changed.
+`diff` compares the largest relative error across sweep and exact points,
+region and point counts for failures, boundaries, backend limitations and
+undefined-domain conventions, and the signed-zero sample count.
+
+The printed phrase “bit-identical to the earlier run” means only that those
+metrics match exactly. Individual outputs, histograms, retained inputs and
+reference-limitation counts can differ. A change only in worst ulp error can
+also be reported as unchanged. A reported change needs investigation; package
+versions, runtime settings and reference validation can affect the comparison.
 
 Results pair by cell, output, platform **and depth**. A smoke result and a full
 result sample different inputs, so pairing across depths would report the extra
@@ -263,16 +326,19 @@ tests below. `unidentified` means none of those tests explains the disagreement.
 | cause | tested how | category |
 |---|---|---|
 | `nan_input` | the input is NaN | failure |
-| `input_flushing` | a subnormal input whose result is **bit-identical** to the function's own result at the same-signed zero, **and** that zero result is **validated**: identical to base R's, or base R's correctly rounded | backend limitation |
-| `flush_inherits_zero_error` | as above, but the zero result is not validated — *any* error at zero, finite or not: the subnormals inherit it | failure |
+| `input_flushing` | a subnormal input whose result is **bit-identical** to the function's own result at the same-signed zero, **and** that zero result is **checked against the zero reference**: equal to it, including the sign of zero, or equal to it rounded to the result's precision | backend limitation |
+| `flush_inherits_zero_error` | as above, but the zero result fails that check — *any* error at zero, finite or not: the subnormals inherit it | failure |
 | `domain_boundary` | an endpoint of the valid input domain (e.g. p = 0, p = 1), or a subnormal inheriting the behaviour of a zero that is one | boundary |
 | `outside_domain` | wholly outside the valid input domain | failure — or, for a gradient, see below |
 | `zero_input` | ±0 that is not a domain endpoint | failure |
 | `inf_input` | ±∞ inside the domain | failure |
 | `unidentified` | none of the above | failure |
 
+This zero-reference check is separate from MPFR reference validation.
+It compares the implementation and reference at zero during the sweep.
+
 The initial categories are listed below. Validated reference disputes can
-also become `reference_limitation`, described in the next section:
+also become `reference_limitation`, described under [Reference validation](#reference-validation):
 
 - **failure** — an unexplained disagreement, including an incorrect value
   outside the valid domain where NaN is required.
@@ -304,8 +370,8 @@ does.
 Zero is never a subnormal: it is the value a subnormal is flushed *to*, and it
 is checked, not exempted. The same holds in the aggregates: each sign's swept
 zero is a band row of its own (`zero = TRUE`), binade 0 holds only the
-subnormals, and the categories give zero its own input class. A value disagreement outside the domain — the value
-is specified to be NaN and something else came back — is a failure.
+subnormals, and the categories give zero its own input class. A value
+disagreement outside the domain, where NaN is required, is a failure.
 
 Alongside the cause, each region records **what the two sides returned**, as a
 tally of (value kind, reference kind) pairs over the kinds NaN, +∞, −∞, +0, −0,
@@ -319,171 +385,37 @@ The same kind pairs are tallied for every binade in the `kinds` table, in and
 out of the domain separately, and two further things are counted per binade
 without being failures: **signed-zero disagreements** (`n_zero_sign`: both
 sides zero, opposite signs, which `==` cannot see) and **differences caused by
-input flushing**, split by whether the zero they were flushed onto is
-validated: `n_flushed` (it is, so the difference is the flush's alone) and
-`n_flushed_zero_error` (it is not, so the subnormals also carry the error at
-zero). Their error magnitudes stay in the histogram and worst inputs.
+input flushing**, split by whether the result at zero passes the
+zero-reference check: `n_flushed` when it passes, and
+`n_flushed_zero_error` when it fails and the subnormals also carry the error at
+zero. Their error magnitudes stay in the histogram and worst inputs.
 
 This is measurement, not judgement: it says what the numbers are and why.
 
-### When base R is the weaker side: candidate disputes
+### Reference validation
 
-`punif(1e-100, 0, 1, lower.tail = FALSE, log.p = TRUE)` is 0; the answer is
-`log1p(-1e-100)` = −1e−100, which anvl returns. Every figure above stays
-against base R regardless — nothing replaces it. A spec may additionally
-declare a **stable reference** (`ref_stable`), an accurate evaluation of the
-same function with the same parameters, and each sample is then tested
-against it. A sample is a **candidate base R dispute** only when all three
-hold, with *s* the stable value and *B* its declared error bound in absolute
-units (`ref_stable_bound_ulp64` double ulps at *s*):
-
-| condition | test |
-|---|---|
-| base R is off | \|g − s\| > 4 ulp_f64(s) + B |
-| anvl is accurate | \|f − s\| ≤ 2 ulp_dtype(s) + B |
-| anvl is no further | \|f − s\| ≤ \|g − s\| |
-
-Where no ulp comparison is meaningful — *s* is ±0 or ±∞, or beyond the f32
-range in an f32 cell — anvl must equal *s* at the cell's precision, sign of
-zero included, and base R must not. A NaN on any side is never a dispute. The
-multipliers are provisional thresholds for exclusion, not accuracy criteria:
-failing them only leaves a sample counted against base R. The same test
-records the opposite case too — anvl and base R returning the same value,
-both beyond anvl's tolerance (`n_ref_shared`) — which a comparison against
-base R alone can never see.
-
-**A candidate is not an exclusion.** The sweep records, beside the unfiltered
-figures and never in their place: candidate counts, the worst error without
-candidates (`worst_rel_err_excl`, `worst_out_normal_excl`, per band, class and
-result), a histogram column, a `ref_candidate` flag on regions and exact points
-(their cause and category are left alone), and a `disputes` table keeping, per
-binade, the samples furthest beyond tolerance with all three values, both
-distances and both thresholds. Candidates become exclusions only once the
-stable reference passes validation against high precision under a matching
-identity, and until then nothing is excluded. The `ref_stable_id` on
-each result hashes the code that decides candidacy as it actually runs: the
-stable reference, the classifier and the spacing function, each followed
-recursively through every function it calls and every value it reads that is
-not base R's (so a change to `same_value()`, to `DISPUTE_K`, or to a constant
-captured in the stable reference's closure changes it), packages by version;
-plus the declared bound, the exact reference parameters, the flags, the dtype,
-the parameter policy and the R build. Each result also carries `ref_params`,
-the exact parameters its reference received as hex doubles, so a later
-validation reproduces them without re-running the sweep and without trusting
-that a parameter-set name still means the same values. A stable reference is checked, not trusted: `nv_punif`'s
-takes the small tail directly on each side, which is anvl's own algorithm, so
-in f64 only the high-precision validation makes it independent evidence.
-
-Currently, only `nv_punif`'s log-scale value cells declare a stable reference.
-Evaluating it adds work to those cells; measure that cost on the target system.
-
-### `validate-refs` — checking the references against high precision
+`validate-refs` checks stable value references and analytic gradient references
+against MPFR at 256 bits by default:
 
 ```bash
-Rscript run.R validate-refs                      # selected latest/deepest results
+Rscript run.R validate-refs
 Rscript run.R validate-refs --filter spec=nv_punif --prec 512
-Rscript run.R validate-refs --shard 3 --shards 32   # one share, for a cluster array
 ```
 
-It validates every backend the store holds unless `--backends` says otherwise.
-Work is split into *reference units* — distinct reference identities — so an
-anvl cell and its JAX twin, which share a reference, are validated once from
-both cells' inputs, and `--shard i --shards n` takes the same units on every
-machine. Each run writes its own record, so shards need no merging.
+A stable reference supplies additional evidence where base R may be inaccurate.
+Currently only `nv_punif` log-scale value cells declare one. A candidate dispute
+becomes a `reference_limitation` only after that reference passes validation
+under a matching identity. Comparisons against base R remain available beside
+the adjusted figures. Gradient-reference validation reports whether the
+reference passed; it does not change how gradient errors are scored.
 
-It needs Rmpfr, and nothing else does: run it wherever Rmpfr is installed,
-after the sweep, without re-running it. For each selected result with a stable
-reference (the evidence in a base R dispute) or a gradient reference (what
-every gradient is scored against), it:
+Validation samples exact points, retained worst inputs and disputes, retained
+counterexamples, and random inputs. Passing provides evidence on those samples;
+it does not prove a global error bound. The normal-family gradient references
+currently declare a bound of 16 f64 ulps.
 
-1. **re-derives the reference's identity** from the current code and the exact
-   parameters the sweep stored (`ref_params`, hex). If that is not the identity
-   the sweep recorded — the reference, anything it calls, its bound or its
-   parameters changed — it fails without evaluating anything. A reference or a
-   truth that cannot be identified — it calls `get()`, `do.call()`, `eval()` or
-   similar however qualified (`base::get` is `get`), or names a function by a
-   string to `sapply()` and friends, none of which a reading of the code can
-   follow — can never pass; a truth without an identity fails before it is
-   evaluated;
-2. **samples** the result's exact points, its retained disputes, the two worst
-   retained inputs of each binade, every earlier failing sample for the same
-   cell and output (whatever the reference or truth version, so a change must
-   revisit the known counterexamples), `--per-binade` random inputs (default 1) in every exponent
-   field of both signs, `--focus-per-binade` more (default 8) in every binade
-   holding a dispute (stable) or an error within 1e3 of the result's worst
-   (gradient), and `--random` (default 512)
-   uniform over all bit patterns — deterministically seeded per cell;
-3. **compares** each with the spec's MPFR truth (`ref_stable_mpfr`,
-   `ref_grad_mpfr`) at `--prec` bits (default 256), in double ulps at the
-   truth, **with the difference, the division and the comparison with the bound
-   all in MPFR** — converting the difference to a double first loses every
-   fraction of a subnormal ulp (4.49 became 4, and passed a bound of 4). An
-   exactly-zero truth needs a zero reference, and a NaN, infinite, or
-   out-of-range-once-rounded truth an identical one. It passes only if no
-   sample exceeds the declared bound — which is never raised afterwards;
-4. **records** each validation in the store (`validations`: identity, truth
-   identity, precision, seed, how samples were chosen, how many, the worst
-   error and where, pass/fail and why; `validation_samples`: the worst samples
-   and every failing one), and exports both beside the results they justify.
-   Each record carries the **truth's identity** — the spec's own MPFR function
-   and everything it calls, with the output selected recorded separately;
-   nothing about the run — and the **validation method's identity** (the
-   sampler, the comparator and the procedure). Validations by any other method
-   count for nothing, so a change to how validation is done voids every earlier
-   record rather than inheriting its verdicts.
-
-A sampled validation is evidence, not a proof of a global bound, and is
-recorded as such. Each truth mirrors its reference's conventions (endpoint
-values, out-of-domain zeros) and differs only in evaluating the mathematics
-exactly — which takes the same care as the reference: at 256 bits
-1 − 4e−78 is exactly 1, so a truth written as log(1 − u) loses the answer just
-as base R does, and the truths use the small-tail forms (`log1p`, `expm1`,
-log Φ as `log1p(−Q)` for positive z). The normal family's deep tails use a
-continued fraction and a log-space log Φ, since MPFR's own `exp()` underflows
-at |z| ≈ 4e6.
-
-**The status of a reference identity fails closed:** *validated* only if a
-validation of exactly that identity passed and none failed; *failed* if any
-did — a later pass does not undo it; otherwise *not validated*, or *no
-identity*. It is judged against the most recent MPFR truth used for that
-identity: a validation is evidence about the pair (reference, truth), so once
-the truth's own code changes, older validations are superseded — kept, but no
-longer deciding the status.
-
-**Only then are candidates excluded.** A candidate dispute whose result's
-stable reference is *validated* becomes a **verified base R limitation**
-(category `reference_limitation`), at resolution time and in every reader
-alike. Its figures against base R are unchanged; the worst error with the
-limitations set aside is recorded beside them. Every other candidate stays
-exactly what the sweep recorded. A gradient reference's status gates nothing,
-but `status` shows how many are validated, failed or unchecked, and the site
-shows each one's latest validation.
-
-### The gradient references are checked too
-
-A gradient's reference is an analytic formula written here, not base R, and
-being analytic does not make its floating-point evaluation trustworthy. The
-normal family's are built to avoid the ways the obvious evaluation fails:
-
-- `z = (x - mean)/sd` is carried as a double-double (`std_z()`), because a
-  rounded z costs `exp(-z^2/2)` about z² ulp — 85 ulp at z ≈ 8 on the shifted
-  parameters — and anvl and base R round z the same way, so a reference that
-  did too would share their error instead of measuring it;
-- `m · φ(z)` and `m / φ(z)` go through `phi_times()` / `phi_recip()`, which
-  split z so its square is exact and scale so nothing under- or overflows
-  before the answer does: φ becomes subnormal around |z| = 37.6 and rounds
-  to zero by z = 38.6, while `(z² − 1)φ(z)` is still about 1.7e−321 there;
-  for huge z the bracket can overflow even though the answer is 0;
-- `(z² − 1)/sd` as `(z − 1) · ((z + 1)/sd)`, finite where z² overflows;
-- the inverse Mills ratio as a direct ratio above z = −20 and a continued
-  fraction below, not a difference of two logs of ~−z²/2.
-
-The normal-family specs currently declare a **16 f64 ulp** bound for gradient
-reference validation. An earlier sampled check reported a maximum of eight
-ulps; that [historical observation](DESIGN.md#reference-evaluation) is not the
-configured bound or a current verdict. Run `validate-refs` and inspect the
-records for the reference identity in use. `selftest` also checks selected
-regression cases against recorded MPFR values.
+See [Reference validation](REFERENCES.md) for the dispute thresholds, sampling,
+retention limits, reference identities, and analytic formulas.
 
 ### Exact points, beside every sweep
 
@@ -519,9 +451,11 @@ site's `js/model.js` ports it. Every category counts separately: **failures**,
 **domain boundary behaviour** and **backend limitations** each count regions
 and exact points, and the largest finite error is taken over the sweep and the
 points together. A result is **bit-identical** only if every sampled input and
-every exact point matches base R down to the sign of zero; a result that
+every exact point matches its reference down to the sign of zero
+(NaN payloads and signs are ignored); a result that
 differs *only* by undefined-domain conventions is flagged as such, as set
-aside. `diff` compares every one of these counts, not just the worst error.
+aside. `diff` compares the subset of metrics listed in its
+[command description](#diff--did-the-change-help).
 Unvalidated candidate disputes remain included. Once validated, verified
 reference limitations have separate counts and adjusted error summaries beside
 the unchanged comparisons against base R.
@@ -537,7 +471,8 @@ taken from the same rounded parameters.
 
 ### Correctly rounded is not the same as zero error
 
-The reference is base R's double and is never rounded before scoring, so the
+The reference is evaluated in double precision and is never rounded before
+scoring, so the
 relative error measures numerical error against it. Separately, each sample
 records whether the result is that reference **correctly rounded to the
 result's precision** (`n_rounded` on the summary and bands, `rounded` on each
@@ -570,10 +505,13 @@ as.vector(nv_array(-1e-39, dtype = "f32") >= 0)             # TRUE  (R says FALS
 as.double(nv_dunif(nv_array(-1e-39, dtype = "f32"), 0, 1))  # 1     (R says 0)
 ```
 
-The harness tests input flushing per sample: a failure is attributed to input flushing only if the result is bit-identical to
-the function's own result at the same-signed zero and that zero result is
-validated (see the cause table above). Flushing that produces a materially
-wrong answer still counts, as `n_flushed`, with its error kept.
+The harness tests input flushing per sample: a failure is attributed to input
+flushing only if the result is bit-identical to the function's own result at
+the same-signed zero and that zero result passes the zero-reference check
+(see the cause table above). A flush that changes the answer still counts, however large the
+change: a subnormal whose result is its signed zero's and differs from base R
+is counted in `n_flushed` when that zero result passes the check, and in
+`n_flushed_zero_error` when it fails. Either way its error stays in the histogram and worst inputs.
 `Rscript query.R ranges --cause input_flushing` lists the attributed regions.
 A runtime change can change that classification; agreement still depends on
 the function result.
@@ -608,13 +546,15 @@ no successful result at all.
 ```
 manifest.json     index: schema version, platform, specs, depths, coverage counts,
                   row counts
-runs.parquet      the environment fingerprint of every run included
-summary.parquet   the successful results of every cell of every function
+runs.parquet      environment fingerprints for runs contributing selected
+                  successful results
+summary.parquet   selected successful results
 coverage.parquet  every declared cell: the depth of its deepest successful
-                  sweep and its newest error, so errored and never-run cells
-                  are visible
+                  sweep and the latest error at its deepest errored depth;
+                  includes errored and never-run cells
 detail.parquet    the worst inputs, per binade
-bands.parquet     the per-binade profile, one row per binade
+bands.parquet     profile per result, sign and exponent group, with separate
+                  rows for swept zeros
 hist.parquet      the error distribution
 ranges.parquet    the no-finite-error regions, resolved (cause, category, evidence)
 kinds.parquet     what each side returned, per binade
@@ -626,6 +566,11 @@ disputes.parquet  retained candidate disputes and shared reference errors
 validations.parquet  reference-validation records
 validation_samples.parquet  retained validation samples and failures
 ```
+
+A coverage error can refer to a run absent from `runs.parquet`; look up that
+run in the source store for its provenance. The error shown is selected by
+depth first, so an older full-depth error can take precedence over a newer
+smoke-depth error.
 
 Schema version is currently 8. Optional tables are written only when data is
 available; consult `manifest.json` for the actual file inventory.
@@ -729,7 +674,7 @@ sweep_spec(
 
   value     = function(x, dtype, p, f) as.double(anvl::nv_dnorm(...)),
   ref_value = function(x, p, f) dnorm(x, p$mean, p$sd, log = f$log),
-  ref_stable = function(x, p, f) ...,                # optional; see "base R disputes"
+  ref_stable = function(x, p, f) ...,                # optional; see REFERENCES.md
   ref_stable_bound_ulp64 = 8,                        #   its error bound, double ulps
   ref_stable_note = "why base R is weaker here",     #   required with ref_stable
   ref_stable_covers = function(f) isTRUE(f$log),     #   optional; which flags
