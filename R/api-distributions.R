@@ -610,3 +610,31 @@ nv_qunif <- jit(
   },
   static = c("lower_tail", "log_p")
 )
+#' @rdname nv_exponential
+#' @export
+nv_dexp <- jit(
+  function(x, rate = 1, log = FALSE) {
+    assert_flag(log)
+    args <- promote_distribution_args(x = x, rate = rate)
+    x <- args$x
+    rate <- args$rate
+
+    # Below the support and at `x = Inf` the density is resolved directly, and
+    # `x` is clamped there so the untaken branch cannot poison gradients. NaN
+    # fails both comparisons and flows through.
+    below_support <- x < 0
+    resolved <- below_support | x == Inf
+    x_safe <- nv_ifelse(resolved, 0, x)
+    density <- if (log) {
+      nv_ifelse(resolved, -Inf, nv_log(rate) - rate * x_safe)
+    } else {
+      nv_ifelse(resolved, 0, rate * nv_exp(-rate * x_safe))
+    }
+    # base R tests the scale 1 / rate > 0, which rejects `rate = Inf` (as well
+    # as negative and NaN rates, and -0, which `rate > 0` cannot tell from 0).
+    # `x = Inf` with `rate = 0` is Inf / Inf there.
+    valid <- (1 / rate > 0) & !((x == Inf) & (rate == 0))
+    nv_ifelse(valid, density, NaN)
+  },
+  static = "log"
+)
