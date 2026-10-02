@@ -1122,7 +1122,7 @@ print.AnvlArray <- function(x, header = TRUE, ...) {
   }
   dtype_str <- as.character(dtype(x))
   footer <- sprintf("[ %s%s{%s} ]", toupper(platform(x)), dtype_str, paste0(shape(x), collapse = ","))
-  globals$backends[[x$backend]]$print_data(x, footer)
+  globals$backends[[x$backend]]$print_data(x, footer, ...)
   invisible(x)
 }
 

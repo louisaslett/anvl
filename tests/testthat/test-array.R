@@ -95,6 +95,16 @@ test_that("format", {
   )
 })
 
+describe("print.AnvlArray", {
+  it("passes print options on to the backend's printer", {
+    x <- nv_array(1:100, dtype = "i32")
+    expect_output(print(x), "truncated")
+    out <- capture.output(print(x, max_rows = -1))
+    expect_false(any(grepl("truncated", out, fixed = TRUE)))
+    expect_true(any(grepl("^ *100$", out)))
+  })
+})
+
 test_that("nv_array(byrow = TRUE) fills row-major from a flat vector", {
   expect_equal(
     as_array(nv_array(1:6, shape = c(2L, 3L), byrow = TRUE)),
