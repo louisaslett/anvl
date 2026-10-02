@@ -107,8 +107,9 @@ function (<code>q</code>).</p></dd>
 
 <dt id="arg-rate">rate<a class="anchor" aria-label="anchor" href="#arg-rate"></a></dt>
 <dd><p>(<code><a href="arrayish.html">arrayish</a></code>)<br>
-Rate of the distribution. Either a scalar, or an array of exactly the
-shape of <code>x</code>/<code>q</code>/<code>p</code>. Negative rates give <code>NaN</code>.</p></dd>
+Rate of the distribution. Scalars broadcast; otherwise <code>rate</code> and
+<code>x</code>/<code>q</code>/<code>p</code> must have the same shape. Negative rates (including <code>-Inf</code>
+and negative zero) give <code>NaN</code>.</p></dd>
 
 
 <dt id="arg-log-log-p">log, log_p<a class="anchor" aria-label="anchor" href="#arg-log-log-p"></a></dt>
@@ -126,24 +127,28 @@ If <code>TRUE</code> (default), probabilities are \(P(X \le x)\); otherwise,
 <dt id="arg-p">p<a class="anchor" aria-label="anchor" href="#arg-p"></a></dt>
 <dd><p>(<code><a href="arrayish.html">arrayish</a></code>)<br>
 Probabilities at which to evaluate the quantile function. Values outside
-\([0, 1]\) give <code>NaN</code>.</p></dd>
+\([0, 1]\) give <code>NaN</code>. With <code>log_p = TRUE</code>, supply log-probabilities
+in \([-\infty, 0]\) instead.</p></dd>
 
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>(<code><a href="arrayish.html">arrayish</a></code>)<br><code>nv_dexp()</code>, <code>nv_pexp()</code>, and <code>nv_qexp()</code> return an <code><a href="arrayish.html">arrayish</a></code> with the
-same shape and data type as <code>x</code>/<code>q</code>/<code>p</code>.</p>
+data type of <code>x</code>/<code>q</code>/<code>p</code> and the shape after scalar broadcasting with <code>rate</code>.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>The Exponential distribution has probability density function:
 $$f(x) = \lambda e^{-\lambda x}, \quad x \ge 0$$
 and zero elsewhere, where \(\lambda\) is <code>rate</code>.</p>
-<p>As in base R, the degenerate rates follow from the scale \(1/\lambda\):
-<code>rate = 0</code> is admitted (all mass at infinity), while <code>rate = Inf</code> (all mass
-at zero) gives <code>NaN</code> for the density but is admitted by <code>nv_pexp</code> and
-<code>nv_qexp</code>.</p>
-    </div>
+<p>For positive finite rates, the mean is <code>1 / rate</code>. Zero and infinite rates
+follow base R's endpoint conventions:</p><ul><li><p><code>rate = 0</code>: the density and lower-tail probability are zero at finite
+quantiles, but <code>NaN</code> at infinity. Quantiles are infinite except at
+lower-tail probability zero, where the result is zero.</p></li>
+<li><p><code>rate = Inf</code>: densities are <code>NaN</code>. The lower-tail probability is zero
+at or below zero and one above zero. Quantiles are zero except at
+lower-tail probability one, where the result is <code>NaN</code>.</p></li>
+</ul></div>
     <div class="section level2">
     <h2 id="data-types">Data Types<a class="anchor" aria-label="anchor" href="#data-types"></a></h2>
 

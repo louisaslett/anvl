@@ -25,8 +25,9 @@ nv_qexp(p, rate = 1, lower_tail = TRUE, log_p = FALSE)
 - rate:
 
   ([`arrayish`](https://r-xla.github.io/anvl/reference/arrayish.md))  
-  Rate of the distribution. Either a scalar, or an array of exactly the
-  shape of `x`/`q`/`p`. Negative rates give `NaN`.
+  Rate of the distribution. Scalars broadcast; otherwise `rate` and
+  `x`/`q`/`p` must have the same shape. Negative rates (including `-Inf`
+  and negative zero) give `NaN`.
 
 - log, log_p:
 
@@ -44,14 +45,16 @@ nv_qexp(p, rate = 1, lower_tail = TRUE, log_p = FALSE)
 
   ([`arrayish`](https://r-xla.github.io/anvl/reference/arrayish.md))  
   Probabilities at which to evaluate the quantile function. Values
-  outside \\\[0, 1\]\\ give `NaN`.
+  outside \\\[0, 1\]\\ give `NaN`. With `log_p = TRUE`, supply
+  log-probabilities in \\\[-\infty, 0\]\\ instead.
 
 ## Value
 
 ([`arrayish`](https://r-xla.github.io/anvl/reference/arrayish.md))  
 `nv_dexp()`, `nv_pexp()`, and `nv_qexp()` return an
 [`arrayish`](https://r-xla.github.io/anvl/reference/arrayish.md) with
-the same shape and data type as `x`/`q`/`p`.
+the data type of `x`/`q`/`p` and the shape after scalar broadcasting
+with `rate`.
 
 ## Details
 
@@ -59,10 +62,16 @@ The Exponential distribution has probability density function: \$\$f(x)
 = \lambda e^{-\lambda x}, \quad x \ge 0\$\$ and zero elsewhere, where
 \\\lambda\\ is `rate`.
 
-As in base R, the degenerate rates follow from the scale \\1/\lambda\\:
-`rate = 0` is admitted (all mass at infinity), while `rate = Inf` (all
-mass at zero) gives `NaN` for the density but is admitted by `nv_pexp`
-and `nv_qexp`.
+For positive finite rates, the mean is `1 / rate`. Zero and infinite
+rates follow base R's endpoint conventions:
+
+- `rate = 0`: the density and lower-tail probability are zero at finite
+  quantiles, but `NaN` at infinity. Quantiles are infinite except at
+  lower-tail probability zero, where the result is zero.
+
+- `rate = Inf`: densities are `NaN`. The lower-tail probability is zero
+  at or below zero and one above zero. Quantiles are zero except at
+  lower-tail probability one, where the result is `NaN`.
 
 ## Data Types
 
