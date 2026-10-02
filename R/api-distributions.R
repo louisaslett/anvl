@@ -610,6 +610,19 @@ nv_qunif <- jit(
   },
   static = c("lower_tail", "log_p")
 )
+
+# log(1 - exp(x)) for x <= 0, switching at -log(2) between the two forms that
+# keep full accuracy either side of it (Maechler, "Accurately Computing
+# log(1 - exp(-|a|))"; R's `R_Log1_Exp()`). Each form is fed a safe stand-in on
+# the elements where it is not selected, so it cannot poison the gradient.
+log1mexp <- function(x) {
+  use_expm1 <- x > -base::log(2)
+  nv_ifelse(
+    use_expm1,
+    nv_log(-nv_expm1(nv_ifelse(use_expm1, x, -1))),
+    nv_log1p(-nv_exp(nv_ifelse(use_expm1, -1, x)))
+  )
+}
 #' @rdname nv_exponential
 #' @export
 nv_dexp <- jit(
@@ -637,4 +650,39 @@ nv_dexp <- jit(
     nv_ifelse(valid, density, NaN)
   },
   static = "log"
+)
+
+#' @rdname nv_exponential
+#' @export
+nv_pexp <- jit(
+  function(q, rate = 1, lower_tail = TRUE, log_p = FALSE) {
+    assert_flag(lower_tail)
+    assert_flag(log_p)
+    args <- promote_distribution_args(q = q, rate = rate)
+    q <- args$q
+    rate <- args$rate
+
+    # At or below zero and at `q = Inf` the probability is resolved directly,
+    # which also keeps `rate = Inf` well defined at `q = 0`. `q` is clamped there
+    # so the untaken branch cannot poison gradients; NaN fails both comparisons
+    # and flows through.
+    at_or_below <- q <= 0
+    at_inf <- q == Inf
+    resolve_ends <- function(below_val, inf_val, interior_val) {
+      nv_ifelse(at_or_below, below_val, nv_ifelse(at_inf, inf_val, interior_val))
+    }
+    # log of the upper tail probability
+    t <- -rate * nv_ifelse(at_or_below | at_inf, 1, q)
+
+    res <- if (lower_tail) {
+      if (log_p) resolve_ends(-Inf, 0, log1mexp(t)) else resolve_ends(0, 1, -nv_expm1(t))
+    } else {
+      if (log_p) resolve_ends(0, -Inf, t) else resolve_ends(1, 0, nv_exp(t))
+    }
+    # base R tests the scale 1 / rate >= 0, which admits `rate = Inf`. `q = Inf`
+    # with `rate = 0` is Inf / Inf there.
+    valid <- (1 / rate >= 0) & !(at_inf & (rate == 0))
+    nv_ifelse(valid, res, NaN)
+  },
+  static = c("lower_tail", "log_p")
 )
