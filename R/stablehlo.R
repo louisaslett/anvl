@@ -150,11 +150,13 @@ stablehlo <- function(
 
   # Compute which inputs are donated (only graph$inputs, not constants)
   donate_flat <- if (length(donate) > 0L && !is.null(graph$in_tree)) {
-    # Constants are never donated, inputs may be
-    c(
+    # Constants are never donated, inputs may be; an input past the call's own
+    # (the global RNG state) is not one of them.
+    mask <- c(
       rep(FALSE, length(graph$constants)),
       pjrt::tree_leaf_mask(graph$in_tree, donate)
     )
+    c(mask, rep(FALSE, max(0L, length(inps) - length(mask))))
   } else {
     rep(FALSE, length(inps))
   }

@@ -52,44 +52,14 @@ nv_set_seed <- function(seed) {
   invisible(NULL)
 }
 
-# The name of the hidden argument through which a jitted function receives the
-# global RNG state.
-RNG_STATE_ARG <- ".anvl_rng_state"
-
-# The state a sampler draws from: `state` itself, or the global RNG state when
-# it is `NULL`. Called in the sampler's traced body; `rng_state_out()` hands the
-# result back.
-#
-# The global state is the one of the current trace: at the root of a jit call
-# the hidden input `global_rng_fn()` registered, in a sub-graph the one its
-# higher-order primitive threads into it (see `rng_thread()`). A root without
-# one signals `anvl_global_rng_needed`, which the jit wrapper takes as its cue to
-# call again with the state (see `jit()`); with it, a sub-graph that has none is
-# one that cannot pass the state on.
+# The state a sampler draws from: `state` itself, or the global RNG state of
+# the current trace when it is `NULL` (see `rng_state_get()`). Called in the
+# sampler's traced body; `rng_state_out()` hands the result back.
 rng_state_in <- function(state) {
   if (!is.null(state)) {
     return(state)
   }
-  desc <- current_descriptor()
-  if (!is.null(desc$rng_state)) {
-    return(desc$rng_state)
-  }
-  stash <- globals[["DESCRIPTOR_STASH"]]
-  root <- if (length(stash)) stash[[1L]] else desc
-  if (is.null(root$rng_state)) {
-    cli_abort(
-      c(
-        "The global RNG state can only be drawn from in a function called through {.fn jit}.",
-        i = "Pass {.arg state} explicitly, e.g. one created by {.fn nv_rng_state}."
-      ),
-      class = "anvl_global_rng_needed"
-    )
-  }
-  cli_abort(c(
-    "The global RNG state cannot be drawn from here.",
-    i = "It cannot be drawn from in the condition of {.fn nv_while}, nor in the function of a reduction, a scatter or a sort comparator.",
-    i = "Pass {.arg state} explicitly, e.g. one created by {.fn nv_rng_state}."
-  ))
+  rng_state_get(current_descriptor())
 }
 
 # What a sampler returns: `list(state, values)` for an explicit `state`; for
@@ -104,87 +74,92 @@ rng_state_out <- function(state, new_state, values) {
   values
 }
 
-# Wraps `f`, traced into a (sub-)graph, so that it starts from the global RNG
-# state `state` and returns `list(out, state)`: its own output and the global
-# state it leaves behind. `state` may be a box of an enclosing trace, which the
-# sub-graph then closes over. `NULL` (the enclosing trace has no global state)
-# leaves `f` as it is.
-rng_thread <- function(f, state) {
-  force(f)
-  if (is.null(state)) {
-    return(f)
+# The global RNG state of the trace `desc`, a GraphBox, registered on first use
+# as `desc$rng_mode` says:
+#   "input":   a fresh input of the graph, `desc$rng_input`, which is not among
+#              `desc$inputs`: whoever traced `desc` adds it where it belongs and
+#              returns the state the trace leaves behind (see `rng_finish()`).
+#              The root of a jit call and the bodies of `prim_while()` and
+#              `prim_scan()` take the state this way.
+#   "capture": the state of the enclosing trace `desc$rng_parent`, which the
+#              graph closes over. The branches of `prim_if()` and the function
+#              `gradient()` differentiates take the state this way.
+# A trace with neither cannot pass a state on, so drawing there is an error.
+rng_state_get <- function(desc) {
+  if (!is.null(desc$rng_state)) {
+    return(desc$rng_state)
   }
-  function(...) {
-    desc <- current_descriptor()
-    desc$rng_state <- state
-    out <- f(...)
-    list(out, desc$rng_state)
+  mode <- desc$rng_mode
+  if (identical(mode, "input")) {
+    gval <- GraphValue(AbstractArray(dtype = "ui64", shape = 2L))
+    desc$rng_input <- gval
+    desc$rng_state <- register_gval(desc, gval)
+  } else if (identical(mode, "capture")) {
+    desc$rng_state <- rng_state_get(desc$rng_parent)
+  } else if (!length(globals[["DESCRIPTOR_STASH"]])) {
+    cli_abort(c(
+      "The global RNG state can only be drawn from in a function called through {.fn jit}.",
+      i = "Pass {.arg state} explicitly, e.g. one created by {.fn nv_rng_state}."
+    ))
+  } else {
+    cli_abort(c(
+      "The global RNG state cannot be drawn from here.",
+      i = "It cannot be drawn from in the condition of {.fn nv_while}, nor in the function of a reduction, a scatter or a sort comparator.",
+      i = "Pass {.arg state} explicitly, e.g. one created by {.fn nv_rng_state}."
+    ))
   }
+  desc$rng_state
 }
 
-# Wraps `f` to take the global RNG state as the hidden argument
-# `RNG_STATE_ARG` rather than pass it on to `f`, and to return `list(out,
-# state)` like `rng_thread()`.
-rng_arg_fn <- function(f) {
-  force(f)
-  function(...) {
-    args <- list(...)
-    state <- args[[RNG_STATE_ARG]]
-    args[[RNG_STATE_ARG]] <- NULL
-    do.call(rng_thread(f, state), args)
+# Lets the trace `desc` take the global RNG state in `mode` (see
+# `rng_state_get()`), from the enclosing trace `parent` for `"capture"`.
+rng_enable <- function(desc, mode, parent = NULL) {
+  desc$rng_mode <- mode
+  desc$rng_parent <- parent
+  invisible(desc)
+}
+
+# For a trace `desc` that took the global RNG state as an input: that input and
+# the node of the state it leaves behind, as `list(input, output)`. `NULL` when
+# the trace did not draw from it.
+rng_finish <- function(desc) {
+  if (is.null(desc$rng_input)) {
+    return(NULL)
   }
+  list(input = desc$rng_input, output = desc$rng_state$gnode)
 }
 
-# The function to trace for a jit call: `f`, taking the global RNG state as a
-# hidden input and returning it after its output when the call `args` carry
-# it.
-global_rng_fn <- function(f, args) {
-  if (RNG_STATE_ARG %in% names(args)) rng_arg_fn(f) else f
+# The global RNG state slot of a program compiled from a trace that drew from
+# it (see `dispatcher()`'s `state`): pjrt's engine reads `globals$rng_state`
+# before every run, copying it to the program's device, and writes the advanced
+# state back after it.
+global_rng_slot <- function() {
+  list(env = globals, name = "rng_state", init = global_rng_init, dtype = "ui64", shape = 2L)
 }
 
-# Calls `run` (a backend's fast entry) with the global RNG state as the hidden
-# argument, and stores the state the call returns as the new global state. The
-# dispatcher copies the state to the call's device (see `dispatcher()`'s
-# `follow`), so it is passed wherever it lives.
-global_rng_dispatch <- function(run, args, backend) {
-  args[[RNG_STATE_ARG]] <- global_rng_state(backend)
-  out <- run(args)
-  globals$rng_state <- out[[2L]]
-  out[[1L]]
+# The global RNG state when none is set: seeded from `nv_set_seed()`'s seed, or
+# from base R's RNG when there is none.
+global_rng_init <- function() {
+  nv_rng_state(globals$seed %||% sample.int(.Machine$integer.max, 1L))
 }
 
-# The global RNG state as an array of `backend`, seeding it if it is not set.
-global_rng_state <- function(backend) {
-  state <- globals$rng_state
-  if (is.null(state)) {
-    seed <- globals$seed %||% sample.int(.Machine$integer.max, 1L)
-    state <- nv_rng_state(seed)
-  } else if (backend(state) != backend) {
-    state <- nv_array(as_raw(state), dtype = dtype(state), shape = shape(state))
+# Makes the branches of a `prim_if()` call -- their traces `descs` and graphs
+# `graphs` -- return the global RNG state after their output when one of them
+# drew from it: the state it leaves behind, or the enclosing trace `desc`'s
+# unchanged, which the branch then closes over. Returns whether they do.
+rng_if_outputs <- function(desc, descs, graphs) {
+  drew <- vapply(descs, function(d) !is.null(d$rng_state), logical(1L))
+  if (!any(drew)) {
+    return(FALSE)
   }
-  globals$rng_state <- state
-  state
-}
-
-# `prim_while()`'s condition and body for a loop state that carries the global
-# RNG state as `RNG_STATE_ARG`: the body draws from it and puts the state it
-# leaves behind back into the loop state it returns; the condition drops it, so
-# it cannot draw.
-rng_while_body <- function(body) {
-  # forced: the caller rebinds `body` to the wrapper
-  force(body)
-  function(...) {
-    res <- rng_arg_fn(body)(...)
-    c(res[[1L]], stats::setNames(list(res[[2L]]), RNG_STATE_ARG))
+  unchanged <- desc$rng_state$gnode
+  for (i in seq_along(graphs)) {
+    graph <- graphs[[i]]
+    out <- if (drew[[i]]) descs[[i]]$rng_state$gnode else unchanged
+    if (!drew[[i]]) {
+      graph$constants <- c(graph$constants, list(unchanged))
+    }
+    graph$outputs <- c(graph$outputs, list(out))
   }
-}
-
-rng_while_cond <- function(cond) {
-  # forced: the caller rebinds `cond` to the wrapper
-  force(cond)
-  function(...) {
-    args <- list(...)
-    args[[RNG_STATE_ARG]] <- NULL
-    do.call(cond, args)
-  }
+  TRUE
 }

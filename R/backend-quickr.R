@@ -40,7 +40,7 @@ jit_quickr_compile_cb <- function(f, static, unwrap) {
   function(info) {
     check_static_args(info$args, static)
     compiled <- compile_quickr(
-      global_rng_fn(f, info$args),
+      f,
       args_flat = avals_from_dispatch(info),
       in_tree = info$in_tree,
       unwrap = unwrap,
@@ -77,8 +77,7 @@ jit_quickr_impl <- function(f, static, cache_size, unwrap, device) {
     # one device today, but the dispatcher keys on whatever this returns, so a
     # second one would split the cache without further work here.
     default_device = function() default_device("quickr"),
-    context = default_dtypes_context("quickr"),
-    follow = RNG_STATE_ARG
+    context = default_dtypes_context("quickr")
   )
   dispatch <- pjrt::dispatch
 
@@ -113,7 +112,11 @@ compile_quickr <- function(
   default_dtypes = NULL
 ) {
   desc <- local_descriptor(default_dtypes = default_dtypes, backend = "quickr")
+  rng_enable(desc, "input")
   graph <- trace_fn(f, desc = desc, args_flat = args_flat, in_tree = in_tree)
+  if (!is.null(rng_finish(desc))) {
+    cli_abort("The quickr backend does not support the global RNG state.")
+  }
   check_single_backend(graph, expected = "quickr")
   list(fun = graph_to_quickr_function(graph, unwrap = unwrap, flat = flat))
 }

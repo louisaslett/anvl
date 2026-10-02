@@ -2529,18 +2529,18 @@ prim_if <- new_primitive(
     }
 
     current_desc <- current_descriptor(silent = TRUE)
-    # Both branches start from the global RNG state and return the one they
-    # leave behind after their output.
-    rng <- current_desc$rng_state
 
-    desc_true <- local_descriptor()
-    true_graph <- trace_fn(rng_thread(true, rng), list(), desc = desc_true)
-    desc_false <- local_descriptor()
-    false_graph <- trace_fn(rng_thread(false, rng), list(), desc = desc_false)
+    desc_true <- rng_enable(local_descriptor(), "capture", current_desc)
+    true_graph <- trace_fn(true, list(), desc = desc_true)
+    desc_false <- rng_enable(local_descriptor(), "capture", current_desc)
+    false_graph <- trace_fn(false, list(), desc = desc_false)
 
     if (!pjrt::tree_equal(true_graph$out_tree, false_graph$out_tree)) {
       cli_abort("{.arg true} and {.arg false} must return the same structure.")
     }
+    # A branch that draws from the global RNG state closes over it; then both
+    # return the state they leave behind as one more output.
+    rng <- rng_if_outputs(current_desc, list(desc_true, desc_false), list(true_graph, false_graph))
 
     # What the branches close over becomes their inputs -- both take all of it,
     # in the same order -- and the call's operands after `pred`.
@@ -2553,12 +2553,11 @@ prim_if <- new_primitive(
       infer_fn = infer_cond,
       desc = current_desc
     )
-    out <- unflatten(true_graph$out_tree, out)
-    if (is.null(rng)) {
-      return(out)
+    if (rng) {
+      current_desc$rng_state <- out[[length(out)]]
+      out <- out[-length(out)]
     }
-    current_desc$rng_state <- out[[2L]]
-    out[[1L]]
+    unflatten(true_graph$out_tree, out)
   },
   subgraphs = c("true", "false"),
   static = 2:3
@@ -2625,17 +2624,10 @@ prim_while <- new_primitive(
 
     current_desc <- current_descriptor(silent = TRUE)
     init <- unflatten(build_tree(init), lapply(flatten(init), materialize_operand, desc = current_desc))
-    # The global RNG state is carried as one more member of the loop state.
-    rng <- current_desc$rng_state
-    if (!is.null(rng)) {
-      init[[RNG_STATE_ARG]] <- rng
-      cond <- rng_while_cond(cond)
-      body <- rng_while_body(body)
-    }
 
     desc_cond <- local_descriptor()
     cond_graph <- trace_fn(cond, init, desc = desc_cond)
-    desc_body <- local_descriptor()
+    desc_body <- rng_enable(local_descriptor(), "input")
     body_graph <- trace_fn(body, init, desc = desc_body)
 
     if (!pjrt::tree_equal(cond_graph$in_tree, body_graph$in_tree)) {
@@ -2646,24 +2638,34 @@ prim_while <- new_primitive(
       cli_abort("body must have the same input and output structure")
     }
 
+    # A body that draws from the global RNG state carries it as the last member
+    # of the loop state, which `cond` takes too but does not read.
+    rng <- rng_finish(desc_body)
+    operands <- flatten(init)
+    if (!is.null(rng)) {
+      body_graph$inputs <- c(body_graph$inputs, list(rng$input))
+      body_graph$outputs <- c(body_graph$outputs, list(rng$output))
+      cond_graph$inputs <- c(cond_graph$inputs, list(GraphValue(rng$input$aval)))
+      operands <- c(operands, list(rng_state_get(current_desc)))
+    }
+
     # `cond` and `body` take the state, then what either of them closes over;
     # the call's operands are the same.
     captures <- purify_subgraphs(current_desc, list(cond_graph, body_graph))
 
     out <- graph_desc_add(
       self,
-      args = c(flatten(init), captures),
+      args = c(operands, captures),
       params = list(cond = cond_graph, body = body_graph, n_captures = length(captures)),
       infer_fn = infer_while,
       desc = current_desc
     )
-
-    out <- unflatten(body_graph$out_tree, out)
     if (!is.null(rng)) {
-      current_desc$rng_state <- out[[RNG_STATE_ARG]]
-      out[[RNG_STATE_ARG]] <- NULL
+      current_desc$rng_state <- out[[length(out)]]
+      out <- out[-length(out)]
     }
-    out
+
+    unflatten(body_graph$out_tree, out)
   },
   # No promotion: the loop-carried state is meant to be heterogeneous -- a
   # counter and the values it iterates over -- so its members do not share a
@@ -2736,13 +2738,6 @@ prim_scan <- new_primitive(
     if (!n_carry) {
       cli_abort("{.arg init} must contain at least one array.")
     }
-    # The global RNG state is carried as the last leaf of the carry, which the
-    # body sees as `list(init, state)`.
-    rng <- current_desc$rng_state
-    if (!is.null(rng)) {
-      init_flat <- c(init_flat, list(rng))
-      n_carry <- n_carry + 1L
-    }
 
     # The body is traced once, seeing each `xs` leaf with its leading axis
     # dropped; the lowering slices the real arrays inside the loop. This is
@@ -2773,11 +2768,6 @@ prim_scan <- new_primitive(
 
     init_tree <- build_tree(init)
     step <- function(carry, x) {
-      if (!is.null(rng)) {
-        desc <- current_descriptor()
-        desc$rng_state <- carry[[2L]]
-        carry <- carry[[1L]]
-      }
       st <- body(carry, if (n_xs) x else NULL)
       if (
         !is.list(st) ||
@@ -2790,13 +2780,20 @@ prim_scan <- new_primitive(
       if (!pjrt::tree_equal(build_tree(st$carry), init_tree)) {
         cli_abort("{.arg body} must return a carry with the same structure as {.arg init}.")
       }
-      carry <- if (is.null(rng)) st$carry else list(st$carry, current_descriptor()$rng_state)
-      list(carry = carry, out = st$out)
+      list(carry = st$carry, out = st$out)
     }
 
-    desc_body <- local_descriptor()
-    carry <- if (is.null(rng)) init else list(init, rng)
-    body_graph <- trace_fn(step, list(carry = carry, x = x_slices), desc = desc_body)
+    desc_body <- rng_enable(local_descriptor(), "input")
+    body_graph <- trace_fn(step, list(carry = init, x = x_slices), desc = desc_body)
+    # A body that draws from the global RNG state carries it as the last leaf
+    # of the carry.
+    rng <- rng_finish(desc_body)
+    if (!is.null(rng)) {
+      body_graph$inputs <- append(body_graph$inputs, list(rng$input), after = n_carry)
+      body_graph$outputs <- append(body_graph$outputs, list(rng$output), after = n_carry)
+      init_flat <- c(init_flat, list(rng_state_get(current_desc)))
+      n_carry <- n_carry + 1L
+    }
     # The body takes the carry, the `xs` slices, then what it closes over; the
     # call's operands are the carry, `xs`, then the same captures.
     captures <- purify_subgraphs(current_desc, list(body_graph))
@@ -2843,12 +2840,11 @@ prim_scan <- new_primitive(
       infer_fn = infer_fn,
       desc = current_desc
     )
-    out <- unflatten(body_graph$out_tree, out)
     if (!is.null(rng)) {
-      current_desc$rng_state <- out$carry[[2L]]
-      out$carry <- out$carry[[1L]]
+      current_desc$rng_state <- out[[n_carry]]
+      out <- out[-n_carry]
     }
-    out
+    unflatten(body_graph$out_tree, out)
   },
   subgraphs = "body",
   static = 3:5

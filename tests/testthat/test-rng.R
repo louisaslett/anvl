@@ -66,6 +66,19 @@ describe("the global RNG state in jit", {
     expect_identical(as_array(globals$rng_state), as_array(s4$state))
   })
 
+  it("is taken by a function traced only once", {
+    local_global_rng()
+    n_traces <- 0L
+    f <- jit(function() {
+      n_traces <<- n_traces + 1L
+      nv_runif(2L)
+    })
+    nv_set_seed(1L)
+    f()
+    f()
+    expect_identical(n_traces, 1L)
+  })
+
   it("is shared between jitted functions and eager draws", {
     local_global_rng()
     f <- jit(function() nv_runif(2L))
@@ -168,6 +181,22 @@ describe("the global RNG state in sub-graphs", {
     first <- nv_runif(2L, state)
     expect_identical(as_array(out$grad), as_array(first$values))
     expect_identical(as_array(out$after), as_array(nv_runif(1L, first$state)$values))
+  })
+
+  it("is taken when only a sub-graph draws from it", {
+    local_global_rng()
+    f <- jit(function() {
+      nv_while(
+        list(i = 0L, x = nv_fill(0, 1L)),
+        function(i, x) i < 2L,
+        function(i, x) list(i = i + 1L, x = nv_if(i < 1L, function() nv_runif(1L), function() x + nv_runif(1L)))
+      )$x
+    })
+    nv_set_seed(1L)
+    expected <- draws(1L, 2L)
+    expect_equal(as_array(f()), expected[[1L]] + expected[[2L]], tolerance = 1e-6)
+    # the call advanced the global state by both draws
+    expect_identical(as_array(nv_runif(1L)), draws(1L, 3L)[[3L]])
   })
 
   it("is not available in the condition of nv_while", {

@@ -13,7 +13,7 @@ jit_pjrt_compile_cb <- function(f, static, donate, device = NULL) {
   function(info) {
     check_static_args(info$args, static)
     compiled <- compile_pjrt(
-      global_rng_fn(f, info$args),
+      f,
       args_flat = avals_from_dispatch(info),
       in_tree = info$in_tree,
       donate = donate,
@@ -25,7 +25,7 @@ jit_pjrt_compile_cb <- function(f, static, donate, device = NULL) {
     phantom_specs <- lapply(compiled$phantom_specs, function(spec) {
       list(dtype = as.character(spec$dtype), shape = as.integer(spec$shape))
     })
-    list(
+    entry <- list(
       exec = compiled$exec,
       const_arrays = compiled$const_arrays,
       input_dtypes = compiled$input_dtypes,
@@ -35,6 +35,9 @@ jit_pjrt_compile_cb <- function(f, static, donate, device = NULL) {
       out_tree = compiled$out_tree,
       out_avals = compiled$out_avals
     )
+    # the global RNG state slot, for a program that draws from it
+    entry$state <- compiled$state
+    entry
   }
 }
 
@@ -62,9 +65,7 @@ jit_pjrt_impl <- function(f, static, cache_size, donate, device) {
     default_device = if (is.null(device)) function() default_device("pjrt"),
     # The default dtypes the program is compiled under are part of the key, so
     # a program compiled under one pair is never served under another.
-    context = default_dtypes_context("pjrt"),
-    # The global RNG state follows the call to its device (see nv_set_seed()).
-    follow = RNG_STATE_ARG
+    context = default_dtypes_context("pjrt")
   )
   # Hoisted out of the per-call path: `::` resolves via getExportedValue on
   # every evaluation, which costs ~1us per lookup.
@@ -141,6 +142,9 @@ jit_pjrt_impl <- function(f, static, cache_size, donate, device) {
 #'   - `device`: The `PJRTDevice` the executable was compiled for.
 #'   - `phantom_specs`: One `list(dtype, shape)` per phantom donated input the
 #'     executor must allocate for an output (see [`stablehlo()`]).
+#'   - `state`: `NULL`, or for a program that draws from the global RNG state
+#'     the state slot through which pjrt's dispatcher supplies and stores it
+#'     (see [`nv_set_seed()`]).
 #' @keywords internal
 compile_pjrt <- function(
   f,
@@ -153,6 +157,7 @@ compile_pjrt <- function(
   default_dtypes = NULL
 ) {
   desc <- local_descriptor(default_dtypes = default_dtypes, backend = "pjrt")
+  rng_enable(desc, "input")
   graph <- trace_fn(
     f,
     desc = desc,
@@ -197,11 +202,30 @@ compile_pjrt <- function(
   # Otherwise, everything will be converted to requested device and it does not matter
   # If we found different devices during tracing.
 
-  compile_graph_pjrt(graph, donate = donate, device = device)
+  compile_graph_pjrt(graph, donate = donate, device = device, rng = rng_finish(desc))
 }
 
-compile_graph_pjrt <- function(graph, donate = character(), device) {
+# `rng` is `NULL`, or the global RNG state's `list(input, output)` of a trace
+# that drew from it (see `rng_finish()`): the program then takes the state as
+# its last input and returns it as its last output, and pjrt supplies and stores
+# it through a state slot.
+compile_graph_pjrt <- function(graph, donate = character(), device, rng = NULL) {
   platform_name <- if (is.character(device)) device else platform(device)
+  # Read before the state is added: it is not one of the call's inputs or
+  # outputs.
+  input_dtypes <- graph_input_dtypes(graph)
+  # pjrt needs these to create templates for the outputs
+  # We also provide dtype and shape because these are created BEFORE the first execution
+  out_avals <- lapply(graph$outputs, function(x) {
+    list(
+      dtype = as.character(x$aval$dtype),
+      shape = shape(x$aval)
+    )
+  })
+  if (!is.null(rng)) {
+    graph$inputs <- c(graph$inputs, list(rng$input))
+    graph$outputs <- c(graph$outputs, list(rng$output))
+  }
   out <- stablehlo(
     graph,
     donate = donate,
@@ -229,15 +253,6 @@ compile_graph_pjrt <- function(graph, donate = character(), device) {
 
   out_tree <- graph$out_tree
 
-  # pjrt needs these to create templates for the outputs
-  # We also provide dtype and shape because these are created BEFORE the first execution
-  out_avals <- lapply(graph$outputs, function(x) {
-    list(
-      dtype = as.character(x$aval$dtype),
-      shape = shape(x$aval)
-    )
-  })
-
   src <- stablehlo::repr(func)
   program <- pjrt_program(src = src, format = "mlir")
   exec <- pjrt_compile(program, device = device)
@@ -251,9 +266,10 @@ compile_graph_pjrt <- function(graph, donate = character(), device) {
     # names one -- the dispatcher uploads the R data at that dtype, which is how
     # an `f64` program gets the exact R double; an array input takes `NA`, and a
     # call without any R input needs no declaration at all.
-    input_dtypes = graph_input_dtypes(graph),
+    input_dtypes = input_dtypes,
     device = device(exec),
-    phantom_specs = phantom_specs
+    phantom_specs = phantom_specs,
+    state = if (!is.null(rng)) list(global_rng_slot())
   )
 }
 

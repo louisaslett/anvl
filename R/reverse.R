@@ -721,15 +721,15 @@ value_and_gradient <- function(f, wrt = NULL) {
 }
 
 # Traces `f`, the function `gradient()` differentiates, from the prepared
-# arguments `prep`. Where the enclosing trace has a global RNG state, `f` starts
-# from it, and `rng` is the node of the state it leaves behind (a list of one),
-# for `rng_state_restore()` once the graph is replayed; otherwise it is empty.
+# arguments `prep`. A draw from the global RNG state closes over the enclosing
+# trace's; `rng` is then the node of the state `f` leaves behind (a list of
+# one), for `rng_state_restore()` once the graph is replayed, and otherwise
+# empty.
 trace_gradient_fn <- function(f, prep) {
-  rng <- current_descriptor()$rng_state
-  desc <- local_descriptor()
-  desc$rng_state <- rng
+  parent <- current_descriptor()
+  desc <- rng_enable(local_descriptor(), "capture", parent)
   graph <- trace_fn(f, args_flat = prep$args_flat, in_tree = prep$in_tree, desc = desc)
-  list(graph = graph, rng = if (!is.null(rng)) list(desc$rng_state$gnode))
+  list(graph = graph, rng = if (!is.null(desc$rng_state)) list(desc$rng_state$gnode))
 }
 
 # Makes the replayed global RNG state `extra` (a list of at most one box) that
