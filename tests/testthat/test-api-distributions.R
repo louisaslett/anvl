@@ -857,9 +857,30 @@ describe("nv_qunif", {
 
 # Rates exercised against base R by the nv_dexp/nv_pexp/nv_qexp agreement tests:
 # ordinary, degenerate (zero and infinite), negative, NaN, and -0, which base R
-# rejects because its scale 1 / rate is -Inf.
+# rejects because its scale 1 / rate is -Inf. A literal `-0` would not do: R's
+# byte compiler folds it into the constant `0` once this function is compiled.
 exp_rate_cases <- function() {
-  c(1, 2.5, 0, Inf, -1, NaN, -0)
+  c(1, 2.5, 0, Inf, -1, NaN, as.numeric("-0"))
+}
+
+# Element-by-element relative comparison, with NaN and infinities matched
+# exactly. `expect_equal()` measures the mean relative difference over the whole
+# vector, which tiny elements barely move, and compares absolutely when the
+# expected values are smaller than the tolerance.
+expect_equal_elementwise <- function(object, expected, tolerance = 1e-13) {
+  close <- (abs(object - expected) <= tolerance * abs(expected)) %in% TRUE
+  ok <- ifelse(is.nan(expected), is.nan(object), !is.nan(object) & (object == expected | close))
+  bad <- which(!ok)
+  expect(
+    length(bad) == 0L,
+    sprintf(
+      "Elements differ at %s: got %s, expected %s.",
+      paste(bad, collapse = ", "),
+      paste(format(object[bad], digits = 17), collapse = ", "),
+      paste(format(expected[bad], digits = 17), collapse = ", ")
+    )
+  )
+  invisible(object)
 }
 
 describe("nv_dexp", {
@@ -922,7 +943,7 @@ describe("nv_dexp", {
         suppressWarnings(dexp(x, r, log = lg))
       })
     }))
-    expect_equal(got, want)
+    expect_equal_elementwise(got, want)
   })
 
   it("gradients stay finite at an infinite x (resolved branch doesn't poison them via nv_ifelse)", {
@@ -964,6 +985,30 @@ describe("nv_dexp", {
       dexp(x, rate = rate),
       tolerance = 1e-6
     )
+  })
+
+  it("accepts large finite rates, whose reciprocal flushes to zero", {
+    for (dt in c("f32", "f64")) {
+      rate <- nv_scalar(if (dt == "f32") 1e38 else 1e308, dtype = dt)
+      x <- nv_scalar(0, dtype = dt)
+      expect_equal(as.vector(nv_dexp(x, rate)) / as.vector(rate), 1)
+      expect_true(is.nan(as.vector(nv_dexp(x, -rate))))
+    }
+  })
+
+  it("rescales density tails by a large rate before they underflow, either side of the split", {
+    for (dt in c("f32", "f64")) {
+      r <- if (dt == "f32") 1e30 else 1e300
+      t <- if (dt == "f32") c(79, 80, 81, 110) else c(699, 700, 701, 750)
+      x <- nv_array(t / r, dtype = dt)
+      rate <- nv_scalar(r, dtype = dt)
+      want <- exp(log(as.vector(rate)) - as.vector(rate) * as.vector(x))
+      expect_equal_elementwise(
+        as.vector(nv_dexp(x, rate)),
+        want,
+        tolerance = if (dt == "f32") 2e-5 else 1e-12
+      )
+    }
   })
 
   it("converts rate to the dtype of x", {
@@ -1040,11 +1085,11 @@ describe("nv_pexp", {
     # round to 0 at q = 40
     for (dt in c("f32", "f64")) {
       tiny <- nv_array(1e-20, dtype = dt)
-      expect_equal(as.vector(nv_pexp(tiny)), 1e-20, tolerance = 1e-6)
+      expect_equal(as.vector(nv_pexp(tiny)) / 1e-20, 1, tolerance = 1e-6)
       expect_equal(as.vector(nv_pexp(tiny, log_p = TRUE)), log(1e-20), tolerance = 1e-6)
       expect_equal(
-        as.vector(nv_pexp(nv_array(40, dtype = dt), log_p = TRUE)),
-        -exp(-40),
+        as.vector(nv_pexp(nv_array(40, dtype = dt), log_p = TRUE)) / -exp(-40),
+        1,
         tolerance = 1e-6
       )
     }
@@ -1082,7 +1127,7 @@ describe("nv_pexp", {
         suppressWarnings(pexp(q, r, lower.tail = flags$lower_tail[k], log.p = flags$log_p[k]))
       })
     }))
-    expect_equal(got, want)
+    expect_equal_elementwise(got, want)
   })
 
   it("gradients stay finite at an infinite q (resolved branch doesn't poison them via nv_ifelse)", {
@@ -1125,6 +1170,66 @@ describe("nv_pexp", {
       pexp(q, rate = rate),
       tolerance = 1e-6
     )
+  })
+
+  it("accepts large finite rates and rejects large negative ones", {
+    for (dt in c("f32", "f64")) {
+      rate <- nv_scalar(if (dt == "f32") 1e38 else 1e308, dtype = dt)
+      q <- nv_scalar(1, dtype = dt)
+      expect_equal(as.vector(nv_pexp(q, rate)), 1)
+      expect_true(is.nan(as.vector(nv_pexp(q, -rate))))
+      expect_true(is.nan(as.vector(nv_pexp(q, -rate, log_p = TRUE))))
+    }
+  })
+
+  it("log_p = TRUE stays finite where rate * q underflows", {
+    for (dt in c("f32", "f64")) {
+      r <- if (dt == "f32") 1e-30 else 1e-200
+      q <- nv_array(c(r, 2 * r), dtype = dt)
+      rate <- nv_scalar(r, dtype = dt)
+      want <- log(as.vector(rate)) + log(as.vector(q))
+      expect_equal_elementwise(
+        as.vector(nv_pexp(q, rate, log_p = TRUE)),
+        want,
+        tolerance = if (dt == "f32") 3e-7 else 1e-15
+      )
+    }
+  })
+
+  it("log_p = TRUE agrees either side of where rate * q underflows", {
+    # The two smaller products fall below the smallest normal and flush to zero
+    for (dt in c("f32", "f64")) {
+      smallest <- if (dt == "f32") 2^-126 else 2^-1022
+      rate <- nv_scalar(2^-20, dtype = dt)
+      q <- nv_array(smallest * 2^20 * c(0.5, 0.99, 1.01, 2), dtype = dt)
+      want <- log(as.vector(rate)) + log(as.vector(q))
+      expect_equal_elementwise(
+        as.vector(nv_pexp(q, rate, log_p = TRUE)),
+        want,
+        tolerance = if (dt == "f32") 3e-7 else 1e-15
+      )
+    }
+  })
+
+  it("log_p = TRUE keeps full accuracy where rate * q is tiny but representable", {
+    # log(rate) + log(q) is exact in principle here, but cancels several ulps
+    # away when the two logs are large and of opposite sign
+    rate <- c(0x1.bd318f07885f5p-450, 1e-100, 1e100, 1e-20, 1e150)
+    q <- c(0x1.362c5bca9c0c2p+389, 1e-150, 1e-217, 1e-5, 1e-300)
+    expect_equal_elementwise(
+      as.vector(nv_pexp(as_f64(q), as_f64(rate), log_p = TRUE)),
+      pexp(q, rate, log.p = TRUE),
+      tolerance = 5e-16
+    )
+  })
+
+  it("log_p = TRUE has accurate gradients where rate * q underflows", {
+    q <- nv_array(c(1e-200, 2e-200), dtype = "f64")
+    rate <- nv_scalar(1e-200, dtype = "f64")
+    f <- function(q, rate) nv_sum(nv_pexp(q, rate, log_p = TRUE))
+    g <- jit(gradient(f, wrt = c("q", "rate")))(q, rate)
+    expect_equal(as.vector(g$q) / (1 / as.vector(q)), c(1, 1))
+    expect_equal(as.vector(g$rate) / 2e200, 1)
   })
 
   it("converts rate to the dtype of q", {
@@ -1213,10 +1318,11 @@ describe("nv_qexp", {
     # -log(1 - p) would cancel to 0 at p = 1e-20, as would -log(1 - exp(lp)) at
     # lp = log(1e-20)
     for (dt in c("f32", "f64")) {
-      expect_equal(as.vector(nv_qexp(nv_array(1e-20, dtype = dt))), 1e-20, tolerance = 1e-6)
+      expect_equal(as.vector(nv_qexp(nv_array(1e-20, dtype = dt))) / 1e-20, 1, tolerance = 1e-6)
+      lp <- nv_array(log(1e-20), dtype = dt)
       expect_equal(
-        as.vector(nv_qexp(nv_array(log(1e-20), dtype = dt), log_p = TRUE)),
-        1e-20,
+        as.vector(nv_qexp(lp, log_p = TRUE)) / qexp(as.vector(lp), log.p = TRUE),
+        1,
         tolerance = 1e-6
       )
     }
@@ -1309,7 +1415,7 @@ describe("nv_qexp", {
         ))
       })
     }))
-    expect_equal(got, want)
+    expect_equal_elementwise(got, want)
   })
 
   it("non-scalar rate works", {
@@ -1322,6 +1428,86 @@ describe("nv_qexp", {
     )
   })
 
+  it("accepts large finite rates and rejects large negative ones", {
+    for (dt in c("f32", "f64")) {
+      r <- if (dt == "f32") 1e38 else 1e308
+      lp <- if (dt == "f32") -80 else -700
+      rate <- nv_scalar(r, dtype = dt)
+      p <- nv_scalar(lp, dtype = dt)
+      expect_equal(
+        as.vector(nv_qexp(p, rate, lower_tail = FALSE, log_p = TRUE)) / (-lp / as.vector(rate)),
+        1,
+        tolerance = 1e-6
+      )
+      expect_true(is.nan(as.vector(nv_qexp(nv_scalar(0.5, dtype = dt), -rate))))
+    }
+  })
+
+  it("log_p = TRUE rescales by a small rate before exp(p) underflows", {
+    for (dt in c("f32", "f64")) {
+      r <- if (dt == "f32") 1e-30 else 1e-300
+      lp <- if (dt == "f32") c(-110, -120) else c(-750, -760)
+      p <- nv_array(lp, dtype = dt)
+      rate <- nv_scalar(r, dtype = dt)
+      want <- exp(lp - log(as.vector(rate)))
+      expect_equal_elementwise(
+        as.vector(nv_qexp(p, rate, log_p = TRUE)),
+        want,
+        tolerance = if (dt == "f32") 1e-5 else 1e-12
+      )
+    }
+  })
+
+  it("log_p = TRUE agrees either side of the underflow split", {
+    for (dt in c("f32", "f64")) {
+      split <- if (dt == "f32") -80 else -700
+      p <- nv_array(split + c(-0.01, 0, 0.01), dtype = dt)
+      want <- exp(as.vector(p)) / 2
+      expect_equal_elementwise(
+        as.vector(nv_qexp(p, rate = 2, log_p = TRUE)),
+        want,
+        tolerance = if (dt == "f32") 5e-7 else 1e-15
+      )
+    }
+  })
+
+  it("log_p = TRUE keeps full accuracy for tiny probabilities that do not underflow", {
+    # -log(1 - exp(p)) = exp(p) to working precision below about p = -37. A
+    # tolerance of about 2 ulp: rescaling through exp(p / 2) costs up to 4.
+    lp <- seq(-700, -37, length.out = 4000)
+    expect_equal_elementwise(
+      as.vector(nv_qexp(as_f64(lp), rate = 2.5, log_p = TRUE)),
+      exp(lp) / 2.5,
+      tolerance = 4e-16
+    )
+  })
+
+  it("log_p = TRUE has accurate gradients where exp(p) underflows", {
+    p <- nv_array(c(-750, -760), dtype = "f64")
+    rate <- nv_scalar(1e-300, dtype = "f64")
+    f <- function(p, rate) nv_sum(nv_qexp(p, rate, log_p = TRUE))
+    g <- jit(gradient(f, wrt = c("p", "rate")))(p, rate)
+    want <- exp(as.vector(p) - log(1e-300))
+    expect_equal_elementwise(as.vector(g$p), want, tolerance = 1e-12)
+    expect_equal(as.vector(g$rate) / (-sum(want) / 1e-300), 1, tolerance = 1e-12)
+  })
+
+  it("resolves the zero quantile before differentiating at rate zero", {
+    f <- function(p, rate, lower_tail, log_p) nv_sum(nv_qexp(p, rate, lower_tail, log_p))
+    grad <- jit(gradient(f, wrt = "rate"), static = c("lower_tail", "log_p"))
+    for (lt in c(FALSE, TRUE)) {
+      for (lp in c(FALSE, TRUE)) {
+        p <- if (lp) {
+          if (lt) -Inf else 0
+        } else {
+          if (lt) 0 else 1
+        }
+        g <- grad(nv_scalar(p, dtype = "f64"), nv_scalar(0, dtype = "f64"), lt, lp)
+        expect_equal(as.vector(g$rate), 0)
+      }
+    }
+  })
+
   it("converts rate to the dtype of p", {
     out <- nv_qexp(nv_array(c(0.25, 0.75), dtype = "f32"), rate = 2L)
     expect_equal(dtype(out), as_dtype("f32"))
@@ -1331,6 +1517,22 @@ describe("nv_qexp", {
     expect_error(nv_qexp(nv_array(1L)), "`p` must be a float data type")
     expect_error(nv_pexp(nv_array(1L)), "`q` must be a float data type")
     expect_error(nv_dexp(nv_array(1L)), "`x` must be a float data type")
+  })
+})
+
+describe("nv_dexp(), nv_pexp() and nv_qexp()", {
+  it("reject a rate of -Inf", {
+    for (f in list(nv_dexp, nv_pexp, nv_qexp)) {
+      expect_true(all(is.nan(as.vector(f(nv_array(c(0, 0.5, 1, Inf)), rate = -Inf)))))
+    }
+  })
+
+  it("broadcast a scalar operand against a non-scalar rate", {
+    for (f in list(nv_dexp, nv_pexp, nv_qexp)) {
+      got <- f(nv_scalar(0.5), rate = nv_array(c(1, 2)))
+      expect_shape(got, 2L)
+      expect_equal(as.vector(got), as.vector(f(nv_array(c(0.5, 0.5)), rate = nv_array(c(1, 2)))))
+    }
   })
 })
 
@@ -1372,5 +1574,16 @@ describe("the float category", {
       jit(function(x) nv_qnorm(nv_convert(x, "bf16")))(nv_array(c(0.5, 0.5))),
       "must be a 32- or 64-bit float data type"
     )
+  })
+
+  it("nv_dexp(), nv_pexp() and nv_qexp() need a 32- or 64-bit float", {
+    # They carry one underflow threshold or rescaling per width; see above for
+    # the `jit()`
+    for (f in list(nv_dexp, nv_pexp, nv_qexp)) {
+      expect_error(
+        jit(function(x) f(nv_convert(x, "bf16")))(nv_array(c(0.5, 0.5))),
+        "must be a 32- or 64-bit float data type"
+      )
+    }
   })
 })

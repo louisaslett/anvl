@@ -19,8 +19,9 @@ Quantiles at which to evaluate the density (\code{x}) or the distribution
 function (\code{q}).}
 
 \item{rate}{(\code{\link{arrayish}})\cr
-Rate of the distribution. Either a scalar, or an array of exactly the
-shape of \code{x}/\code{q}/\code{p}. Negative rates give \code{NaN}.}
+Rate of the distribution. Scalars broadcast; otherwise \code{rate} and
+\code{x}/\code{q}/\code{p} must have the same shape. Negative rates (including \code{-Inf}
+and negative zero) give \code{NaN}.}
 
 \item{log, log_p}{(\code{logical(1)})\cr
 If \code{TRUE}, the densities/probabilities are given as logarithms. For
@@ -32,12 +33,13 @@ If \code{TRUE} (default), probabilities are \eqn{P(X \le x)}; otherwise,
 
 \item{p}{(\code{\link{arrayish}})\cr
 Probabilities at which to evaluate the quantile function. Values outside
-\eqn{[0, 1]} give \code{NaN}.}
+\eqn{[0, 1]} give \code{NaN}. With \code{log_p = TRUE}, supply log-probabilities
+in \eqn{[-\infty, 0]} instead.}
 }
 \value{
 (\code{\link{arrayish}})\cr
 \code{nv_dexp()}, \code{nv_pexp()}, and \code{nv_qexp()} return an \code{\link{arrayish}} with the
-same shape and data type as \code{x}/\code{q}/\code{p}.
+data type of \code{x}/\code{q}/\code{p} and the shape after scalar broadcasting with \code{rate}.
 }
 \description{
 Density (\code{nv_dexp}), distribution function (\code{nv_pexp}), and quantile
@@ -49,10 +51,16 @@ The Exponential distribution has probability density function:
 \deqn{f(x) = \lambda e^{-\lambda x}, \quad x \ge 0}
 and zero elsewhere, where \eqn{\lambda} is \code{rate}.
 
-As in base R, the degenerate rates follow from the scale \eqn{1/\lambda}:
-\code{rate = 0} is admitted (all mass at infinity), while \code{rate = Inf} (all mass
-at zero) gives \code{NaN} for the density but is admitted by \code{nv_pexp} and
-\code{nv_qexp}.
+For positive finite rates, the mean is \code{1 / rate}. Zero and infinite rates
+follow base R's endpoint conventions:
+\itemize{
+\item \code{rate = 0}: the density and lower-tail probability are zero at finite
+quantiles, but \code{NaN} at infinity. Quantiles are infinite except at
+lower-tail probability zero, where the result is zero.
+\item \code{rate = Inf}: densities are \code{NaN}. The lower-tail probability is zero
+at or below zero and one above zero. Quantiles are zero except at
+lower-tail probability one, where the result is \code{NaN}.
+}
 }
 \section{Data Types}{
 
