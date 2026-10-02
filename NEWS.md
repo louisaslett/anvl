@@ -1,3 +1,8 @@
+# anvl (development version)
+
+* New functions for the exponential distribution: `nv_dexp()`, `nv_pexp()`,
+  and `nv_qexp()`.
+
 # anvl 0.5.1
 
 * Bugfix: Add r-xla r-universe repo to description again.
