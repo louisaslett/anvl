@@ -623,6 +623,63 @@ log1mexp <- function(x) {
     nv_log1p(-nv_exp(nv_ifelse(use_expm1, -1, x)))
   )
 }
+
+#' @title The Exponential Distribution
+#' @name nv_exponential
+#' @description
+#' Density (`nv_dexp`), distribution function (`nv_pexp`), and quantile
+#' function (`nv_qexp`) for the Exponential distribution with rate `rate`
+#' (i.e., mean `1 / rate`).
+#' @param x,q ([`arrayish`])\cr
+#'   Quantiles at which to evaluate the density (`x`) or the distribution
+#'   function (`q`).
+#' @param p ([`arrayish`])\cr
+#'   Probabilities at which to evaluate the quantile function. Values outside
+#'   \eqn{[0, 1]} give `NaN`.
+#' @param rate ([`arrayish`])\cr
+#'   Rate of the distribution. Either a scalar, or an array of exactly the
+#'   shape of `x`/`q`/`p`. Negative rates give `NaN`.
+#' @param log,log_p (`logical(1)`)\cr
+#'   If `TRUE`, the densities/probabilities are given as logarithms. For
+#'   `nv_qexp` this describes the input `p`.
+#' @param lower_tail (`logical(1)`)\cr
+#'   If `TRUE` (default), probabilities are \eqn{P(X \le x)}; otherwise,
+#'   \eqn{P(X > x)}.
+#' @details
+#' The Exponential distribution has probability density function:
+#' \deqn{f(x) = \lambda e^{-\lambda x}, \quad x \ge 0}
+#' and zero elsewhere, where \eqn{\lambda} is `rate`.
+#'
+#' As in base R, the degenerate rates follow from the scale \eqn{1/\lambda}:
+#' `rate = 0` is admitted (all mass at infinity), while `rate = Inf` (all mass
+#' at zero) gives `NaN` for the density but is admitted by `nv_pexp` and
+#' `nv_qexp`.
+#'
+#' @templateVar dist exp
+#' @templateVar params `rate`
+#' @template section_distribution_dtype
+#' @return ([`arrayish`])\cr
+#' `nv_dexp()`, `nv_pexp()`, and `nv_qexp()` return an [`arrayish`] with the
+#' same shape and data type as `x`/`q`/`p`.
+#'
+#' @examplesIf pjrt::plugins_downloaded()
+#' x <- nv_array(c(-1, 0, 0.5, 1, 2))
+#' nv_dexp(x)
+#' nv_dexp(x, rate = 2)
+#' nv_dexp(x, log = TRUE)
+#'
+#' nv_pexp(x)
+#' nv_pexp(x, rate = 2)
+#' nv_pexp(x, lower_tail = FALSE)
+#' nv_pexp(x, log_p = TRUE)
+#'
+#' p <- nv_array(c(0.025, 0.5, 0.975))
+#' nv_qexp(p)
+#' nv_qexp(p, rate = 2)
+#' nv_qexp(p, lower_tail = FALSE)
+#' nv_qexp(nv_array(c(-700, -2, -0.1), dtype = "f64"), log_p = TRUE)
+NULL
+
 #' @rdname nv_exponential
 #' @export
 nv_dexp <- jit(
@@ -683,6 +740,44 @@ nv_pexp <- jit(
     # with `rate = 0` is Inf / Inf there.
     valid <- (1 / rate >= 0) & !(at_inf & (rate == 0))
     nv_ifelse(valid, res, NaN)
+  },
+  static = c("lower_tail", "log_p")
+)
+
+#' @rdname nv_exponential
+#' @export
+nv_qexp <- jit(
+  function(p, rate = 1, lower_tail = TRUE, log_p = FALSE) {
+    assert_flag(lower_tail)
+    assert_flag(log_p)
+    args <- promote_distribution_args(p = p, rate = rate)
+    p <- args$p
+    rate <- args$rate
+
+    # Out-of-range `p` is resolved to NaN by `valid`, but is also replaced by an
+    # interior stand-in so it cannot poison gradients
+    if (log_p) {
+      in_range <- p <= 0
+      p_safe <- nv_ifelse(in_range, p, -1)
+      at_zero <- p == (if (lower_tail) -Inf else 0)
+    } else {
+      in_range <- (p >= 0) & (p <= 1)
+      p_safe <- nv_ifelse(in_range, p, 0.5)
+      at_zero <- p == (if (lower_tail) 0 else 1)
+    }
+
+    # log of the upper tail probability
+    log_upper <- if (lower_tail) {
+      if (log_p) log1mexp(p_safe) else nv_log1p(-p_safe)
+    } else {
+      if (log_p) p_safe else nv_log(p_safe)
+    }
+
+    # The quantile at probability zero is resolved directly, as `rate = 0`
+    # would otherwise give 0 / 0. base R tests the scale 1 / rate >= 0, which
+    # admits `rate = Inf`.
+    valid <- in_range & (1 / rate >= 0)
+    nv_ifelse(valid, nv_ifelse(at_zero, 0, -log_upper / rate), NaN)
   },
   static = c("lower_tail", "log_p")
 )
