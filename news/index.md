@@ -2,11 +2,13 @@
 
 ## anvl (development version)
 
-- New functions for the exponential distribution:
-  [`nv_dexp()`](https://r-xla.github.io/anvl/reference/nv_exponential.md),
-  [`nv_pexp()`](https://r-xla.github.io/anvl/reference/nv_exponential.md),
+- New
+  [`nv_bool()`](https://r-xla.github.io/anvl/reference/nv_dtype_constructors.md),
+  `nv_int{8,16,32,64}()`, `nv_uint{8,16,32,64}()`,
+  [`nv_float32()`](https://r-xla.github.io/anvl/reference/nv_dtype_constructors.md)
   and
-  [`nv_qexp()`](https://r-xla.github.io/anvl/reference/nv_exponential.md).
+  [`nv_float64()`](https://r-xla.github.io/anvl/reference/nv_dtype_constructors.md)
+  create an array of the data type in their name.
 
 ## anvl 0.5.1
 
