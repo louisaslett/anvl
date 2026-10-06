@@ -6,14 +6,8 @@ f <- function() {
 }
 
 
-# the global RNG state is an input and an output of the program
 trace_f <- function() {
-  desc <- rng_enable(local_descriptor(), "input")
-  graph <- trace_fn(f, list(), desc = desc)
-  rng <- rng_finish(desc)
-  graph$inputs <- c(graph$inputs, list(rng$input))
-  graph$outputs <- c(graph$outputs, list(rng$output))
-  graph
+  trace_fn(f, list())
 }
 graph <- trace_f()
 

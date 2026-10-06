@@ -1,13 +1,12 @@
 # The values of `n` consecutive eager draws of `shape` from the global state
 # seeded with `seed`.
 draws <- function(seed, n, shape = 1L) {
-  nv_set_seed(seed)
-  lapply(seq_len(n), function(i) as_array(nv_runif(shape)))
+  with_nv_seed(seed, lapply(seq_len(n), function(i) as_array(nv_runif(shape))))
 }
 
 describe("nv_set_seed", {
   it("makes the draws from the global state reproducible", {
-    local_global_rng()
+    local_nv_seed(NULL)
     nv_set_seed(42L)
     a <- as_array(nv_runif(3L))
     b <- as_array(nv_runif(3L))
@@ -18,15 +17,13 @@ describe("nv_set_seed", {
   })
 
   it("starts from the seed as the key and a zero counter", {
-    local_global_rng()
-    nv_set_seed(-1L)
+    local_nv_seed(-1L)
     nv_runif(3L)
     expect_identical(as.numeric(as_array(globals$rng_state)), c(2^32 - 1, 3))
   })
 
   it("returns only the sample for every sampler", {
-    local_global_rng()
-    nv_set_seed(1L)
+    local_nv_seed(1L)
     expect_shape(nv_runif(c(2L, 3L)), c(2L, 3L))
     expect_shape(nv_rnorm(4L), 4L)
     expect_shape(nv_rbinom(3L, size = 2L), 3L)
@@ -37,9 +34,8 @@ describe("nv_set_seed", {
   })
 
   it("is not needed: an unset state is derived from base R's RNG", {
-    local_global_rng()
     draw <- function() {
-      nv_set_seed(NULL)
+      local_nv_seed(NULL)
       withr::local_seed(3L)
       list(as_array(nv_runif(3L)), as_array(nv_runif(3L)))
     }
@@ -49,8 +45,7 @@ describe("nv_set_seed", {
   })
 
   it("derives an unset state from base R's RNG only once", {
-    local_global_rng()
-    nv_set_seed(NULL)
+    local_nv_seed(NULL)
     withr::local_seed(3L)
     a <- as_array(nv_runif(3L))
     # base R's seed no longer reseeds the state
@@ -65,53 +60,78 @@ describe("nv_set_seed", {
   it("rejects a seed that is not an integer", {
     expect_error(nv_set_seed(1.5), "integerish")
   })
+
+  it("cannot be called in a traced function", {
+    f <- jit(function() {
+      nv_set_seed(1L)
+      nv_runif(1L)
+    })
+    expect_error(f(), "cannot be seeded in a function traced")
+  })
+})
+
+describe("with_nv_seed", {
+  it("seeds the global state for `code` and restores it afterwards", {
+    local_nv_seed(5L)
+    before <- as_array(globals$rng_state)
+    a <- with_nv_seed(1L, as_array(nv_runif(2L)))
+    expect_identical(as_array(globals$rng_state), before)
+    expect_identical(with_nv_seed(1L, as_array(nv_runif(2L))), a)
+  })
+})
+
+describe("local_nv_seed", {
+  it("restores the global state when the calling scope exits", {
+    local_nv_seed(5L)
+    before <- as_array(globals$rng_state)
+    draw <- function() {
+      local_nv_seed(1L)
+      as_array(nv_runif(2L))
+    }
+    a <- draw()
+    expect_identical(as_array(globals$rng_state), before)
+    expect_identical(draw(), a)
+  })
 })
 
 describe("the global RNG state in jit", {
   it("is threaded through every draw of a call and continued by the next", {
-    local_global_rng()
+    local_nv_seed(NULL)
     f <- jit(function(x) list(a = x + nv_runif(2L), b = nv_rnorm(2L)))
-    nv_set_seed(42L)
-    out1 <- f(nv_array(c(0, 0)))
-    out2 <- f(nv_array(c(0, 0)))
-    state <- as_array(globals$rng_state)
+    outs <- with_nv_seed(42L, {
+      list(f(nv_array(c(0, 0))), f(nv_array(c(0, 0))), as_array(globals$rng_state))
+    })
 
     # the same draws, one after the other outside of jit
-    nv_set_seed(42L)
-    expect_identical(as_array(out1$a), as_array(nv_runif(2L)))
-    expect_identical(as_array(out1$b), as_array(nv_rnorm(2L)))
-    expect_identical(as_array(out2$a), as_array(nv_runif(2L)))
-    expect_identical(as_array(out2$b), as_array(nv_rnorm(2L)))
-    expect_identical(as_array(globals$rng_state), state)
+    with_nv_seed(42L, {
+      expect_identical(as_array(outs[[1L]]$a), as_array(nv_runif(2L)))
+      expect_identical(as_array(outs[[1L]]$b), as_array(nv_rnorm(2L)))
+      expect_identical(as_array(outs[[2L]]$a), as_array(nv_runif(2L)))
+      expect_identical(as_array(outs[[2L]]$b), as_array(nv_rnorm(2L)))
+      expect_identical(as_array(globals$rng_state), outs[[3L]])
+    })
   })
 
   it("is taken by a function traced only once", {
-    local_global_rng()
+    local_nv_seed(1L)
     n_traces <- 0L
     f <- jit(function() {
       n_traces <<- n_traces + 1L
       nv_runif(2L)
     })
-    nv_set_seed(1L)
     f()
     f()
     expect_identical(n_traces, 1L)
   })
 
   it("is shared between jitted functions and eager draws", {
-    local_global_rng()
     f <- jit(function() nv_runif(2L))
-    nv_set_seed(5L)
-    a <- as_array(f())
-    b <- as_array(nv_runif(2L))
-    nv_set_seed(5L)
-    expect_identical(as_array(nv_runif(2L)), a)
-    expect_identical(as_array(f()), b)
+    out <- with_nv_seed(5L, list(as_array(f()), as_array(nv_runif(2L))))
+    expect_identical(with_nv_seed(5L, list(as_array(nv_runif(2L)), as_array(f()))), out)
   })
 
   it("leaves the global state alone in functions that do not draw from it", {
-    local_global_rng()
-    nv_set_seed(5L)
+    local_nv_seed(5L)
     nv_runif(1L)
     state <- globals$rng_state
     f <- jit(function(x) x + 1L)
@@ -119,14 +139,33 @@ describe("the global RNG state in jit", {
     expect_identical(globals$rng_state, state)
   })
 
-  it("is not available outside jit", {
-    expect_error(trace_fn(function() nv_runif(2L), list()), "called through `jit\\(\\)`")
+  it("is the last input and output of a graph traced by trace_fn()", {
+    graph <- trace_fn(nv_runif, list(1L))
+    n_in <- length(graph$inputs)
+    n_out <- length(graph$outputs)
+    expect_identical(n_in, 1L)
+    expect_identical(n_out, 2L)
+    state <- graph$inputs[[n_in]]$aval
+    expect_identical(as.character(dtype(state)), "ui64")
+    expect_identical(shape(state), 2L)
+    expect_identical(as.character(dtype(graph$outputs[[n_out]]$aval)), "ui64")
+  })
+
+  it("is left out of a graph traced by trace_fn() that does not draw", {
+    graph <- trace_fn(function(x) x + 1, list(nv_array(1)))
+    expect_length(graph$inputs, 1L)
+    expect_length(graph$outputs, 1L)
+  })
+
+  it("advances by draws past the integer range", {
+    local_nv_seed(1L)
+    prim_random_bits(0L, "ui32", streams = c(65536L, 32769L))
+    expect_identical(as.numeric(as_array(globals$rng_state)), c(1, 65536 * 32769))
   })
 })
 
 describe("the global RNG state in sub-graphs", {
   it("is carried through the body of nv_while", {
-    local_global_rng()
     f <- jit(function() {
       out <- nv_while(
         list(i = 0L, total = nv_scalar(0)),
@@ -136,14 +175,12 @@ describe("the global RNG state in sub-graphs", {
       list(total = out$total, after = nv_runif(integer()))
     })
     expected <- draws(1L, 4L, integer())
-    nv_set_seed(1L)
-    out <- f()
+    out <- with_nv_seed(1L, f())
     expect_equal(as_array(out$total), (expected[[1L]] * 10 + expected[[2L]]) * 10 + expected[[3L]], tolerance = 1e-6)
     expect_identical(as_array(out$after), expected[[4L]])
   })
 
   it("is carried through the body of nv_scan", {
-    local_global_rng()
     f <- jit(function() {
       out <- nv_scan(
         init = list(nv_scalar(0)),
@@ -153,14 +190,12 @@ describe("the global RNG state in sub-graphs", {
       list(out = out$out, after = nv_runif(1L))
     })
     expected <- draws(1L, 4L)
-    nv_set_seed(1L)
-    out <- f()
+    out <- with_nv_seed(1L, f())
     expect_identical(as.vector(as_array(out$out)), unlist(expected[1:3]))
     expect_identical(as_array(out$after), expected[[4L]])
   })
 
   it("carries a draw from several streams through the body of nv_scan", {
-    local_global_rng()
     f <- jit(function() {
       nv_scan(
         init = list(nv_scalar(0)),
@@ -168,19 +203,21 @@ describe("the global RNG state in sub-graphs", {
         steps = 2L
       )$out
     })
-    nv_set_seed(1L)
-    out <- as.character(as_array(f()))
-    nv_set_seed(1L)
-    expected <- c(
-      as.character(as_array(prim_random_bits(3L, "ui32", streams = 2L))),
-      as.character(as_array(prim_random_bits(3L, "ui32", streams = 2L)))
-    )
-    expect_identical(sort(out), sort(expected))
-    expect_identical(as.numeric(as_array(globals$rng_state)), c(1, 4))
+    local_nv_seed(NULL)
+    out <- with_nv_seed(1L, {
+      list(as.character(as_array(f())), as.numeric(as_array(globals$rng_state)))
+    })
+    expected <- with_nv_seed(1L, {
+      c(
+        as.character(as_array(prim_random_bits(3L, "ui32", streams = 2L))),
+        as.character(as_array(prim_random_bits(3L, "ui32", streams = 2L)))
+      )
+    })
+    expect_identical(sort(out[[1L]]), sort(expected))
+    expect_identical(out[[2L]], c(1, 4))
   })
 
   it("is threaded through the branch nv_if takes", {
-    local_global_rng()
     f <- jit(function(pred) {
       list(
         branch = nv_if(pred, function() nv_runif(1L), function() nv_fill(-1, 1L)),
@@ -188,31 +225,27 @@ describe("the global RNG state in sub-graphs", {
       )
     })
     expected <- draws(1L, 2L)
-    nv_set_seed(1L)
-    out <- f(nv_scalar(TRUE))
+    out <- with_nv_seed(1L, f(nv_scalar(TRUE)))
     expect_identical(as_array(out$branch), expected[[1L]])
     expect_identical(as_array(out$after), expected[[2L]])
-    nv_set_seed(1L)
-    out <- f(nv_scalar(FALSE))
+    out <- with_nv_seed(1L, f(nv_scalar(FALSE)))
     expect_identical(as.vector(as_array(out$branch)), -1)
     expect_identical(as_array(out$after), expected[[1L]])
   })
 
   it("is threaded through a function differentiated by gradient()", {
-    local_global_rng()
     f <- jit(function(x) {
       grad <- gradient(function(x) nv_sum(x * nv_runif(2L)))(x)
       list(grad = grad$x, after = nv_runif(1L))
     })
-    nv_set_seed(1L)
-    out <- f(nv_array(c(1, 1)))
-    nv_set_seed(1L)
-    expect_identical(as_array(out$grad), as_array(nv_runif(2L)))
-    expect_identical(as_array(out$after), as_array(nv_runif(1L)))
+    out <- with_nv_seed(1L, f(nv_array(c(1, 1))))
+    with_nv_seed(1L, {
+      expect_identical(as_array(out$grad), as_array(nv_runif(2L)))
+      expect_identical(as_array(out$after), as_array(nv_runif(1L)))
+    })
   })
 
   it("is taken when only a sub-graph draws from it", {
-    local_global_rng()
     f <- jit(function() {
       nv_while(
         list(i = 0L, x = nv_fill(0, 1L)),
@@ -220,15 +253,15 @@ describe("the global RNG state in sub-graphs", {
         function(i, x) list(i = i + 1L, x = nv_if(i < 1L, function() nv_runif(1L), function() x + nv_runif(1L)))
       )$x
     })
-    expected <- draws(1L, 2L)
-    nv_set_seed(1L)
-    expect_equal(as_array(f()), expected[[1L]] + expected[[2L]], tolerance = 1e-6)
-    # the call advanced the global state by both draws
-    expect_identical(as_array(nv_runif(1L)), draws(1L, 3L)[[3L]])
+    expected <- draws(1L, 3L)
+    with_nv_seed(1L, {
+      expect_equal(as_array(f()), expected[[1L]] + expected[[2L]], tolerance = 1e-6)
+      # the call advanced the global state by both draws
+      expect_identical(as_array(nv_runif(1L)), expected[[3L]])
+    })
   })
 
   it("is not available in the condition of nv_while", {
-    local_global_rng()
     f <- jit(function() {
       nv_while(list(i = 0L), function(i) nv_runif(integer()) < 0.5, function(i) list(i = i + 1L))
     })
@@ -236,7 +269,6 @@ describe("the global RNG state in sub-graphs", {
   })
 
   it("is not available in the function of a reduction", {
-    local_global_rng()
     f <- jit(function(x) {
       nv_runif(1L)
       prim_reduce(x, nv_scalar(0), function(a, b) a + b + nv_runif(integer()), axes = 1L)
@@ -250,11 +282,10 @@ describe("the global RNG state across devices", {
   dev1 <- nv_device("cpu:1")
 
   it("follows the call to the device of its array inputs", {
-    local_global_rng()
     f <- jit(function(x) x + nv_runif(3L))
     expected <- draws(7L, 2L, 3L)
 
-    nv_set_seed(7L)
+    local_nv_seed(7L)
     out <- f(nv_array(c(0, 0, 0), device = dev0))
     expect_true(eq_device(device(globals$rng_state), dev0))
     expect_identical(as_array(out), expected[[1L]])
@@ -270,7 +301,7 @@ describe("the global RNG state across devices", {
   })
 
   it("follows the device a jitted function is fixed to", {
-    local_global_rng()
+    local_nv_seed(NULL)
     f <- jit(function() nv_runif(3L), device = dev1)
     globals$rng_state <- rng_state_from_seed(7L, device = dev0)
     out <- f()
@@ -280,7 +311,7 @@ describe("the global RNG state across devices", {
   })
 
   it("follows the default device when a call has no array input", {
-    local_global_rng()
+    local_nv_seed(NULL)
     globals$rng_state <- rng_state_from_seed(7L, device = dev0)
     out <- with_default_device(dev1, nv_runif(3L))
     expect_true(eq_device(device(out), dev1))
@@ -289,7 +320,7 @@ describe("the global RNG state across devices", {
   })
 
   it("follows a call whose device comes from a closed-over array", {
-    local_global_rng()
+    local_nv_seed(NULL)
     x1 <- nv_array(c(0, 0, 0), device = dev1)
     f <- jit(function() x1 + nv_runif(3L))
     globals$rng_state <- rng_state_from_seed(7L, device = dev0)
@@ -300,7 +331,7 @@ describe("the global RNG state across devices", {
   })
 
   it("follows a call whose device comes from a static argument", {
-    local_global_rng()
+    local_nv_seed(NULL)
     f <- jit(function(device) nv_fill(0, 3L, device = device) + nv_runif(3L), static = "device")
     expected <- draws(7L, 2L, 3L)
     globals$rng_state <- rng_state_from_seed(7L, device = dev0)
@@ -312,9 +343,8 @@ describe("the global RNG state across devices", {
     expect_identical(as_array(out), expected[[2L]])
   })
 
-  it("is seeded on the device of the call that first draws from it", {
-    local_global_rng()
-    nv_set_seed(7L)
+  it("moves to the device of the call that draws from it", {
+    local_nv_seed(7L)
     with_default_device(dev1, nv_runif(1L))
     expect_true(eq_device(device(globals$rng_state), dev1))
   })

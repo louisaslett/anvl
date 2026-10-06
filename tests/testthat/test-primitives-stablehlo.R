@@ -36,7 +36,7 @@ describe("prim_random_bits", {
   counter <- function() as.numeric(as_array(globals$rng_state))
 
   it("draws what XLA's THREE_FRY draws from the same state", {
-    local_global_rng()
+    local_nv_seed(NULL)
     # the counter carries into its high 32 bits during the draw
     state <- c(123456789, 2^32 - 3)
     expected <- xla_bits(state, 7L)
@@ -46,7 +46,7 @@ describe("prim_random_bits", {
   })
 
   it("advances the counter by the number of draws whatever the data type", {
-    local_global_rng()
+    local_nv_seed(NULL)
     set_state(c(5, 10))
     prim_random_bits(c(2L, 3L), "ui8")
     expect_identical(counter(), c(5, 16))
@@ -55,7 +55,7 @@ describe("prim_random_bits", {
   })
 
   it("draws the bits of a narrower data type from the 64 bits of a draw", {
-    local_global_rng()
+    local_nv_seed(NULL)
     set_state(c(42, 0))
     halves <- nv_bitcast_convert(prim_random_bits(5L, "ui64"), dtype = "ui32")
     half <- function(i) nv_reshape(nv_static_slice(halves, c(i, 1L), c(i, 5L), c(1L, 1L)), 5L)
@@ -67,7 +67,7 @@ describe("prim_random_bits", {
   })
 
   it("fills a shape in column-major order", {
-    local_global_rng()
+    local_nv_seed(NULL)
     set_state(c(1, 0))
     flat <- bits(prim_random_bits(6L, "ui32"))
     set_state(c(1, 0))
@@ -75,7 +75,7 @@ describe("prim_random_bits", {
   })
 
   it("draws each stream from a key derived from the next values of the counter", {
-    local_global_rng()
+    local_nv_seed(NULL)
     state <- c(99, 7)
     keys <- xla_bits(state, 3L)$values
     set_state(state)
@@ -91,7 +91,7 @@ describe("prim_random_bits", {
   })
 
   it("arranges streams of several axes in column-major order", {
-    local_global_rng()
+    local_nv_seed(NULL)
     set_state(c(8, 1))
     flat <- bits(prim_random_bits(3L, "ui32", streams = 4L))
     set_state(c(8, 1))
@@ -101,14 +101,14 @@ describe("prim_random_bits", {
   })
 
   it("draws different values in each stream", {
-    local_global_rng()
+    local_nv_seed(NULL)
     set_state(c(3, 0))
     out <- bits(prim_random_bits(100L, "ui32", streams = 4L))
     expect_identical(nrow(unique(out)), 4L)
   })
 
   it("draws a stream shape of no elements", {
-    local_global_rng()
+    local_nv_seed(NULL)
     set_state(c(3, 0))
     expect_shape(prim_random_bits(0L, "ui32", streams = 2L), c(2L, 0L))
     expect_identical(counter(), c(3, 2))

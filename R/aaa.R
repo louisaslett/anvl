@@ -74,7 +74,6 @@ globals$interpretation_rules <- c("stablehlo", "quickr", "reverse")
 globals[["DESCRIPTOR_STASH"]] <- list()
 globals[["CURRENT_DESCRIPTOR"]] <- NULL
 globals[["LOWERING_PLATFORM"]] <- NULL
-# The seed set by nv_set_seed() and the global RNG state drawn from it.
-globals$seed <- NULL
+# The global RNG state (see `global_rng_slot()`).
 globals$rng_state <- NULL
 utils::globalVariables(c("globals", "self"))

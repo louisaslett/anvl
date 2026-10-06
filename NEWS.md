@@ -1,7 +1,8 @@
 # anvl (development version)
 
-* Breaking: random draws use a global RNG state, which `nv_set_seed()` seeds;
-  unset, it is derived from base R's RNG on the first draw.
+* Breaking: random draws use a global RNG state, which `nv_set_seed()` seeds
+  (`with_nv_seed()` / `local_nv_seed()` for a scope); unset, it is derived
+  from base R's RNG on the first draw.
   The samplers lose their `state` argument and return only the sample;
   `nv_rng_state()` is removed. A jitted function threads the state through
   all its draws, including those in `nv_if()`, `nv_while()`, `nv_scan()` and

@@ -8,7 +8,8 @@ prim_random_bits(shape, dtype, streams = NULL)
 }
 \arguments{
 \item{shape}{(\code{integer()})\cr
-Shape of the result.}
+Shape of the draw of each stream; the result has shape \code{c(streams, shape)}
+with \code{streams}.}
 
 \item{dtype}{(\code{character(1)} | \code{\link[xlamisc:DataType]{DataType}})\cr
 An unsigned integer data type: \code{"ui8"}, \code{"ui16"}, \code{"ui32"} or \code{"ui64"}.}
@@ -42,9 +43,7 @@ arranged in an array of shape \code{streams}: it derives one key per stream from
 the next \code{prod(streams)} values of the counter (in column-major order),
 advances the counter by \code{prod(streams)}, and draws \code{shape} from each of these
 keys, starting at counter \code{0}. Each stream depends only on its own key, which
-is what makes this a parallel draw. A transformation that maps a function
-over a batch of \code{k} inputs turns a draw in it into a draw with \code{k} more
-streams, so \code{streams} is a shape rather than a count.
+is what makes this a parallel draw.
 }
 \section{Implemented Rules}{
 

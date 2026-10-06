@@ -3124,10 +3124,10 @@ prim_rng_bit_generator <- new_primitive(
 #' the next `prod(streams)` values of the counter (in column-major order),
 #' advances the counter by `prod(streams)`, and draws `shape` from each of these
 #' keys, starting at counter `0`. Each stream depends only on its own key, which
-#' is what makes this a parallel draw. A transformation that maps a function
-#' over a batch of `k` inputs turns a draw in it into a draw with `k` more
-#' streams, so `streams` is a shape rather than a count.
-#' @template param_shape
+#' is what makes this a parallel draw.
+#' @param shape (`integer()`)\cr
+#'   Shape of the draw of each stream; the result has shape `c(streams, shape)`
+#'   with `streams`.
 #' @param dtype (`character(1)` | [`DataType`])\cr
 #'   An unsigned integer data type: `"ui8"`, `"ui16"`, `"ui32"` or `"ui64"`.
 #' @param streams (`NULL` | `integer()`)\cr

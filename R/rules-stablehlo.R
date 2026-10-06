@@ -745,7 +745,7 @@ prim_random_bits[["stablehlo"]] <- function(state, shape, dtype, streams) {
     hlo_convert(hlo_xor(bits[[1L]], bits[[2L]]), dtype)
   )
 
-  advanced <- hlo_add(counter, hlo_scalar(consumed, dtype = "ui64", func = func))
+  advanced <- hlo_add(counter, hlo_scalar_u64(consumed, func))
   new_state <- hlo_concatenate(
     hlo_reshape(key, 1L),
     hlo_reshape(advanced, 1L),
@@ -762,12 +762,24 @@ threefry_counters <- function(start, shape, axes) {
   for (axis in axes) {
     iota <- hlo_iota(iota_dimension = axis - 1L, dtype = "ui64", shape = shape)
     if (stride != 1) {
-      iota <- hlo_multiply(iota, hlo_fill_u(stride, "ui64", shape, start$func))
+      iota <- hlo_multiply(iota, hlo_broadcast_in_dim(hlo_scalar_u64(stride, start$func), integer(), shape))
     }
     out <- hlo_add(out, iota)
     stride <- stride * shape[[axis]]
   }
   out
+}
+
+# The whole number `value` (below 2^53) as a `ui64` scalar. An R double does
+# not reach `hlo_scalar()` intact past the integer range, so the value is built
+# from two 30-bit halves.
+hlo_scalar_u64 <- function(value, func) {
+  lo <- hlo_scalar(as.integer(value %% 2^30), dtype = "ui64", func = func)
+  if (value < 2^30) {
+    return(lo)
+  }
+  hi <- hlo_scalar(as.integer(value %/% 2^30), dtype = "ui64", func = func)
+  hlo_or(hlo_shift_left(hi, hlo_scalar(30L, dtype = "ui64", func = func)), lo)
 }
 
 # `value` as an array of the unsigned `dtype` and shape `shape`.
@@ -818,7 +830,7 @@ threefry2x32 <- function(key, x) {
   ks <- list(key[[1L]], key[[2L]], hlo_xor(hlo_xor(const(0x1BD11BDAL), key[[1L]]), key[[2L]]))
   x[[1L]] <- hlo_add(x[[1L]], ks[[1L]])
   x[[2L]] <- hlo_add(x[[2L]], ks[[2L]])
-  for (i in 1:5) {
+  for (i in seq_len(5L)) {
     x <- rounds(x, (i - 1L) %% 2L + 1L)
     x[[1L]] <- hlo_add(x[[1L]], ks[[i %% 3L + 1L]])
     x[[2L]] <- hlo_add(hlo_add(x[[2L]], ks[[(i + 1L) %% 3L + 1L]]), const(i))

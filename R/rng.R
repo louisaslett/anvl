@@ -23,7 +23,7 @@ NULL
 #' bodies of [nv_while()] and [nv_scan()], and functions differentiated by
 #' [gradient()], so a draw in a loop body gives a new sample on every
 #' iteration. It cannot be drawn from in the condition of [nv_while()], nor in
-#' the functions of a reduction, a scatter or a sort comparator, as these
+#' the functions of a reduction or a scatter, as these
 #' cannot hand an advanced state back.
 #'
 #' @section Seeding from base R:
@@ -34,6 +34,15 @@ NULL
 #' `nv_set_seed(NULL)` unsets the global state, so that the next draw derives
 #' it from base R's RNG again.
 #'
+#' `local_nv_seed()` and `with_nv_seed()` seed the global state for the calling
+#' scope or for `code` only, like [withr::local_seed()] and
+#' [withr::with_seed()] do for base R's RNG: the global state from before is
+#' restored afterwards.
+#'
+#' The global state is seeded when R runs the call, so these functions cannot be
+#' called in a function traced by [jit()], where they would seed it once, while
+#' tracing, rather than on every call.
+#'
 #' @section Devices:
 #' The global state lives on the device of the call that last drew from it,
 #' and a call that runs on another device -- however that device is decided --
@@ -41,7 +50,12 @@ NULL
 #' the draws run on.
 #' @param seed (`integer(1)` | `NULL`)\cr
 #'   The seed, or `NULL` to derive the global state from base R's RNG.
-#' @return `NULL`, invisibly.
+#' @param code (any)\cr
+#'   An expression to evaluate with the seeded global state.
+#' @param envir (`environment`)\cr
+#'   The scope whose exit restores the global state.
+#' @return `nv_set_seed()` and `local_nv_seed()` return `NULL`, invisibly;
+#'   `with_nv_seed()` returns the result of evaluating `code`.
 #' @family rng
 #' @examplesIf pjrt::plugins_downloaded()
 #' nv_set_seed(42L)
@@ -60,11 +74,36 @@ NULL
 #' # draws inside a jitted function share the global state
 #' f <- jit(function() nv_rnorm(2L) + nv_runif(2L))
 #' f()
+#'
+#' # seed for one expression only
+#' with_nv_seed(1L, nv_runif(2L))
+#' with_nv_seed(1L, nv_runif(2L))
 #' @export
 nv_set_seed <- function(seed) {
-  globals$seed <- if (!is.null(seed)) assert_int(seed, coerce = TRUE)
-  globals$rng_state <- NULL
+  if (currently_tracing()) {
+    cli_abort(c(
+      "The global RNG state cannot be seeded in a function traced by {.fn jit}.",
+      i = "Seed it before calling the function."
+    ))
+  }
+  globals$rng_state <- if (!is.null(seed)) rng_state_from_seed(assert_int(seed, coerce = TRUE))
   invisible(NULL)
+}
+
+#' @rdname nv_set_seed
+#' @export
+local_nv_seed <- function(seed, envir = parent.frame()) {
+  state <- globals$rng_state
+  nv_set_seed(seed)
+  withr::defer(assign("rng_state", state, envir = globals), envir = envir)
+  invisible(NULL)
+}
+
+#' @rdname nv_set_seed
+#' @export
+with_nv_seed <- function(seed, code) {
+  local_nv_seed(seed)
+  code
 }
 
 # The global RNG state of the trace `desc`, a GraphBox, registered on first use
@@ -94,7 +133,7 @@ rng_state_get <- function(desc) {
   } else {
     cli_abort(c(
       "The global RNG state cannot be drawn from here.",
-      i = "It cannot be drawn from in the condition of {.fn nv_while}, nor in the function of a reduction, a scatter or a sort comparator."
+      i = "It cannot be drawn from in the condition of {.fn nv_while}, nor in the function of a reduction or a scatter."
     ))
   }
   desc$rng_state
@@ -118,19 +157,24 @@ rng_finish <- function(desc) {
   list(input = desc$rng_input, output = desc$rng_state$gnode)
 }
 
+# `graph` taking the global RNG state as its last input and returning the state
+# it leaves behind as its last output, for `rng` as `rng_finish()` returns it;
+# `graph` itself when that is `NULL`.
+rng_add_io <- function(graph, rng) {
+  if (!is.null(rng)) {
+    graph$inputs <- c(graph$inputs, list(rng$input))
+    graph$outputs <- c(graph$outputs, list(rng$output))
+  }
+  graph
+}
+
 # The global RNG state slot of a program compiled from a trace that drew from
 # it (see `dispatcher()`'s `state`): pjrt's engine reads `globals$rng_state`
-# before every run -- creating it with `global_rng_init()` when it is not set --
+# before every run -- deriving it from base R's RNG when it is not set --
 # copying it to the program's device, and writes the advanced state back after
 # it.
 global_rng_slot <- function() {
-  list(env = globals, name = "rng_state", init = global_rng_init, dtype = "ui64", shape = 2L)
-}
-
-# The global RNG state when it is not set: seeded from `nv_set_seed()`'s seed,
-# or derived from base R's RNG when there is none.
-global_rng_init <- function() {
-  if (is.null(globals$seed)) rng_state_from_r() else rng_state_from_seed(globals$seed)
+  list(env = globals, name = "rng_state", init = rng_state_from_r, dtype = "ui64", shape = 2L)
 }
 
 # A fresh RNG state from two uniform draws of base R's RNG: a key of 53 bits,

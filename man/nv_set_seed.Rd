@@ -2,16 +2,29 @@
 % Please edit documentation in R/rng.R
 \name{nv_set_seed}
 \alias{nv_set_seed}
+\alias{local_nv_seed}
+\alias{with_nv_seed}
 \title{Set the Global RNG Seed}
 \usage{
 nv_set_seed(seed)
+
+local_nv_seed(seed, envir = parent.frame())
+
+with_nv_seed(seed, code)
 }
 \arguments{
 \item{seed}{(\code{integer(1)} | \code{NULL})\cr
 The seed, or \code{NULL} to derive the global state from base R's RNG.}
+
+\item{envir}{(\code{environment})\cr
+The scope whose exit restores the global state.}
+
+\item{code}{(any)\cr
+An expression to evaluate with the seeded global state.}
 }
 \value{
-\code{NULL}, invisibly.
+\code{nv_set_seed()} and \code{local_nv_seed()} return \code{NULL}, invisibly;
+\code{with_nv_seed()} returns the result of evaluating \code{code}.
 }
 \description{
 Seeds the global RNG state, analogous to base R's \code{\link[=set.seed]{set.seed()}}. Calling it
@@ -34,7 +47,7 @@ The global state is also threaded through the branches of \code{\link[=nv_if]{nv
 bodies of \code{\link[=nv_while]{nv_while()}} and \code{\link[=nv_scan]{nv_scan()}}, and functions differentiated by
 \code{\link[=gradient]{gradient()}}, so a draw in a loop body gives a new sample on every
 iteration. It cannot be drawn from in the condition of \code{\link[=nv_while]{nv_while()}}, nor in
-the functions of a reduction, a scatter or a sort comparator, as these
+the functions of a reduction or a scatter, as these
 cannot hand an advanced state back.
 }
 \section{Seeding from base R}{
@@ -45,6 +58,15 @@ the global state is advanced by anvl's draws alone, and \strong{calling
 \code{\link[=set.seed]{set.seed()}} again does not reseed it} -- call \code{nv_set_seed()} for that.
 \code{nv_set_seed(NULL)} unsets the global state, so that the next draw derives
 it from base R's RNG again.
+
+\code{local_nv_seed()} and \code{with_nv_seed()} seed the global state for the calling
+scope or for \code{code} only, like \code{\link[withr:local_seed]{withr::local_seed()}} and
+\code{\link[withr:with_seed]{withr::with_seed()}} do for base R's RNG: the global state from before is
+restored afterwards.
+
+The global state is seeded when R runs the call, so these functions cannot be
+called in a function traced by \code{\link[=jit]{jit()}}, where they would seed it once, while
+tracing, rather than on every call.
 }
 
 \section{Devices}{
@@ -73,6 +95,10 @@ nv_runif(3L)
 # draws inside a jitted function share the global state
 f <- jit(function() nv_rnorm(2L) + nv_runif(2L))
 f()
+
+# seed for one expression only
+with_nv_seed(1L, nv_runif(2L))
+with_nv_seed(1L, nv_runif(2L))
 \dontshow{\}) # examplesIf}
 }
 \seealso{

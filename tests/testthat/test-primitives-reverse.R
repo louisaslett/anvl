@@ -343,7 +343,7 @@ describe("prim_if", {
   })
 
   it("leaves the RNG state a branch draws from undifferentiated", {
-    local_global_rng()
+    local_nv_seed(NULL)
     f <- function(p, x) {
       a <- nv_if(
         p,

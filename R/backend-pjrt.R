@@ -222,10 +222,7 @@ compile_graph_pjrt <- function(graph, donate = character(), device, rng = NULL) 
       shape = shape(x$aval)
     )
   })
-  if (!is.null(rng)) {
-    graph$inputs <- c(graph$inputs, list(rng$input))
-    graph$outputs <- c(graph$outputs, list(rng$output))
-  }
+  graph <- rng_add_io(graph, rng)
   out <- stablehlo(
     graph,
     donate = donate,

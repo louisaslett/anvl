@@ -92,21 +92,23 @@ test_that("nv_rbinom", {
 })
 
 test_that("nv_runif with min == max returns the pair, state advanced", {
-  local_global_rng()
-  nv_set_seed(1L)
-  out <- nv_runif(c(2, 3), min = 5, max = 5)
+  out <- with_nv_seed(1L, nv_runif(c(2, 3), min = 5, max = 5))
   # `min`/`max` may be traced, so the draw is made and the state advanced as
   # for any other interval.
-  advanced <- as_array(globals$rng_state)
-  nv_set_seed(1L)
-  nv_runif(c(2, 3))
-  expect_identical(as_array(globals$rng_state), advanced)
+  advanced <- with_nv_seed(1L, {
+    nv_runif(c(2, 3), min = 5, max = 5)
+    as_array(globals$rng_state)
+  })
+  plain <- with_nv_seed(1L, {
+    nv_runif(c(2, 3))
+    as_array(globals$rng_state)
+  })
+  expect_identical(advanced, plain)
   expect_shape(out, c(2L, 3L))
   expect_true(all(as.vector(out) == 5))
 })
 
 test_that("nv_runif accepts arrayish min and max", {
-  local_global_rng()
 
   # An elementwise interval of the same shape as the sample
   lower <- nv_array(matrix(c(0, 10, 100, 1000, 10000, 100000), nrow = 2), dtype = "f64")
@@ -119,10 +121,8 @@ test_that("nv_runif accepts arrayish min and max", {
   # A scalar bound combines with an array one, and the draws are those of the
   # standard uniform, scaled and shifted elementwise
   upper <- nv_array(matrix(1:6, nrow = 2), dtype = "f64")
-  nv_set_seed(1L)
-  u <- as_array(nv_runif(c(2, 3), dtype = "f64"))
-  nv_set_seed(1L)
-  expect_equal(as_array(nv_runif(c(2, 3), min = 0, max = upper)), u * 1:6)
+  u <- with_nv_seed(1L, as_array(nv_runif(c(2, 3), dtype = "f64")))
+  expect_equal(with_nv_seed(1L, as_array(nv_runif(c(2, 3), min = 0, max = upper))), u * 1:6)
 
   # min/max may be traced under jit
   f <- jit(function(a, b) nv_runif(c(2, 3), min = a, max = b))
@@ -149,12 +149,9 @@ test_that("nv_runif gives NaN for an invalid interval, like runif()", {
 })
 
 test_that("nv_runif differentiates with respect to min and max", {
-  local_global_rng()
-  nv_set_seed(1L)
-  u <- as.vector(nv_runif(c(2, 3), dtype = "f64"))
+  u <- with_nv_seed(1L, as.vector(nv_runif(c(2, 3), dtype = "f64")))
   g <- jit(gradient(function(a, b) sum(nv_runif(c(2, 3), min = a, max = b))))
-  nv_set_seed(1L)
-  grads <- g(nv_array(matrix(-2, 2, 3), dtype = "f64"), nv_array(matrix(3, 2, 3), dtype = "f64"))
+  grads <- with_nv_seed(1L, g(nv_array(matrix(-2, 2, 3), dtype = "f64"), nv_array(matrix(3, 2, 3), dtype = "f64")))
   expect_equal(as.vector(grads[[1L]]), 1 - u)
   expect_equal(as.vector(grads[[2L]]), u)
 })

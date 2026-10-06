@@ -704,6 +704,10 @@ name_failing_primitive <- function(e) {
 #' The resulting graph can be lowered to StableHLO (via [`stablehlo()`]) or transformed
 #' (e.g. via [`transform_gradient()`]).
 #'
+#' When `f` draws random numbers (see [nv_set_seed()]), the graph takes the
+#' global RNG state as its last input and returns the advanced state as its last
+#' output, as the program [jit()] compiles from it does.
+#'
 #' @param f (`function`)\cr
 #'   The function to trace. Must not be a `JitFunction` (i.e. already jitted).
 #' @param args (`list` of ([`AnvlArray`] | [`AbstractArray`]))\cr
@@ -747,8 +751,9 @@ trace_fn <- function(
     args_flat <- flatten(args)
   }
   f_flat <- pjrt::flatten_fun(f, in_tree = in_tree)
-  if (is.null(desc)) {
-    desc <- local_descriptor(in_tree = in_tree)
+  toplevel <- is.null(desc)
+  if (toplevel) {
+    desc <- rng_enable(local_descriptor(in_tree = in_tree), "input")
   } else {
     desc$in_tree <- in_tree
   }
@@ -796,6 +801,9 @@ trace_fn <- function(
   }
 
   graph <- descriptor_to_graph(desc)
+  if (toplevel) {
+    graph <- rng_add_io(graph, rng_finish(desc))
+  }
   optimize_graph(graph, optimize)
 }
 
