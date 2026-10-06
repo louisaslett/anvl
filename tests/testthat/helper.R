@@ -40,15 +40,8 @@ local_unset_default_device <- function(envir = parent.frame()) {
 
 # Restores the global RNG seed and state (see nv_set_seed()) when `envir` exits.
 local_global_rng <- function(envir = parent.frame()) {
-  seed <- globals$seed
-  state <- globals$rng_state
-  withr::defer(
-    {
-      globals$seed <- seed
-      globals$rng_state <- state
-    },
-    envir = envir
-  )
+  saved <- mget(c("seed", "rng_state"), envir = globals)
+  withr::defer(list2env(saved, envir = globals), envir = envir)
 }
 
 if (nzchar(system.file(package = "torch"))) {

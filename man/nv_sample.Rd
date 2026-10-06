@@ -4,28 +4,19 @@
 \alias{nv_sample}
 \title{Sample from a Population}
 \usage{
-nv_sample(shape, state = NULL, x)
+nv_sample(shape, x)
 }
 \arguments{
 \item{shape}{(\code{integer()})\cr
 Shape of the result.}
-
-\item{state}{(\code{NULL} | \code{\link{arrayish}})\cr
-RNG state: a 1-D array of two \code{ui64} elements, as \code{\link[=nv_rng_state]{nv_rng_state()}}
-returns. The data type and length are fixed by the generator, not by the
-default data types, and the returned \code{state} has them too.
-The default (\code{NULL}) draws from the global RNG state instead (see
-\code{\link[=nv_set_seed]{nv_set_seed()}}) and returns only the sample.}
 
 \item{x}{(\code{\link{arrayish}})\cr
 The population vector to sample from.
 An R value materializes at its \link[=default_dtypes]{default data type}.}
 }
 \value{
-(named \code{list} of two \code{\link{arrayish}} | \code{\link{arrayish}})\cr
-Elements \code{state}, the updated RNG state, and \code{values}, the sample of shape
-\code{shape} and \code{x}'s data type.
-Drawing from the global RNG state (\code{state = NULL}), only the sample.
+(\code{\link{arrayish}})\cr
+The sample, of shape \code{shape} and \code{x}'s data type.
 }
 \description{
 Samples elements of a 1-D array with equal probability and with
@@ -37,10 +28,8 @@ integers \code{1} to \code{n} is \code{\link[=nv_sample_int]{nv_sample_int()}} a
 \examples{
 \dontshow{if (pjrt::plugins_downloaded()) withAutoprint(\{ # examplesIf}
 # the sample takes the population's data type
-state <- nv_rng_state(42L)
-pop <- nv_array(c(10, 20, 30))
-result <- nv_sample(5, state, pop)
-result$values
+nv_set_seed(42L)
+nv_sample(5, nv_array(c(10, 20, 30)))
 \dontshow{\}) # examplesIf}
 }
 \seealso{
@@ -49,7 +38,6 @@ result$values
 Other rng:
 \code{\link{nv_normal}},
 \code{\link[=nv_rbinom]{nv_rbinom()}},
-\code{\link[=nv_rng_state]{nv_rng_state()}},
 \code{\link[=nv_sample_int]{nv_sample_int()}},
 \code{\link[=nv_set_seed]{nv_set_seed()}},
 \code{\link{nv_uniform}}

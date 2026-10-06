@@ -1,9 +1,13 @@
 # anvl (development version)
 
-* `nv_set_seed()` seeds a global RNG state. The samplers draw from it when
-  called without a `state` and then return only the sample; a jitted function
-  threads it through all its draws, including those in `nv_if()`, `nv_while()`,
-  `nv_scan()` and `gradient()`, on whatever device the call runs.
+* Breaking: random draws use a global RNG state, which `nv_set_seed()` seeds;
+  unset, it is derived from base R's RNG on the first draw.
+  The samplers lose their `state` argument and return only the sample;
+  `nv_rng_state()` is removed. A jitted function threads the state through
+  all its draws, including those in `nv_if()`, `nv_while()`, `nv_scan()` and
+  `gradient()`.
+* New `prim_random_bits()` draws random bits with ThreeFry, also from several
+  independent streams at once.
 
 # anvl 0.5.1
 

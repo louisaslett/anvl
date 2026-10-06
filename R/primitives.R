@@ -3106,6 +3106,66 @@ prim_rng_bit_generator <- new_primitive(
   static = 2:4
 )
 
+#' @title Primitive Random Bits
+#' @description
+#' Draws random bits from the global RNG state (see [nv_set_seed()]) with the
+#' ThreeFry-2x32 counter-based generator, and advances that state.
+#'
+#' The state is not an argument: the primitive reads the state of the trace it
+#' is called in and leaves the advanced state behind for the next draw. A
+#' [jit()]-compiled function takes the global RNG state as a hidden input and
+#' hands the state its last draw left behind back to it.
+#'
+#' The state is a key and a counter. A draw of `n` values hashes the key with
+#' the next `n` values of the counter and advances the counter by `n`.
+#'
+#' With `streams`, the draw is one of `prod(streams)` independent streams
+#' arranged in an array of shape `streams`: it derives one key per stream from
+#' the next `prod(streams)` values of the counter (in column-major order),
+#' advances the counter by `prod(streams)`, and draws `shape` from each of these
+#' keys, starting at counter `0`. Each stream depends only on its own key, which
+#' is what makes this a parallel draw. A transformation that maps a function
+#' over a batch of `k` inputs turns a draw in it into a draw with `k` more
+#' streams, so `streams` is a shape rather than a count.
+#' @template param_shape
+#' @param dtype (`character(1)` | [`DataType`])\cr
+#'   An unsigned integer data type: `"ui8"`, `"ui16"`, `"ui32"` or `"ui64"`.
+#' @param streams (`NULL` | `integer()`)\cr
+#'   The shape of the array of independent streams to draw from, or `NULL`
+#'   (default) to draw from the global state itself.
+#' @return ([`arrayish`])\cr
+#'   The random bits, of data type `dtype` and shape `shape`, or
+#'   `c(streams, shape)` with `streams`, where `out[i, ...]` is the draw of
+#'   stream `i` for a single axis of streams. The draws fill `shape` in
+#'   column-major order, so a draw of `c(2, 3)` holds the values of a draw of
+#'   `6`, reshaped to `c(2, 3)`.
+#' @templateVar primitive_id random_bits
+#' @template section_rules
+#' @seealso [nv_runif()], [nv_rnorm()]
+#' @examplesIf pjrt::plugins_downloaded()
+#' nv_set_seed(1L)
+#' prim_random_bits(c(2, 3), "ui32")
+#'
+#' # three independent streams of four draws each
+#' prim_random_bits(4L, "ui32", streams = 3L)
+#' @export
+prim_random_bits <- new_primitive(
+  "random_bits",
+  function(shape, dtype, streams = NULL) {
+    desc <- current_descriptor()
+    out <- graph_desc_add(
+      self,
+      list(state = rng_state_get(desc)),
+      params = list(shape = shape, dtype = dtype, streams = streams),
+      infer_fn = infer_random_bits,
+      desc = desc
+    )
+    desc$rng_state <- out$state
+    out$values
+  },
+  static = c("shape", "dtype", "streams")
+)
+
 #' @title Primitive Scatter
 #' @description
 #' Produces a result array identical to `x` except that slices at

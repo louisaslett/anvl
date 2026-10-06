@@ -2,12 +2,18 @@ devtools::load_all("~/r-xla/anvl")
 library(pjrt)
 
 f <- function() {
-  nv_rnorm(nv_array(c(1, 2), dtype = "ui64"), dtype = "f32", shape = c(2, 3))
+  nv_rnorm(dtype = "f32", shape = c(2, 3))
 }
 
 
+# the global RNG state is an input and an output of the program
 trace_f <- function() {
-  trace_fn(f, list())
+  desc <- rng_enable(local_descriptor(), "input")
+  graph <- trace_fn(f, list(), desc = desc)
+  rng <- rng_finish(desc)
+  graph$inputs <- c(graph$inputs, list(rng$input))
+  graph$outputs <- c(graph$outputs, list(rng$output))
+  graph
 }
 graph <- trace_f()
 

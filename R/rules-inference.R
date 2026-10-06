@@ -1866,6 +1866,19 @@ infer_triangular_solve <- function(a, b, left_side, lower, unit_diagonal, transp
   list(AbstractArray(dtype = dtype(b), shape = b$shape))
 }
 
+infer_random_bits <- function(state, shape, dtype, streams) {
+  shape <- assert_shapevec(shape)
+  dtype <- assert_dtype_param(dtype, categories = "uint")
+  if (!is.null(streams)) {
+    streams <- assert_shapevec(streams, min_len = 1L)
+    shape <- c(streams, shape)
+  }
+  list(
+    state = AbstractArray(dtype = "ui64", shape = state$shape),
+    values = AbstractArray(dtype = dtype, shape = Shape(shape))
+  )
+}
+
 infer_rng_bit_generator <- function(state, rng_algorithm, dtype, shape) {
   assert_array_dtype(state, "uint", naxes = 1L)
   if (dtype(state) != as_dtype("ui64")) {

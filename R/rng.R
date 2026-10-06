@@ -3,36 +3,46 @@ NULL
 
 #' @title Set the Global RNG Seed
 #' @description
-#' Seeds the global RNG state, analogous to base R's [set.seed()].
+#' Seeds the global RNG state, analogous to base R's [set.seed()]. Calling it
+#' is optional: until the global state is first drawn from, it is not set, and
+#' the first draw derives it from base R's RNG, so a [set.seed()] before that
+#' makes the draws reproducible too.
 #'
-#' The samplers ([nv_runif()], [nv_rnorm()], [nv_rbinom()], [nv_sample_int()]
-#' and [nv_sample()]) draw from the global state when they are called without a
-#' `state`, and then return only the sample. A [jit()]-compiled function that
-#' draws from it takes the global state as a hidden input and hands the
-#' advanced state back as a hidden output, so every draw inside one call
-#' advances the same state, and consecutive calls continue where the previous
-#' one stopped.
-#'
-#' Until a seed is set, the global state is seeded from base R's RNG on its
-#' first use, so [set.seed()] also makes it reproducible.
+#' All random draws in anvl -- the samplers [nv_runif()], [nv_rnorm()],
+#' [nv_rbinom()], [nv_sample_int()] and [nv_sample()], and the primitive
+#' [prim_random_bits()] they build on -- draw from one global RNG state and
+#' advance it. A [jit()]-compiled function that draws from it takes the global
+#' state as a hidden input and hands the advanced state back as a hidden
+#' output, so every draw inside one call advances the same state, and
+#' consecutive calls continue where the previous one stopped. How the draws are
+#' split into compiled functions does not matter: drawing in one jitted
+#' function gives the same values as drawing one after the other outside of
+#' [jit()].
 #'
 #' The global state is also threaded through the branches of [nv_if()], the
 #' bodies of [nv_while()] and [nv_scan()], and functions differentiated by
 #' [gradient()], so a draw in a loop body gives a new sample on every
 #' iteration. It cannot be drawn from in the condition of [nv_while()], nor in
-#' the functions of a reduction, a scatter or a sort comparator; pass a `state`
-#' explicitly there.
+#' the functions of a reduction, a scatter or a sort comparator, as these
+#' cannot hand an advanced state back.
+#'
+#' @section Seeding from base R:
+#' When the global state is not set, the next draw derives it from base R's
+#' RNG, consuming two of its uniform draws. This happens only once: after that,
+#' the global state is advanced by anvl's draws alone, and **calling
+#' [set.seed()] again does not reseed it** -- call `nv_set_seed()` for that.
+#' `nv_set_seed(NULL)` unsets the global state, so that the next draw derives
+#' it from base R's RNG again.
 #'
 #' @section Devices:
 #' The global state lives on the device of the call that last drew from it,
 #' and a call that runs on another device -- however that device is decided --
 #' copies it there. A seed therefore gives the same sequence whatever devices
 #' the draws run on.
-#' @param seed (`integer(1)`)\cr
-#'   The seed.
+#' @param seed (`integer(1)` | `NULL`)\cr
+#'   The seed, or `NULL` to derive the global state from base R's RNG.
 #' @return `NULL`, invisibly.
 #' @family rng
-#' @seealso [nv_rng_state()] to create an explicit RNG state.
 #' @examplesIf pjrt::plugins_downloaded()
 #' nv_set_seed(42L)
 #' nv_runif(3L)
@@ -42,36 +52,19 @@ NULL
 #' nv_set_seed(42L)
 #' nv_runif(3L)
 #'
+#' # an unset state is derived from base R's RNG on the next draw
+#' nv_set_seed(NULL)
+#' set.seed(1)
+#' nv_runif(3L)
+#'
 #' # draws inside a jitted function share the global state
 #' f <- jit(function() nv_rnorm(2L) + nv_runif(2L))
 #' f()
 #' @export
 nv_set_seed <- function(seed) {
-  globals$seed <- assert_int(seed, coerce = TRUE)
+  globals$seed <- if (!is.null(seed)) assert_int(seed, coerce = TRUE)
   globals$rng_state <- NULL
   invisible(NULL)
-}
-
-# The state a sampler draws from: `state` itself, or the global RNG state of
-# the current trace when it is `NULL` (see `rng_state_get()`). Called in the
-# sampler's traced body; `rng_state_out()` hands the result back.
-rng_state_in <- function(state) {
-  if (!is.null(state)) {
-    return(state)
-  }
-  rng_state_get(current_descriptor())
-}
-
-# What a sampler returns: `list(state, values)` for an explicit `state`; for
-# the global one (`state` is `NULL`), `new_state` becomes the global state of
-# the trace and only `values` is returned.
-rng_state_out <- function(state, new_state, values) {
-  if (!is.null(state)) {
-    return(list(state = new_state, values = values))
-  }
-  desc <- current_descriptor()
-  desc$rng_state <- new_state
-  values
 }
 
 # The global RNG state of the trace `desc`, a GraphBox, registered on first use
@@ -97,15 +90,11 @@ rng_state_get <- function(desc) {
   } else if (identical(mode, "capture")) {
     desc$rng_state <- rng_state_get(desc$rng_parent)
   } else if (!length(globals[["DESCRIPTOR_STASH"]])) {
-    cli_abort(c(
-      "The global RNG state can only be drawn from in a function called through {.fn jit}.",
-      i = "Pass {.arg state} explicitly, e.g. one created by {.fn nv_rng_state}."
-    ))
+    cli_abort("The global RNG state can only be drawn from in a function called through {.fn jit}.")
   } else {
     cli_abort(c(
       "The global RNG state cannot be drawn from here.",
-      i = "It cannot be drawn from in the condition of {.fn nv_while}, nor in the function of a reduction, a scatter or a sort comparator.",
-      i = "Pass {.arg state} explicitly, e.g. one created by {.fn nv_rng_state}."
+      i = "It cannot be drawn from in the condition of {.fn nv_while}, nor in the function of a reduction, a scatter or a sort comparator."
     ))
   }
   desc$rng_state
@@ -131,16 +120,32 @@ rng_finish <- function(desc) {
 
 # The global RNG state slot of a program compiled from a trace that drew from
 # it (see `dispatcher()`'s `state`): pjrt's engine reads `globals$rng_state`
-# before every run, copying it to the program's device, and writes the advanced
-# state back after it.
+# before every run -- creating it with `global_rng_init()` when it is not set --
+# copying it to the program's device, and writes the advanced state back after
+# it.
 global_rng_slot <- function() {
   list(env = globals, name = "rng_state", init = global_rng_init, dtype = "ui64", shape = 2L)
 }
 
-# The global RNG state when none is set: seeded from `nv_set_seed()`'s seed, or
-# from base R's RNG when there is none.
+# The global RNG state when it is not set: seeded from `nv_set_seed()`'s seed,
+# or derived from base R's RNG when there is none.
 global_rng_init <- function() {
-  nv_rng_state(globals$seed %||% sample.int(.Machine$integer.max, 1L))
+  if (is.null(globals$seed)) rng_state_from_r() else rng_state_from_seed(globals$seed)
+}
+
+# A fresh RNG state from two uniform draws of base R's RNG: a key of 53 bits,
+# 32 from the first draw and 21 from the second, and the counter `0`. A
+# uniform draw of R's default generator has 32 random bits.
+rng_state_from_r <- function() {
+  u <- stats::runif(2L)
+  key <- floor(u[[1L]] * 2^32) + floor(u[[2L]] * 2^21) * 2^32
+  nv_array(c(key, 0), dtype = "ui64")
+}
+
+# The RNG state of the integer `seed`, a `ui64[2]` array on `device`: the key,
+# `seed` read as an unsigned 32-bit integer, and the counter `0`.
+rng_state_from_seed <- function(seed, device = NULL) {
+  nv_array(c(seed %% 2^32, 0), dtype = "ui64", device = device)
 }
 
 # Makes the branches of a `prim_if()` call -- their traces `descs` and graphs

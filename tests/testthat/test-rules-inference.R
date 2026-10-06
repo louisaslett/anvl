@@ -584,6 +584,11 @@ test_that("prim_rng_bit_generator", {
   expect_snapshot(error = TRUE, prim_rng_bit_generator(state, "MERSENNE", "f32", 3L))
 })
 
+test_that("prim_random_bits", {
+  expect_snapshot(error = TRUE, prim_random_bits(3L, "f32"))
+  expect_snapshot(error = TRUE, prim_random_bits(3L, "ui32", streams = -1L))
+})
+
 test_that("prim_fill", {
   expect_snapshot(error = TRUE, prim_fill(c(1, 2), 3L, "f32"))
   expect_snapshot(error = TRUE, prim_fill(1, 3L, "nope"))

@@ -7,33 +7,46 @@
 nv_set_seed(seed)
 }
 \arguments{
-\item{seed}{(\code{integer(1)})\cr
-The seed.}
+\item{seed}{(\code{integer(1)} | \code{NULL})\cr
+The seed, or \code{NULL} to derive the global state from base R's RNG.}
 }
 \value{
 \code{NULL}, invisibly.
 }
 \description{
-Seeds the global RNG state, analogous to base R's \code{\link[=set.seed]{set.seed()}}.
+Seeds the global RNG state, analogous to base R's \code{\link[=set.seed]{set.seed()}}. Calling it
+is optional: until the global state is first drawn from, it is not set, and
+the first draw derives it from base R's RNG, so a \code{\link[=set.seed]{set.seed()}} before that
+makes the draws reproducible too.
 
-The samplers (\code{\link[=nv_runif]{nv_runif()}}, \code{\link[=nv_rnorm]{nv_rnorm()}}, \code{\link[=nv_rbinom]{nv_rbinom()}}, \code{\link[=nv_sample_int]{nv_sample_int()}}
-and \code{\link[=nv_sample]{nv_sample()}}) draw from the global state when they are called without a
-\code{state}, and then return only the sample. A \code{\link[=jit]{jit()}}-compiled function that
-draws from it takes the global state as a hidden input and hands the
-advanced state back as a hidden output, so every draw inside one call
-advances the same state, and consecutive calls continue where the previous
-one stopped.
-
-Until a seed is set, the global state is seeded from base R's RNG on its
-first use, so \code{\link[=set.seed]{set.seed()}} also makes it reproducible.
+All random draws in anvl -- the samplers \code{\link[=nv_runif]{nv_runif()}}, \code{\link[=nv_rnorm]{nv_rnorm()}},
+\code{\link[=nv_rbinom]{nv_rbinom()}}, \code{\link[=nv_sample_int]{nv_sample_int()}} and \code{\link[=nv_sample]{nv_sample()}}, and the primitive
+\code{\link[=prim_random_bits]{prim_random_bits()}} they build on -- draw from one global RNG state and
+advance it. A \code{\link[=jit]{jit()}}-compiled function that draws from it takes the global
+state as a hidden input and hands the advanced state back as a hidden
+output, so every draw inside one call advances the same state, and
+consecutive calls continue where the previous one stopped. How the draws are
+split into compiled functions does not matter: drawing in one jitted
+function gives the same values as drawing one after the other outside of
+\code{\link[=jit]{jit()}}.
 
 The global state is also threaded through the branches of \code{\link[=nv_if]{nv_if()}}, the
 bodies of \code{\link[=nv_while]{nv_while()}} and \code{\link[=nv_scan]{nv_scan()}}, and functions differentiated by
 \code{\link[=gradient]{gradient()}}, so a draw in a loop body gives a new sample on every
 iteration. It cannot be drawn from in the condition of \code{\link[=nv_while]{nv_while()}}, nor in
-the functions of a reduction, a scatter or a sort comparator; pass a \code{state}
-explicitly there.
+the functions of a reduction, a scatter or a sort comparator, as these
+cannot hand an advanced state back.
 }
+\section{Seeding from base R}{
+
+When the global state is not set, the next draw derives it from base R's
+RNG, consuming two of its uniform draws. This happens only once: after that,
+the global state is advanced by anvl's draws alone, and \strong{calling
+\code{\link[=set.seed]{set.seed()}} again does not reseed it} -- call \code{nv_set_seed()} for that.
+\code{nv_set_seed(NULL)} unsets the global state, so that the next draw derives
+it from base R's RNG again.
+}
+
 \section{Devices}{
 
 The global state lives on the device of the call that last drew from it,
@@ -52,18 +65,20 @@ nv_runif(3L)
 nv_set_seed(42L)
 nv_runif(3L)
 
+# an unset state is derived from base R's RNG on the next draw
+nv_set_seed(NULL)
+set.seed(1)
+nv_runif(3L)
+
 # draws inside a jitted function share the global state
 f <- jit(function() nv_rnorm(2L) + nv_runif(2L))
 f()
 \dontshow{\}) # examplesIf}
 }
 \seealso{
-\code{\link[=nv_rng_state]{nv_rng_state()}} to create an explicit RNG state.
-
 Other rng:
 \code{\link{nv_normal}},
 \code{\link[=nv_rbinom]{nv_rbinom()}},
-\code{\link[=nv_rng_state]{nv_rng_state()}},
 \code{\link[=nv_sample]{nv_sample()}},
 \code{\link[=nv_sample_int]{nv_sample_int()}},
 \code{\link{nv_uniform}}

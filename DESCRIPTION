@@ -68,7 +68,6 @@ Collate:
     'api-like.R'
     'api-rng.R'
     'api-subset.R'
-    'api-utilities.R'
     'asserts.R'
     'backend-pjrt.R'
     'backend-quickr.R'

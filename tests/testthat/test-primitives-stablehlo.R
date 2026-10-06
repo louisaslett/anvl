@@ -18,6 +18,103 @@ test_that("prim_rng_bit_generator", {
   expect_shape(out$values, c(2L, 2L))
 })
 
+describe("prim_random_bits", {
+  # XLA's own THREE_FRY generator, which a single-stream `ui64` draw of a 1-D
+  # shape reproduces.
+  xla_bits <- function(state, n) {
+    prim_rng_bit_generator(nv_array(state, dtype = "ui64"), "THREE_FRY", "ui64", n)
+  }
+  set_state <- function(state) {
+    globals$rng_state <- nv_array(state, dtype = "ui64")
+  }
+  # The values of an unsigned integer array as decimal strings, which hold
+  # every bit of a `ui32` or `ui64`, in an array of its shape.
+  bits <- function(x) {
+    a <- as_array(x)
+    array(as.character(a), shape(x))
+  }
+  counter <- function() as.numeric(as_array(globals$rng_state))
+
+  it("draws what XLA's THREE_FRY draws from the same state", {
+    local_global_rng()
+    # the counter carries into its high 32 bits during the draw
+    state <- c(123456789, 2^32 - 3)
+    expected <- xla_bits(state, 7L)
+    set_state(state)
+    expect_identical(bits(prim_random_bits(7L, "ui64")), bits(expected$values))
+    expect_identical(bits(globals$rng_state), bits(expected$state))
+  })
+
+  it("advances the counter by the number of draws whatever the data type", {
+    local_global_rng()
+    set_state(c(5, 10))
+    prim_random_bits(c(2L, 3L), "ui8")
+    expect_identical(counter(), c(5, 16))
+    prim_random_bits(integer(), "ui32")
+    expect_identical(counter(), c(5, 17))
+  })
+
+  it("draws the bits of a narrower data type from the 64 bits of a draw", {
+    local_global_rng()
+    set_state(c(42, 0))
+    halves <- nv_bitcast_convert(prim_random_bits(5L, "ui64"), dtype = "ui32")
+    half <- function(i) nv_reshape(nv_static_slice(halves, c(i, 1L), c(i, 5L), c(1L, 1L)), 5L)
+    set_state(c(42, 0))
+    narrow <- prim_random_bits(5L, "ui32")
+    expect_identical(bits(narrow), bits(nv_xor(half(1L), half(2L))))
+    set_state(c(42, 0))
+    expect_identical(bits(prim_random_bits(5L, "ui8")), bits(nv_convert(narrow, "ui8")))
+  })
+
+  it("fills a shape in column-major order", {
+    local_global_rng()
+    set_state(c(1, 0))
+    flat <- bits(prim_random_bits(6L, "ui32"))
+    set_state(c(1, 0))
+    expect_identical(bits(prim_random_bits(c(2L, 3L), "ui32")), array(flat, c(2L, 3L)))
+  })
+
+  it("draws each stream from a key derived from the next values of the counter", {
+    local_global_rng()
+    state <- c(99, 7)
+    keys <- xla_bits(state, 3L)$values
+    set_state(state)
+    out <- bits(prim_random_bits(4L, "ui64", streams = 3L))
+    expect_identical(dim(out), c(3L, 4L))
+    expect_identical(counter(), c(99, 10))
+    for (i in 1:3) {
+      key <- nv_static_slice(keys, start_indices = i, end_indices = i, strides = 1L)
+      stream_state <- nv_concatenate(key, nv_array(0, dtype = "ui64"), axis = 1L)
+      expected <- prim_rng_bit_generator(stream_state, "THREE_FRY", "ui64", 4L)$values
+      expect_identical(out[i, ], as.vector(bits(expected)))
+    }
+  })
+
+  it("arranges streams of several axes in column-major order", {
+    local_global_rng()
+    set_state(c(8, 1))
+    flat <- bits(prim_random_bits(3L, "ui32", streams = 4L))
+    set_state(c(8, 1))
+    grid <- bits(prim_random_bits(3L, "ui32", streams = c(2L, 2L)))
+    expect_identical(grid, array(flat, c(2L, 2L, 3L)))
+    expect_identical(counter(), c(8, 5))
+  })
+
+  it("draws different values in each stream", {
+    local_global_rng()
+    set_state(c(3, 0))
+    out <- bits(prim_random_bits(100L, "ui32", streams = 4L))
+    expect_identical(nrow(unique(out)), 4L)
+  })
+
+  it("draws a stream shape of no elements", {
+    local_global_rng()
+    set_state(c(3, 0))
+    expect_shape(prim_random_bits(0L, "ui32", streams = 2L), c(2L, 0L))
+    expect_identical(counter(), c(3, 2))
+  })
+})
+
 describe("prim_bitcast_convert", {
   it("keeps the shape when the widths match", {
     expect_shape(nv_bitcast_convert(nv_array(c(1, 2, 3), dtype = "f32"), dtype = "i32"), 3L)
