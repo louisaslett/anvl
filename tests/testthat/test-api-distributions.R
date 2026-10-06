@@ -1005,6 +1005,19 @@ describe("nv_dbinom", {
     expect_equal(g, c(-10, 10, 10, -10, 0, 0, 0, 0))
   })
 
+  it("gradient is right for size of 0 and 1, and unpoisoned by invalid elements", {
+    # size = 0: the density is 1 at x = 0 whatever prob is. size = 1: it is
+    # 1 - p at x = 0 and p at x = 1. Elements with an invalid size or prob, or
+    # outside the support, have a NaN or zero density and a zero gradient, and
+    # must leave the others' finite.
+    x <- c(0, 0, 1, 0, 1, 5, 5, 5, 11, 3)
+    size <- c(0, 1, 1, 1, 1, -1, 10.5, 10, 10, 10)
+    prob <- c(0.3, 0.3, 0.3, 1, 0, 0.3, 0.3, 1.5, 0.3, 0.3)
+    f <- function(prob) nv_sum(nv_dbinom(as_f64(x), size = as_f64(size), prob = prob))
+    g <- as.vector(jit(gradient(f, wrt = "prob"))(as_f64(prob))[[1L]])
+    expect_equal(g, c(0, -1, 1, -1, 1, 0, 0, 0, 0, dbinom(3, 10, 0.3) * (3 / 0.3 - 7 / 0.7)))
+  })
+
   it("converts size/prob to the dtype of x", {
     out <- nv_dbinom(nv_array(c(0, 1), dtype = "f32"), size = 2L, prob = 0.5)
     expect_dtype(out, "f32")

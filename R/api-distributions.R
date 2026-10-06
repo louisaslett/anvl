@@ -709,10 +709,10 @@ binom_bd0 <- function(x, np, d, n_terms) {
   tail <- horner(w, 1 / (2 * rev(seq_len(n_terms)) + 1))
   series <- d * v + 2 * x * v * w * tail
 
-  # x / np overflows only far from the series region, where the less accurate
-  # difference of logs is harmless
-  ratio <- x / np
-  log_ratio <- nv_ifelse(nv_is_finite(ratio), nv_log(ratio), nv_log(x) - nv_log(np))
+  # x / np cannot overflow: in `binom_log_density()` x <= n, so x / np <= 1 / p
+  # (and (n - x) / nq <= 1 / q) for any normal p (and q, which is never
+  # subnormal). A subnormal p is flushed to zero by XLA before it gets here.
+  log_ratio <- nv_log(x / np)
   direct <- nv_ifelse(x > np, x * (log_ratio - 1) + np, x * log_ratio + np - x)
 
   nv_ifelse(use_series, series, direct)
@@ -721,7 +721,9 @@ binom_bd0 <- function(x, np, d, n_terms) {
 # Log of the Binomial probability mass at whole `x`, for whole `n >= 0` and
 # `0 <= p <= 1`, as in R's `dbinom_raw()` (Loader's saddle point algorithm).
 # Each branch is fed safe stand-ins on the elements where it is not selected, so
-# that it cannot poison the gradient.
+# that it cannot poison the gradient. The stand-ins for `n` and `p` are chosen
+# by conditions on `n` and `p` alone, so a scalar `n` or `p` stays scalar and
+# the work done on it alone is not repeated for every element of `x`.
 binom_log_density <- function(x, n, p, n_terms) {
   outside <- x < 0 | x > n | x == Inf
   zero_trials <- n == 0
@@ -730,21 +732,20 @@ binom_log_density <- function(x, n, p, n_terms) {
   at_size <- x == n
   infinite_trials <- n == Inf
 
-  # x == 0: the probability is (1 - p)^n
-  use_zero <- at_zero & !zero_trials & !impossible
-  p_zero <- nv_ifelse(use_zero, p, 0.5)
+  # x == 0: the probability is (1 - p)^n. Where that is selected, p < 1.
   n_zero <- nv_ifelse(infinite_trials, 1, n)
+  p_zero <- nv_ifelse(p < 1, p, 0.5)
   log_zero <- nv_ifelse(infinite_trials & (p > 0), -Inf, n_zero * nv_log1p(-p_zero))
 
-  # x == n: the probability is p^n
-  use_size <- at_size & !zero_trials & !impossible
-  log_size <- n * nv_log(nv_ifelse(use_size, p, 0.5))
+  # x == n: the probability is p^n. Where that is selected, p > 0.
+  log_size <- n * nv_log(nv_ifelse(p > 0, p, 0.5))
 
-  # 0 < x < n and 0 < p < 1
+  # 0 < x < n and 0 < p < 1, so n >= 2 there. The stand-in x = 1 is inside the
+  # support of any stand-in n.
   interior <- !(outside | zero_trials | impossible | at_zero | at_size | infinite_trials)
   x_int <- nv_ifelse(interior, x, 1)
-  n_int <- nv_ifelse(interior, n, 2)
-  p_int <- nv_ifelse(interior, p, 0.5)
+  n_int <- nv_ifelse((n >= 2) & !infinite_trials, n, 2)
+  p_int <- nv_ifelse((p > 0) & (p < 1), p, 0.5)
   np <- n_int * p_int
   nq <- n_int * (1 - p_int)
   # (n - x) - nq is exactly -(x - np), which is the one difference worth
@@ -1084,7 +1085,9 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 #' reached about \eqn{4 \times 10^{-5}}{4e-5}.
 #'
 #' `f32` holds every whole number only up to \eqn{2^{24}}, and `f64` up to
-#' \eqn{2^{53}}.
+#' \eqn{2^{53}}. XLA (at least on the CPU backend) treats subnormal numbers
+#' as zero, so a subnormal `prob` acts as `prob = 0`: `nv_dbinom(1, 2, 1e-310)`
+#' at `f64` is zero, where base R gives `2e-310`.
 #'
 #' @section Gradients:
 #' `nv_dbinom` can be differentiated with respect to `prob`, including at
@@ -1133,19 +1136,20 @@ nv_dbinom <- jit(
     op_dtype <- assert_rng_float_dtype(dtype(x), arg = "x")
 
     # Resolve to NaN matching base R rules. NaN fails every comparison, so is
-    # tested for directly.
-    invalid <- nv_is_nan(x) |
-      nv_is_nan(size) |
+    # tested for directly. The parameters' own conditions are kept apart from
+    # x's, so that a scalar `size` or `prob` stays scalar.
+    invalid_param <- nv_is_nan(size) |
       nv_is_nan(prob) |
       (prob < 0) |
       (prob > 1) |
       (size < 0) |
       is_nonint(size)
+    invalid <- invalid_param | nv_is_nan(x)
     # Rounded once checked, as base R does. Non-whole x moved to probability
     # zero input. Invalid elements get safe values to avoid gradient poisoning.
-    x_whole <- nv_ifelse(invalid, 0, nv_ifelse(is_nonint(x), -1, nv_round(x)))
-    size <- nv_ifelse(invalid, 1, nv_round(size))
-    prob <- nv_ifelse(invalid, 0.5, prob)
+    x_whole <- nv_ifelse(nv_is_nan(x), 0, nv_ifelse(is_nonint(x), -1, nv_round(x)))
+    size <- nv_ifelse(invalid_param, 1, nv_round(size))
+    prob <- nv_ifelse(invalid_param, 0.5, prob)
 
     n_terms <- if (op_dtype == "f32") 4L else 8L
     log_density <- binom_log_density(x_whole, size, prob, n_terms)
@@ -1155,19 +1159,22 @@ nv_dbinom <- jit(
       # Next to an end of the support, at x = 1 for prob = 0 and x = size - 1
       # for prob = 1, the density is zero but gradient is not. However, just
       # exp(log_density) loses gradient, so compute directly for these cases.
+      # The polynomials depend on `size` and `prob` alone, and are guarded on
+      # them alone, so that they stay scalar for scalar parameters.
       finite_size <- nv_is_finite(size)
       edge_low <- (prob == 0) & (x_whole == 1) & finite_size
       edge_high <- (prob == 1) & (x_whole == size - 1) & finite_size
-      p_low <- nv_ifelse(edge_low, prob, 0)
-      p_high <- nv_ifelse(edge_high, prob, 1)
+      p_low <- nv_ifelse(prob == 0, prob, 0)
+      p_high <- nv_ifelse(prob == 1, prob, 1)
+      size_poly <- nv_ifelse(finite_size, size, 2)
       nv_ifelse(
         edge_low,
         # n p (1 - p)^{n-1}
-        size * p_low * nv_exp((size - 1) * nv_log1p(-p_low)),
+        size_poly * p_low * nv_exp((size_poly - 1) * nv_log1p(-p_low)),
         nv_ifelse(
           edge_high,
           # n (1 - p) p^{n-1}
-          size * (1 - p_high) * nv_exp((size - 1) * nv_log(p_high)),
+          size_poly * (1 - p_high) * nv_exp((size_poly - 1) * nv_log(p_high)),
           # easy cases don't need direct computation
           nv_exp(log_density)
         )

@@ -104,7 +104,9 @@ densities and tail probabilities below about \eqn{10^{-14}}, where it
 reached about \eqn{4 \times 10^{-5}}{4e-5}.
 
 \code{f32} holds every whole number only up to \eqn{2^{24}}, and \code{f64} up to
-\eqn{2^{53}}.
+\eqn{2^{53}}. XLA (at least on the CPU backend) treats subnormal numbers
+as zero, so a subnormal \code{prob} acts as \code{prob = 0}: \code{nv_dbinom(1, 2, 1e-310)}
+at \code{f64} is zero, where base R gives \code{2e-310}.
 }
 
 \section{Gradients}{
