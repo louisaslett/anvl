@@ -855,6 +855,426 @@ describe("nv_qunif", {
   })
 })
 
+# Size/prob configurations exercised against base R by the nv_dbinom/nv_pbinom/
+# nv_qbinom agreement tests: ordinary, degenerate, invalid, infinite and NaN.
+binomial_parameter_cases <- function() {
+  list(
+    c(10, 0.3),
+    c(0, 0.3),
+    c(10, 0),
+    c(10, 1),
+    c(10.5, 0.3),
+    c(-1, 0.3),
+    c(10, -0.1),
+    c(10, 1.1),
+    c(Inf, 0.3),
+    c(Inf, 0),
+    c(NaN, 0.3),
+    c(10, NaN)
+  )
+}
+
+describe("nv_dbinom", {
+  it("matches base R dbinom()", {
+    x <- c(0, 1, 2, 3, 5, 9, 10)
+    expect_equal(
+      as.vector(nv_dbinom(nv_array(x), size = 10, prob = 0.3)),
+      dbinom(x, size = 10, prob = 0.3),
+      tolerance = 1e-6
+    )
+  })
+
+  it("log = TRUE matches base R dbinom(..., log = TRUE)", {
+    x <- c(0, 1, 2, 3, 5, 9, 10)
+    expect_equal(
+      as.vector(nv_dbinom(nv_array(x), size = 10, prob = 0.3, log = TRUE)),
+      dbinom(x, size = 10, prob = 0.3, log = TRUE),
+      tolerance = 1e-6
+    )
+  })
+
+  it("keeps f64 accuracy across the support for small and large size", {
+    for (args in list(c(20, 0.3), c(1000, 0.001), c(1e5, 0.5), c(1e5, 0.999))) {
+      size <- args[[1L]]
+      prob <- args[[2L]]
+      x <- unique(round(c(0, 1, size * prob + c(-5, 0, 5) * sqrt(size * prob * (1 - prob)), size - 1, size)))
+      x <- x[x >= 0 & x <= size]
+      for (lg in c(FALSE, TRUE)) {
+        expect_equal(
+          as.vector(nv_dbinom(as_f64(x), size = size, prob = prob, log = lg)),
+          dbinom(x, size = size, prob = prob, log = lg),
+          tolerance = 1e-13
+        )
+      }
+    }
+  })
+
+  it("stays accurate next to x = size, where log1p(-x / size) would cancel", {
+    # base R's dbinom() itself is only good to ~2e-12 here; the exact value
+    # comes from the closed form n p^(n - 1) (1 - p).
+    x <- as_f64(99999)
+    expect_equal(
+      as.vector(nv_dbinom(x, size = 1e5, prob = 0.999, log = TRUE)),
+      log(1e5) + 99999 * log(0.999) + log1p(-0.999),
+      tolerance = 1e-14
+    )
+  })
+
+  it("stays accurate for very large size, where size * prob must not be rounded", {
+    # Reference values from Rmpfr at 400 bits. base R's dbinom() is only good to
+    # ~1e-9 here, as it rounds size * prob before taking x - size * prob.
+    expect_equal(
+      as.vector(nv_dbinom(
+        as_f64(c(7699989354000, 2999995653000)),
+        size = 1e13,
+        prob = as_f64(c(0.77, 0.3)),
+        log = TRUE
+      )),
+      c(-47.018301202312358, -19.604563591068437),
+      tolerance = 1e-14
+    )
+  })
+
+  it("keeps f32 accuracy for large size", {
+    # Against base R on the same f32 inputs, so only the f32 computation differs
+    prob <- as.vector(nv_array(0.3, dtype = "f32"))
+    x <- 3e6 + c(-4000, -1000, 0, 1000, 4000)
+    expect_equal(
+      as.vector(nv_dbinom(nv_array(x, dtype = "f32"), size = 1e7, prob = prob)),
+      dbinom(x, size = 1e7, prob = prob),
+      tolerance = 1e-5
+    )
+  })
+
+  it("log = TRUE stays finite where the plain density underflows to 0", {
+    x <- as_f64(0)
+    expect_equal(as.vector(nv_dbinom(x, size = 1e4, prob = 0.5)), 0)
+    expect_equal(
+      as.vector(nv_dbinom(x, size = 1e4, prob = 0.5, log = TRUE)),
+      dbinom(0, size = 1e4, prob = 0.5, log = TRUE),
+      tolerance = 1e-14
+    )
+  })
+
+  it("matches base R dbinom() off the support and for degenerate, invalid, infinite and NaN parameters", {
+    x <- c(-Inf, -1, 0, 2.5, 3, 10, 11, Inf, NaN)
+    got <- unlist(lapply(binomial_parameter_cases(), function(a) {
+      lapply(c(FALSE, TRUE), function(lg) {
+        as.vector(nv_dbinom(as_f64(x), size = as_f64_scalar(a[[1L]]), prob = as_f64_scalar(a[[2L]]), log = lg))
+      })
+    }))
+    want <- unlist(lapply(binomial_parameter_cases(), function(a) {
+      lapply(c(FALSE, TRUE), function(lg) {
+        suppressWarnings(dbinom(x, a[[1L]], a[[2L]], log = lg))
+      })
+    }))
+    expect_equal(got, want)
+  })
+
+  it("non-scalar size/prob works", {
+    x <- c(0, 3, 7)
+    size <- c(5, 10, 20)
+    prob <- c(0.1, 0.5, 0.9)
+    expect_equal(
+      as.vector(nv_dbinom(
+        nv_array(x),
+        size = nv_array(size),
+        prob = nv_array(prob)
+      )),
+      dbinom(x, size = size, prob = prob),
+      tolerance = 1e-6
+    )
+  })
+
+  it("gradient with respect to prob matches the score, including at the ends of the support", {
+    # d/dp log p(x) = x / p - (n - x) / (1 - p)
+    x <- c(0, 1, 3, 9, 10)
+    f <- function(prob) nv_sum(nv_dbinom(as_f64(x), size = 10, prob = prob, log = TRUE))
+    g <- as.vector(jit(gradient(f, wrt = "prob"))(as_f64_scalar(0.3))[[1L]])
+    expect_equal(g, sum(x / 0.3 - (10 - x) / 0.7), tolerance = 1e-12)
+  })
+
+  it("gradient is right at prob of 0 and 1, where the density is a polynomial with a zero", {
+    # d/dp (1 - p)^10 = -10 at p = 0 and d/dp p^10 = 10 at p = 1. Next to them,
+    # d/dp 10 p (1 - p)^9 = 10 at p = 0 and d/dp 10 (1 - p) p^9 = -10 at p = 1,
+    # although the density itself is zero there. Further in it is flat at zero.
+    x <- c(0, 10, 1, 9, 2, 8, 5, 5)
+    prob <- c(0, 1, 0, 1, 0, 1, 0, 1)
+    f <- function(prob) nv_sum(nv_dbinom(as_f64(x), size = 10, prob = prob))
+    g <- as.vector(jit(gradient(f, wrt = "prob"))(as_f64(prob))[[1L]])
+    expect_equal(g, c(-10, 10, 10, -10, 0, 0, 0, 0))
+  })
+
+  it("converts size/prob to the dtype of x", {
+    out <- nv_dbinom(nv_array(c(0, 1), dtype = "f32"), size = 2L, prob = 0.5)
+    expect_dtype(out, "f32")
+  })
+})
+
+describe("nv_pbinom", {
+  it("matches base R pbinom()", {
+    q <- c(-1, 0, 1, 2, 3, 5, 9, 10, 11)
+    expect_equal(
+      as.vector(nv_pbinom(nv_array(q), size = 10, prob = 0.3)),
+      pbinom(q, size = 10, prob = 0.3),
+      tolerance = 1e-6
+    )
+  })
+
+  it("lower_tail and log_p match base R in every combination", {
+    q <- c(-1, 0, 1, 2, 3, 5, 9, 10, 11)
+    for (lt in c(TRUE, FALSE)) {
+      for (lp in c(FALSE, TRUE)) {
+        expect_equal(
+          as.vector(nv_pbinom(as_f64(q), size = 10, prob = 0.3, lower_tail = lt, log_p = lp)),
+          pbinom(q, size = 10, prob = 0.3, lower.tail = lt, log.p = lp),
+          tolerance = 1e-14
+        )
+      }
+    }
+  })
+
+  it("keeps f64 accuracy in both tails and across both continued fraction branches", {
+    # The branch switches at the mean, where the directly computed tail changes
+    # sides; 8 sd out the other tail comes as a complement.
+    for (args in list(c(20, 0.3), c(1000, 0.001), c(1e4, 0.5), c(1e5, 0.77))) {
+      size <- args[[1L]]
+      prob <- args[[2L]]
+      q <- unique(floor(size * prob + c(-8, -3, -1, 0, 1, 3, 8) * sqrt(size * prob * (1 - prob))))
+      q <- q[q >= 0 & q < size]
+      for (lt in c(TRUE, FALSE)) {
+        for (lp in c(FALSE, TRUE)) {
+          expect_equal(
+            as.vector(nv_pbinom(as_f64(q), size = size, prob = prob, lower_tail = lt, log_p = lp)),
+            pbinom(q, size = size, prob = prob, lower.tail = lt, log.p = lp),
+            tolerance = 1e-13
+          )
+        }
+      }
+    }
+  })
+
+  it("stays accurate for very large size, near the mean and in the tails", {
+    # Near the mean the continued fraction would need too many iterations here;
+    # the asymptotic expansion takes over
+    for (size in c(1e12, 1e15)) {
+      for (prob in c(0.001, 0.5)) {
+        q <- floor(size * prob + c(-5, -1, 0, 1, 5) * sqrt(size * prob * (1 - prob)))
+        for (lp in c(FALSE, TRUE)) {
+          expect_equal(
+            as.vector(nv_pbinom(as_f64(q), size = size, prob = prob, log_p = lp)),
+            pbinom(q, size = size, prob = prob, log.p = lp),
+            tolerance = 1e-12
+          )
+        }
+      }
+    }
+  })
+
+  it("keeps f32 accuracy for large size", {
+    # Against base R on the same f32 inputs, so only the f32 computation differs
+    prob <- as.vector(nv_array(0.99, dtype = "f32"))
+    q <- 9.9e6 + c(-1000, -300, 0, 300, 1000)
+    for (lt in c(TRUE, FALSE)) {
+      expect_equal(
+        as.vector(nv_pbinom(nv_array(q, dtype = "f32"), size = 1e7, prob = prob, lower_tail = lt)),
+        pbinom(q, size = 1e7, prob = prob, lower.tail = lt),
+        tolerance = 1e-5
+      )
+    }
+  })
+
+  it("log_p = TRUE stays finite where the probability underflows", {
+    q <- as_f64(c(10, 9990))
+    expect_equal(
+      as.vector(nv_pbinom(q, size = 1e4, prob = 0.5, log_p = TRUE))[[1L]],
+      pbinom(10, size = 1e4, prob = 0.5, log.p = TRUE),
+      tolerance = 1e-14
+    )
+    expect_equal(
+      as.vector(nv_pbinom(q, size = 1e4, prob = 0.5, lower_tail = FALSE, log_p = TRUE))[[2L]],
+      pbinom(9990, size = 1e4, prob = 0.5, lower.tail = FALSE, log.p = TRUE),
+      tolerance = 1e-14
+    )
+  })
+
+  it("rounds q down, with base R's fuzz just below a whole number", {
+    q <- as_f64(c(2.5, 3 - 1e-9, 3 - 1e-6))
+    expect_equal(
+      as.vector(nv_pbinom(q, size = 10, prob = 0.3)),
+      pbinom(c(2.5, 3 - 1e-9, 3 - 1e-6), size = 10, prob = 0.3),
+      tolerance = 1e-14
+    )
+  })
+
+  it("matches base R pbinom() off the support and for degenerate, invalid, infinite and NaN parameters", {
+    q <- c(-Inf, -1, 0, 2.5, 3, 10, 11, Inf, NaN)
+    combos <- expand.grid(lt = c(TRUE, FALSE), lp = c(FALSE, TRUE))
+    got <- unlist(lapply(binomial_parameter_cases(), function(a) {
+      Map(
+        function(lt, lp) {
+          as.vector(nv_pbinom(
+            as_f64(q),
+            size = as_f64_scalar(a[[1L]]),
+            prob = as_f64_scalar(a[[2L]]),
+            lower_tail = lt,
+            log_p = lp
+          ))
+        },
+        combos$lt,
+        combos$lp
+      )
+    }))
+    want <- unlist(lapply(binomial_parameter_cases(), function(a) {
+      Map(
+        function(lt, lp) {
+          suppressWarnings(pbinom(q, a[[1L]], a[[2L]], lower.tail = lt, log.p = lp))
+        },
+        combos$lt,
+        combos$lp
+      )
+    }))
+    expect_equal(got, want, tolerance = 1e-14)
+  })
+
+  it("non-scalar size/prob works", {
+    q <- c(0, 3, 7)
+    size <- c(5, 10, 20)
+    prob <- c(0.1, 0.5, 0.9)
+    expect_equal(
+      as.vector(nv_pbinom(
+        nv_array(q),
+        size = nv_array(size),
+        prob = nv_array(prob)
+      )),
+      pbinom(q, size = size, prob = prob),
+      tolerance = 1e-6
+    )
+  })
+
+  it("converts size/prob to the dtype of q", {
+    out <- nv_pbinom(nv_array(c(0, 1), dtype = "f32"), size = 2L, prob = 0.5)
+    expect_dtype(out, "f32")
+  })
+})
+
+describe("nv_qbinom", {
+  it("matches base R qbinom()", {
+    p <- c(0.001, 0.025, 0.1, 0.5, 0.9, 0.975, 0.999)
+    expect_equal(
+      as.vector(nv_qbinom(nv_array(p), size = 10, prob = 0.3)),
+      qbinom(p, size = 10, prob = 0.3)
+    )
+  })
+
+  it("lower_tail and log_p match base R in every combination, for small and large size", {
+    u <- c(1e-12, 0.001, 0.01, 0.2, 0.5, 0.8, 0.99, 0.999, 1 - 1e-12)
+    for (args in list(c(20, 0.3), c(1000, 0.001), c(1e5, 0.5))) {
+      for (lt in c(TRUE, FALSE)) {
+        for (lp in c(FALSE, TRUE)) {
+          p <- if (lp) log(u) else u
+          expect_equal(
+            as.vector(nv_qbinom(as_f64(p), size = args[[1L]], prob = args[[2L]], lower_tail = lt, log_p = lp)),
+            qbinom(p, size = args[[1L]], prob = args[[2L]], lower.tail = lt, log.p = lp)
+          )
+        }
+      }
+    }
+  })
+
+  it("matches base R qbinom() for very large size", {
+    u <- c(1e-10, 0.001, 0.3, 0.5, 0.7, 0.999)
+    for (size in c(1e6, 1e12)) {
+      expect_equal(
+        as.vector(nv_qbinom(as_f64(u), size = size, prob = 0.3)),
+        qbinom(u, size = size, prob = 0.3)
+      )
+    }
+  })
+
+  it("matches base R qbinom() at f32 for large size", {
+    # On the same f32 inputs. Away from p that round onto a value of the
+    # distribution function, where the coarser f32 tolerance decides.
+    p <- as.vector(nv_array(c(0.001, 0.2, 0.5, 0.8), dtype = "f32"))
+    prob <- as.vector(nv_array(0.3, dtype = "f32"))
+    expect_equal(
+      as.vector(nv_qbinom(nv_array(p, dtype = "f32"), size = 1e7, prob = prob)),
+      qbinom(p, size = 1e7, prob = prob)
+    )
+  })
+
+  it("maps the distribution function at each support point back to it", {
+    # The search is continuous from the left, so a probability computed at a
+    # support point is mapped back to that point despite its rounding.
+    q <- 0:20
+    for (lt in c(TRUE, FALSE)) {
+      for (lp in c(FALSE, TRUE)) {
+        p <- nv_pbinom(as_f64(q), size = 20, prob = 0.3, lower_tail = lt, log_p = lp)
+        got <- as.vector(nv_qbinom(p, size = 20, prob = 0.3, lower_tail = lt, log_p = lp))
+        # The upper tail reaches 0 at q = 20, which maps to the start of the
+        # support it is attained on
+        expect_equal(got, if (lt) q else c(q[-21L], 20))
+      }
+    }
+  })
+
+  it("matches base R qbinom() at the ends of p and for degenerate, invalid, infinite and NaN parameters", {
+    p <- c(-0.1, 0, 0.3, 1, 1.1, NaN)
+    lp <- c(-Inf, -1, 0, 0.1, NaN)
+    combos <- expand.grid(lt = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    got <- unlist(lapply(binomial_parameter_cases(), function(a) {
+      Map(
+        function(lt, log_p) {
+          as.vector(nv_qbinom(
+            as_f64(if (log_p) lp else p),
+            size = as_f64_scalar(a[[1L]]),
+            prob = as_f64_scalar(a[[2L]]),
+            lower_tail = lt,
+            log_p = log_p
+          ))
+        },
+        combos$lt,
+        combos$log_p
+      )
+    }))
+    want <- unlist(lapply(binomial_parameter_cases(), function(a) {
+      Map(
+        function(lt, log_p) {
+          suppressWarnings(qbinom(if (log_p) lp else p, a[[1L]], a[[2L]], lower.tail = lt, log.p = log_p))
+        },
+        combos$lt,
+        combos$log_p
+      )
+    }))
+    expect_equal(got, want)
+  })
+
+  it("non-scalar size/prob works", {
+    p <- c(0.1, 0.5, 0.9)
+    size <- c(5, 10, 20)
+    prob <- c(0.1, 0.5, 0.9)
+    expect_equal(
+      as.vector(nv_qbinom(
+        nv_array(p),
+        size = nv_array(size),
+        prob = nv_array(prob)
+      )),
+      qbinom(p, size = size, prob = prob)
+    )
+  })
+
+  it("converts size/prob to the dtype of p", {
+    out <- nv_qbinom(nv_array(c(0.1, 0.9), dtype = "f32"), size = 2L, prob = 0.5)
+    expect_dtype(out, "f32")
+  })
+
+  it("names the operand when it is not a float", {
+    expect_error(nv_qbinom(nv_array(1L), 2, 0.5), "`p` must be a float data type")
+    expect_error(nv_pbinom(nv_array(1L), 2, 0.5), "`q` must be a float data type")
+    expect_error(nv_dbinom(nv_array(1L), 2, 0.5), "`x` must be a float data type")
+  })
+})
+
 describe("eager/jit equivalence", {
   it("agrees for nv_dnorm(), nv_pnorm() and nv_qnorm()", {
     f64 <- function() nv_array(c(0.25, 0.75), dtype = "f64")
@@ -862,6 +1282,15 @@ describe("eager/jit equivalence", {
       dnorm = function(x, v) nv_dnorm(f64(), mean = v),
       pnorm = function(x, v) nv_pnorm(f64(), sd = v),
       qnorm = function(x, v) nv_qnorm(f64(), mean = v)
+    ))
+  })
+
+  it("agrees for nv_dbinom(), nv_pbinom() and nv_qbinom()", {
+    f64 <- function() nv_array(c(0.25, 0.75), dtype = "f64")
+    expect_eager_jit_equal_grid(list(
+      dbinom = function(x, v) nv_dbinom(f64(), size = 3, prob = v),
+      pbinom = function(x, v) nv_pbinom(f64(), size = v, prob = 0.5),
+      qbinom = function(x, v) nv_qbinom(f64(), size = 3, prob = v)
     ))
   })
 })
@@ -884,5 +1313,15 @@ describe("the float category", {
       jit(function(x) nv_qnorm(nv_convert(x, "bf16")))(nv_array(c(0.5, 0.5))),
       "must be a 32- or 64-bit float data type"
     )
+  })
+
+  it("nv_dbinom(), nv_pbinom() and nv_qbinom() still need a 32- or 64-bit float", {
+    # As above: they carry one series length or tolerance per width.
+    for (f in list(nv_dbinom, nv_pbinom, nv_qbinom)) {
+      expect_error(
+        jit(function(x) f(nv_convert(x, "bf16"), 2, 0.5))(nv_array(c(0.5, 0.5))),
+        "must be a 32- or 64-bit float data type"
+      )
+    }
   })
 })

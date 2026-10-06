@@ -41,6 +41,24 @@ bibentries <- c(
     year = "1989",
     publisher = "Ellis Horwood",
     isbn = "0-7458-0289-3"
+  ),
+  loader2000fast = bibentry(
+    bibtype = "misc",
+    title = "Fast and Accurate Computation of Binomial Probabilities",
+    author = person("Catherine", "Loader"),
+    year = "2000",
+    url = "https://www.r-project.org/doc/reports/CLoader-dbinom-2002.pdf"
+  ),
+  didonato1992algorithm = bibentry(
+    bibtype = "article",
+    title = "Algorithm 708: Significant Digit Computation of the Incomplete Beta Function Ratios",
+    author = c(person("Armido R.", "DiDonato"), person("Alfred H.", "Morris")),
+    journal = "ACM Transactions on Mathematical Software",
+    year = "1992",
+    volume = "18",
+    number = "3",
+    pages = "360--373",
+    doi = "10.1145/131766.131776"
   )
 )
 # nolint end
