@@ -855,6 +855,739 @@ describe("nv_qunif", {
   })
 })
 
+# Means exercised against base R by the nv_dpois/nv_ppois/nv_qpois agreement
+# tests: ordinary, zero (a point mass at zero), infinite, negative and NaN.
+pois_lambda_cases <- function() {
+  c(0.5, 4, 0, Inf, -1, NaN)
+}
+
+# A grid of (k, lambda) pairs spanning the support of each lambda out to far in
+# both tails, which reaches both series and, for lambda >= 200, the asymptotic
+# expansion of nv_ppois().
+pois_grid <- function() {
+  lambda <- c(0.001, 0.3, 1, 2.5, 7, 20, 99.5, 210, 1000, 1e4, 3e5)
+  do.call(
+    rbind,
+    lapply(lambda, function(l) {
+      k <- floor(c(0:12, l + sqrt(l) * seq(-12, 12, by = 0.5), l * c(0.5, 0.79, 0.81, 1.2, 1.26, 2, 5)))
+      data.frame(k = unique(k[k >= 0]), lambda = l)
+    })
+  )
+}
+
+# Element-by-element relative comparison, with NaN and infinities matched
+# exactly. `expect_equal()` measures the mean relative difference over the whole
+# vector, which tiny elements barely move, and compares absolutely when the
+# expected values are smaller than the tolerance.
+expect_equal_elementwise <- function(object, expected, tolerance = 1e-13) {
+  close <- (abs(object - expected) <= tolerance * abs(expected)) %in% TRUE
+  ok <- ifelse(is.nan(expected), is.nan(object), !is.nan(object) & (object == expected | close))
+  bad <- which(!ok)
+  expect(
+    length(bad) == 0L,
+    sprintf(
+      "Elements differ at %s: got %s, expected %s.",
+      paste(bad, collapse = ", "),
+      paste(format(object[bad], digits = 17), collapse = ", "),
+      paste(format(expected[bad], digits = 17), collapse = ", ")
+    )
+  )
+  invisible(object)
+}
+
+describe("nv_dpois", {
+  it("matches base R dpois() with default lambda", {
+    x <- c(0, 1, 2, 3, 4, 5, 6)
+    expect_equal(as.vector(nv_dpois(nv_array(x))), dpois(x, 1), tolerance = 1e-6)
+  })
+
+  it("matches base R dpois() with custom lambda", {
+    x <- c(0, 1, 2, 5, 10, 20)
+    expect_equal(as.vector(nv_dpois(nv_array(x), lambda = 4.5)), dpois(x, 4.5), tolerance = 1e-6)
+  })
+
+  it("log = TRUE matches base R dpois(..., log = TRUE)", {
+    x <- c(0, 1, 2, 5, 10, 20)
+    expect_equal(
+      as.vector(nv_dpois(nv_array(x), lambda = 4.5, log = TRUE)),
+      dpois(x, 4.5, log = TRUE),
+      tolerance = 1e-6
+    )
+  })
+
+  it("keeps full relative accuracy far into both tails, in both f32 and f64", {
+    g <- pois_grid()
+    for (lg in c(FALSE, TRUE)) {
+      got <- as.vector(nv_dpois(as_f64(g$k), as_f64(g$lambda), log = lg))
+      expect_equal_elementwise(got, dpois(g$k, g$lambda, log = lg), tolerance = 1e-12)
+    }
+    # compared at the f32 lambda; away from the far tails, where the error of
+    # an f32 log-probability of magnitude ~|k - lambda| is amplified by exp()
+    near <- abs(g$k - g$lambda) <= 6 * sqrt(g$lambda) + 6
+    k <- g$k[near]
+    lambda <- as.vector(nv_array(g$lambda[near], dtype = "f32"))
+    for (lg in c(FALSE, TRUE)) {
+      got <- as.vector(nv_dpois(nv_array(k, dtype = "f32"), nv_array(lambda, dtype = "f32"), log = lg))
+      expect_equal_elementwise(got, dpois(k, lambda, log = lg), tolerance = if (lg) 1e-5 else 2e-5)
+    }
+  })
+
+  it("log = TRUE stays finite where the probability underflows to 0", {
+    x <- nv_array(1000, dtype = "f64")
+    expect_equal(as.vector(nv_dpois(x)), 0)
+    expect_equal(as.vector(nv_dpois(x, log = TRUE)), dpois(1000, 1, log = TRUE), tolerance = 1e-14)
+  })
+
+  it("log = TRUE stays accurate where x / lambda over- or underflows", {
+    x <- c(1e10, 1, 5)
+    lambda <- c(1e-300, 1e308, 1e-30)
+    got <- as.vector(nv_dpois(as_f64(x), as_f64(lambda), log = TRUE))
+    expect_equal_elementwise(got, dpois(x, lambda, log = TRUE), tolerance = 1e-14)
+  })
+
+  it("log = TRUE stays finite at means near the top of the range", {
+    for (dt in c("f32", "f64")) {
+      lambda <- if (dt == "f32") c(2e38, 3e38) else c(1e308, 1.7e308)
+      got <- as.vector(nv_dpois(nv_array(lambda, dtype = dt), nv_array(lambda, dtype = dt), log = TRUE))
+      expect_equal(got, -0.5 * (log(2 * pi) + log(lambda)), tolerance = 1e-6)
+      got <- as.vector(nv_dpois(nv_array(0.9 * lambda, dtype = dt), nv_array(lambda, dtype = dt), log = TRUE))
+      expect_equal(got, -0.9 * lambda * log(0.9) - 0.1 * lambda, tolerance = 1e-4)
+    }
+  })
+
+  it("is zero at negative, infinite and non-whole x, but rounds an x within a relative 1e-9 of a whole number", {
+    # base R warns about a non-whole x as well. A tiny negative x rounds to
+    # zero, but is tested for its sign first and so is outside the support
+    x <- c(-Inf, -1, -1e-12, 0.5, 2 + 1e-6, 2 + 1e-12, 1e6 + 1e-4, Inf)
+    for (lg in c(FALSE, TRUE)) {
+      expect_equal(
+        as.vector(nv_dpois(as_f64(x), lambda = 2, log = lg)),
+        suppressWarnings(dpois(x, 2, log = lg))
+      )
+    }
+  })
+
+  it("propagates NaN rather than reading it as outside the support", {
+    x <- nv_array(c(NaN, 0))
+    expect_equal(as.vector(nv_dpois(x)), c(NaN, exp(-1)), tolerance = 1e-6)
+    expect_equal(as.vector(nv_dpois(x, log = TRUE)), c(NaN, -1), tolerance = 1e-6)
+  })
+
+  it("matches base R dpois() for zero, infinite, negative and NaN lambda", {
+    # lambda = 0 is the point mass at zero, and lambda = Inf has probability
+    # zero everywhere
+    x <- c(-Inf, -1, 0, 0.5, 1, 3, Inf, NaN)
+    got <- unlist(lapply(pois_lambda_cases(), function(l) {
+      lapply(c(FALSE, TRUE), function(lg) as.vector(nv_dpois(as_f64(x), as_f64_scalar(l), log = lg)))
+    }))
+    want <- unlist(lapply(pois_lambda_cases(), function(l) {
+      lapply(c(FALSE, TRUE), function(lg) suppressWarnings(dpois(x, l, log = lg)))
+    }))
+    expect_equal_elementwise(got, want)
+  })
+
+  it("gradient wrt lambda matches the analytic derivative, and is zero wrt x", {
+    x <- c(0, 1, 3, 10, 25, 250, 1100)
+    lambda <- c(0.5, 2, 3, 7.5, 40, 240, 1000)
+    f <- function(x, lambda, log = FALSE) nv_sum(nv_dpois(x, lambda, log = log))
+    grad <- jit(gradient(f, wrt = c("x", "lambda")), static = "log")
+
+    g <- grad(as_f64(x), as_f64(lambda))
+    expect_equal(as.vector(g$lambda), dpois(x, lambda) * (x / lambda - 1), tolerance = 1e-12)
+    expect_equal(as.vector(g$x), rep(0, length(x)))
+
+    g <- grad(as_f64(x), as_f64(lambda), log = TRUE)
+    expect_equal(as.vector(g$lambda), x / lambda - 1, tolerance = 1e-12)
+    expect_equal(as.vector(g$x), rep(0, length(x)))
+  })
+
+  it("gradients stay finite where the probability is resolved directly (untaken branches don't poison them via nv_ifelse)", {
+    x <- c(-Inf, -1, 0.5, 0, 2, Inf, 3)
+    lambda <- c(2, 2, 2, 0, 0, 2, Inf)
+    f <- function(x, lambda, log = FALSE) nv_sum(nv_dpois(x, lambda, log = log))
+    grad <- jit(gradient(f, wrt = c("x", "lambda")), static = "log")
+    for (lg in c(FALSE, TRUE)) {
+      g <- grad(as_f64(x), as_f64(lambda), log = lg)
+      expect_equal(as.vector(g$x), rep(0, length(x)))
+      # d/dlambda exp(-lambda) is -1 at x = lambda = 0, on both scales
+      expect_equal(as.vector(g$lambda), c(0, 0, 0, -1, 0, 0, 0))
+    }
+  })
+
+  it("non-scalar lambda works", {
+    x <- c(2, 2, 2)
+    lambda <- c(0.5, 2, 6)
+    expect_equal(
+      as.vector(nv_dpois(nv_array(x), lambda = nv_array(lambda))),
+      dpois(x, lambda),
+      tolerance = 1e-6
+    )
+  })
+
+  it("works on arrays with more than one axis", {
+    x <- matrix(c(0, 3, 5, 12, 40, 7), nrow = 2)
+    expect_equal(as_array(nv_dpois(nv_array(x, dtype = "f64"), 6)), dpois(x, 6), tolerance = 1e-14)
+  })
+
+  it("converts lambda to the dtype of x", {
+    out <- nv_dpois(nv_array(c(0, 1), dtype = "f32"), lambda = 2L)
+    expect_equal(dtype(out), as_dtype("f32"))
+  })
+})
+
+describe("nv_ppois", {
+  it("matches base R ppois() with default lambda", {
+    q <- c(-1, 0, 0.5, 1, 2, 5)
+    expect_equal(as.vector(nv_ppois(nv_array(q))), ppois(q, 1), tolerance = 1e-6)
+  })
+
+  it("matches base R ppois() with custom lambda", {
+    q <- c(0, 1, 2, 5, 10, 20)
+    expect_equal(as.vector(nv_ppois(nv_array(q), lambda = 4.5)), ppois(q, 4.5), tolerance = 1e-6)
+  })
+
+  it("lower_tail = FALSE matches base R ppois(..., lower.tail = FALSE)", {
+    q <- c(0, 1, 2, 5, 10, 20)
+    expect_equal(
+      as.vector(nv_ppois(nv_array(q), lambda = 4.5, lower_tail = FALSE)),
+      ppois(q, 4.5, lower.tail = FALSE),
+      tolerance = 1e-6
+    )
+  })
+
+  it("log_p = TRUE matches base R ppois(..., log.p = TRUE)", {
+    q <- c(0, 1, 2, 5, 10, 20)
+    expect_equal(
+      as.vector(nv_ppois(nv_array(q), lambda = 4.5, log_p = TRUE)),
+      ppois(q, 4.5, log.p = TRUE),
+      tolerance = 1e-6
+    )
+  })
+
+  it("matches base R across both series and the asymptotic expansion, in all four tail/scale combinations and both f32 and f64", {
+    g <- pois_grid()
+    flags <- expand.grid(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    for (i in seq_len(nrow(flags))) {
+      lt <- flags$lower_tail[i]
+      lp <- flags$log_p[i]
+      got <- as.vector(nv_ppois(as_f64(g$k), as_f64(g$lambda), lower_tail = lt, log_p = lp))
+      expect_equal_elementwise(got, ppois(g$k, g$lambda, lower.tail = lt, log.p = lp), tolerance = 1e-12)
+
+      # compared at the f32 lambda, away from the far tails (see nv_dpois)
+      near <- abs(g$k - g$lambda) <= 6 * sqrt(g$lambda) + 6
+      k <- g$k[near]
+      lambda <- as.vector(nv_array(g$lambda[near], dtype = "f32"))
+      got <- as.vector(nv_ppois(
+        nv_array(k, dtype = "f32"),
+        nv_array(lambda, dtype = "f32"),
+        lower_tail = lt,
+        log_p = lp
+      ))
+      want <- ppois(k, lambda, lower.tail = lt, log.p = lp)
+      # leave out what f32 holds only as a subnormal, which XLA flushes to zero
+      keep <- abs(want) >= 2^-126
+      expect_equal_elementwise(got[keep], want[keep], tolerance = 2e-5)
+    }
+  })
+
+  it("log_p = TRUE keeps full relative accuracy for probabilities close to one", {
+    q <- c(30, 2000)
+    lambda <- c(5, 1000)
+    got <- as.vector(nv_ppois(as_f64(q), as_f64(lambda), log_p = TRUE))
+    expect_equal_elementwise(got, ppois(q, lambda, log.p = TRUE), tolerance = 1e-12)
+    expect_true(all(got < 0))
+  })
+
+  it("log_p = TRUE keeps full accuracy for probabilities near 0.6, where XLA's f64 log1p() does not", {
+    # log1p(x) on XLA's CPU backend is up to ~120 ulp out for x in about
+    # [-0.414, -0.36] in plugins built before openxla/xla#46765; ppois(7, 7)
+    # and pnorm() in the asymptotic expansion at ppois(1007, 1000) both land
+    # there. base R is within 2 ulp of both.
+    q <- c(7, 1007, 992)
+    lambda <- c(7, 1000, 1000)
+    lt <- c(TRUE, TRUE, FALSE)
+    got <- vapply(
+      1:3,
+      function(i) {
+        as.vector(nv_ppois(as_f64(rep(q[i], 4)), as_f64(rep(lambda[i], 4)), lower_tail = lt[i], log_p = TRUE))[1L]
+      },
+      numeric(1)
+    )
+    want <- vapply(1:3, function(i) ppois(q[i], lambda[i], lower.tail = lt[i], log.p = TRUE), numeric(1))
+    expect_equal_elementwise(got, want, tolerance = 1e-15)
+  })
+
+  it("rounds q down, but counts a q within 1e-7 below a whole number as it", {
+    q <- c(2.5, 3 - 1e-8, 3 - 1e-6)
+    expect_equal(as.vector(nv_ppois(as_f64(q), 2)), ppois(q, 2), tolerance = 1e-14)
+    # In f32, adding the 1e-7 to q would round up to 1 from 1 - 2^-23
+    q <- c(1 - 2^-23, 1 - 2^-24)
+    expect_equal(as.vector(nv_ppois(nv_array(q, dtype = "f32"), 2)), ppois(c(0, 1), 2), tolerance = 1e-6)
+  })
+
+  it("matches base R ppois() for zero, infinite, negative and NaN lambda", {
+    q <- c(-Inf, -1, 0, 0.5, 1, 3, Inf, NaN)
+    flags <- expand.grid(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    got <- unlist(lapply(pois_lambda_cases(), function(l) {
+      lapply(seq_len(nrow(flags)), function(i) {
+        as.vector(nv_ppois(as_f64(q), as_f64_scalar(l), lower_tail = flags$lower_tail[i], log_p = flags$log_p[i]))
+      })
+    }))
+    want <- unlist(lapply(pois_lambda_cases(), function(l) {
+      lapply(seq_len(nrow(flags)), function(i) {
+        suppressWarnings(ppois(q, l, lower.tail = flags$lower_tail[i], log.p = flags$log_p[i]))
+      })
+    }))
+    expect_equal_elementwise(got, want)
+  })
+
+  it("does not depend on the other elements of the array", {
+    # The series run in one loop for the whole array, until every element has
+    # converged. An element that converged early must not keep accumulating.
+    k <- 0:60
+    for (dt in c("f32", "f64")) {
+      together <- as.vector(nv_ppois(nv_array(k, dtype = dt), 20))
+      alone <- vapply(k, function(i) as.vector(nv_ppois(nv_array(i, dtype = dt), 20)), numeric(1))
+      expect_identical(together, alone)
+    }
+  })
+
+  it("gradient wrt lambda is the analytic derivative, and is zero wrt q", {
+    q <- c(0, 1, 3, 10, 25, 250, 1100)
+    lambda <- c(0.5, 2, 3, 7.5, 40, 240, 1000)
+    f <- function(q, lambda, lower_tail = TRUE, log_p = FALSE) {
+      nv_sum(nv_ppois(q, lambda, lower_tail = lower_tail, log_p = log_p))
+    }
+    grad <- jit(gradient(f, wrt = c("q", "lambda")), static = c("lower_tail", "log_p"))
+    flags <- expand.grid(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    for (i in seq_len(nrow(flags))) {
+      lt <- flags$lower_tail[i]
+      lp <- flags$log_p[i]
+      g <- grad(as_f64(q), as_f64(lambda), lower_tail = lt, log_p = lp)
+      # d/dlambda P(X <= q) = -dpois(q), over the probability on the log scale
+      want <- (if (lt) -1 else 1) * dpois(q, lambda) / (if (lp) ppois(q, lambda, lower.tail = lt) else 1)
+      expect_equal(as.vector(g$lambda), want, tolerance = 1e-12)
+      expect_equal(as.vector(g$q), rep(0, length(q)))
+    }
+  })
+
+  it("gradients stay finite where the probability is resolved directly", {
+    q <- c(-Inf, -1, 0.5, 0, Inf, 3, 3)
+    lambda <- c(2, 2, 2, 0, 2, Inf, 1e300)
+    f <- function(q, lambda, log_p = FALSE) nv_sum(nv_ppois(q, lambda, log_p = log_p))
+    grad <- jit(gradient(f, wrt = c("q", "lambda")), static = "log_p")
+    for (lp in c(FALSE, TRUE)) {
+      g <- grad(as_f64(q), as_f64(lambda), log_p = lp)
+      expect_equal(as.vector(g$q), rep(0, length(q)))
+      expect_true(all(is.finite(as.vector(g$lambda))))
+    }
+  })
+
+  it("stays finite at means near the top of the range, in both f32 and f64", {
+    # XLA's reciprocal of so large a k is subnormal and flushes to zero, and
+    # 2 * k overflows; base R itself fails at the f64 analogues
+    for (dt in c("f32", "f64")) {
+      lambda <- if (dt == "f32") c(2e38, 3e38, 1e30) else c(1e308, 1.7e308, 1e300)
+      at <- function(k) as.vector(nv_ppois(nv_array(k, dtype = dt), nv_array(lambda, dtype = dt)))
+      expect_equal(at(lambda), rep(0.5, 3), tolerance = 1e-4)
+      expect_equal(at(0.9 * lambda), rep(0, 3))
+      expect_equal(at(1.1 * pmin(lambda, if (dt == "f32") 3e38 else 1.6e308)), rep(1, 3))
+    }
+  })
+
+  it("non-scalar lambda works", {
+    q <- c(2, 2, 2)
+    lambda <- c(0.5, 2, 6)
+    expect_equal(
+      as.vector(nv_ppois(nv_array(q), lambda = nv_array(lambda))),
+      ppois(q, lambda),
+      tolerance = 1e-6
+    )
+  })
+
+  it("works on arrays with more than one axis", {
+    q <- matrix(c(0, 3, 5, 12, 40, 7), nrow = 2)
+    expect_equal(as_array(nv_ppois(nv_array(q, dtype = "f64"), 6)), ppois(q, 6), tolerance = 1e-14)
+  })
+
+  it("converts lambda to the dtype of q", {
+    out <- nv_ppois(nv_array(c(0, 1), dtype = "f32"), lambda = 2L)
+    expect_equal(dtype(out), as_dtype("f32"))
+  })
+})
+
+describe("nv_qpois", {
+  it("matches base R qpois() with default lambda", {
+    p <- c(0.001, 0.025, 0.1, 0.5, 0.9, 0.975, 0.999)
+    expect_equal(as.vector(nv_qpois(nv_array(p))), qpois(p, 1), tolerance = 0)
+  })
+
+  it("matches base R qpois() with custom lambda", {
+    p <- c(0.001, 0.025, 0.1, 0.5, 0.9, 0.975, 0.999)
+    expect_equal(as.vector(nv_qpois(nv_array(p), lambda = 4.5)), qpois(p, 4.5), tolerance = 0)
+  })
+
+  it("lower_tail = FALSE matches base R qpois(..., lower.tail = FALSE)", {
+    p <- c(0.001, 0.025, 0.1, 0.5, 0.9, 0.975, 0.999)
+    expect_equal(
+      as.vector(nv_qpois(nv_array(p), lambda = 4.5, lower_tail = FALSE)),
+      qpois(p, 4.5, lower.tail = FALSE),
+      tolerance = 0
+    )
+  })
+
+  it("log_p = TRUE matches base R qpois(..., log.p = TRUE)", {
+    p <- c(-700, -20, -2, -0.5, -0.01)
+    expect_equal(
+      as.vector(nv_qpois(as_f64(p), lambda = 4.5, log_p = TRUE)),
+      qpois(p, 4.5, log.p = TRUE),
+      tolerance = 0
+    )
+  })
+
+  it("matches base R exactly over a wide range of lambda and p, in all four tail/scale combinations and both f32 and f64", {
+    withr::local_seed(1)
+    lambda <- rep(c(0.01, 0.5, 3, 17.3, 150, 210, 1000, 4096, 5e4, 1e6), each = 40)
+    p <- c(runif(length(lambda) / 2), 10^-runif(length(lambda) / 2, 0, 15))
+    flags <- expand.grid(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    for (dt in c("f64", "f32")) {
+      # compared at the probabilities and means as held in `dt`
+      lambda_dt <- as.vector(nv_array(lambda, dtype = dt))
+      for (i in seq_len(nrow(flags))) {
+        lt <- flags$lower_tail[i]
+        lp <- flags$log_p[i]
+        p_dt <- as.vector(nv_array(if (lp) log(p) else p, dtype = dt))
+        got <- as.vector(nv_qpois(
+          nv_array(p_dt, dtype = dt),
+          nv_array(lambda_dt, dtype = dt),
+          lower_tail = lt,
+          log_p = lp
+        ))
+        expect_equal(got, qpois(p_dt, lambda_dt, lower.tail = lt, log.p = lp), tolerance = 0)
+      }
+    }
+  })
+
+  it("matches base R exactly at the jumps of base R's distribution function, in all four tail/scale combinations", {
+    # A p computed by base R at a whole number k must give back k. nv_ppois()
+    # rounds differently from base R, by more than base R's own allowance,
+    # so the comparison allows for its error too.
+    flags <- expand.grid(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    for (lambda in c(3, 25.4, 100, 1000, 1234.56789)) {
+      k <- unique(floor(seq(0, lambda + 12 * sqrt(lambda) + 20, length.out = 200)))
+      for (i in seq_len(nrow(flags))) {
+        lt <- flags$lower_tail[i]
+        lp <- flags$log_p[i]
+        p <- ppois(k, lambda, lower.tail = lt, log.p = lp)
+        # leave out the ends and what f64 holds only as a subnormal, which XLA
+        # flushes to zero
+        keep <- if (lp) p < 0 & p > -Inf & abs(p) >= 2^-1022 else p > 2^-1022 & p < 1
+        got <- as.vector(nv_qpois(as_f64(p[keep]), lambda, lower_tail = lt, log_p = lp))
+        expect_equal(got, qpois(p[keep], lambda, lower.tail = lt, log.p = lp), tolerance = 0)
+      }
+    }
+  })
+
+  it("resolves probabilities just either side of a jump, in all four tail/scale combinations", {
+    # The tolerance that lets a `p` at a jump give back its own count could
+    # instead swallow a `p` just above the jump and give a quantile one too
+    # low. Probes a relative 1e-10 of the smaller tail either side of each jump
+    # must resolve: that is far outside both base R's error in locating the
+    # jump (~1e-14, checked against MPFR) and the allowance nv_qpois() makes
+    # (under ~1e-11 at these means).
+    delta <- 1e-10
+    flags <- expand.grid(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    for (lambda in c(3, 25.4, 100, 1234.56789, 1e4, 1e8, 1e12)) {
+      k <- unique(floor(c(1:10, lambda + sqrt(lambda) * seq(-8, 8, length.out = 33))))
+      k <- k[k >= 1]
+      lower <- ppois(k, lambda)
+      upper <- ppois(k, lambda, lower.tail = FALSE)
+      small <- pmin(lower, upper)
+      for (i in seq_len(nrow(flags))) {
+        lt <- flags$lower_tail[i]
+        lp <- flags$log_p[i]
+        tail_is_small <- if (lt) lower <= upper else upper < lower
+        at_jump <- if (lt) lower else upper
+        for (above in c(FALSE, TRUE)) {
+          # the requested tail grows above the jump for the lower tail, and
+          # below it for the upper tail
+          tail_up <- if (lt) above else !above
+          moved <- small * (1 + ifelse(tail_is_small == tail_up, delta, -delta))
+          p <- ifelse(tail_is_small, moved, 1 - moved)
+          if (lp) {
+            p <- ifelse(tail_is_small, log(moved), log1p(-moved))
+          }
+          # on the plain scale near one a move of the smaller tail can be below
+          # an ulp, or within base R's fuzz of 8 ulp
+          keep <- delta * small > 64 * .Machine$double.eps * at_jump
+          got <- as.vector(nv_qpois(as_f64(p[keep]), lambda, lower_tail = lt, log_p = lp))
+          expect_equal(got, (if (above) k + 1 else k)[keep], tolerance = 0)
+        }
+      }
+    }
+  })
+
+  it("matches MPFR-verified quantiles that earlier versions of the comparison got wrong", {
+    # Each answer y was verified at 320-bit precision against Poisson tails
+    # summed in MPFR (anvl-notes/poisson/quantile): the quantile condition holds
+    # at y and fails at y - 1, by margins far above the precision used. The
+    # literals are hex so they are the very doubles that were checked. `was` is
+    # the earlier answer, and `cause` the comparison that gave it:
+    # - "fuzz": base R's fixed fuzz alone, which nv_ppois()'s own rounding
+    #   overcomes at a jump, giving a quantile one too high
+    # - "lambda": an allowance growing with lambda, one too low at large means
+    # - "distance": an allowance growing with |y - lambda| also in the
+    #   asymptotic expansion, one too low at very large means
+    cases <- data.frame(
+      matrix(
+        ncol = 7,
+        byrow = TRUE,
+        list(
+          100,
+          FALSE,
+          FALSE,
+          0x1.2b1e5611c6d49p-9,
+          129,
+          130,
+          "fuzz",
+          100,
+          FALSE,
+          TRUE,
+          -0x1.475a3e3abcfb3p-14,
+          64,
+          65,
+          "fuzz",
+          100,
+          TRUE,
+          FALSE,
+          0x1.47f1267cd788dp-7,
+          77,
+          78,
+          "fuzz",
+          100,
+          TRUE,
+          TRUE,
+          -0x1.2b75d820b0f07p-9,
+          129,
+          130,
+          "fuzz",
+          100,
+          TRUE,
+          TRUE,
+          -0x1.d41bef6b1a85dp-30,
+          164,
+          165,
+          "fuzz",
+          0x1.34a4584f4c6e7p+10,
+          FALSE,
+          FALSE,
+          0x1.234cfdec0cbd6p-40,
+          1489,
+          1490,
+          "fuzz",
+          0x1.34a4584f4c6e7p+10,
+          FALSE,
+          FALSE,
+          0x1.0c4ae432e94efp-52,
+          1530,
+          1531,
+          "fuzz",
+          0x1.34a4584f4c6e7p+10,
+          FALSE,
+          TRUE,
+          -0x1.cd704403c5466p-58,
+          946,
+          947,
+          "fuzz",
+          0x1.34a4584f4c6e7p+10,
+          TRUE,
+          FALSE,
+          0x1.b65e4bce1d5a9p-883,
+          236,
+          237,
+          "fuzz",
+          0x1.34a4584f4c6e7p+10,
+          TRUE,
+          TRUE,
+          -0x1.0c57544085651p-15,
+          1377,
+          1378,
+          "fuzz",
+          1e9,
+          TRUE,
+          FALSE,
+          0x1.f8bea04ep-1,
+          1000069335,
+          1000069334,
+          "lambda",
+          1e9,
+          TRUE,
+          FALSE,
+          0x1.6ac40cfp-1,
+          1000017364,
+          1000017363,
+          "lambda",
+          1e9,
+          TRUE,
+          FALSE,
+          0x1.7344ecaep-1,
+          1000018916,
+          1000018915,
+          "lambda",
+          1e13,
+          TRUE,
+          FALSE,
+          0x1.f723413ep-1,
+          10000006681246,
+          10000006681245,
+          "distance",
+          1e13,
+          TRUE,
+          FALSE,
+          0x1.85be73eap-1,
+          10000002245939,
+          10000002245938,
+          "distance",
+          1e14,
+          TRUE,
+          FALSE,
+          0x1.8929be36p-1,
+          100000007319374,
+          100000007319373,
+          "distance",
+          1e14,
+          TRUE,
+          FALSE,
+          0x1.8d1a2a4cp-1,
+          100000007573846,
+          100000007573845,
+          "distance"
+        )
+      )
+    )
+    names(cases) <- c("lambda", "lower_tail", "log_p", "p", "quantile", "was", "cause")
+    cases[] <- lapply(cases, unlist)
+    for (i in seq_len(nrow(cases))) {
+      r <- cases[i, ]
+      got <- as.vector(nv_qpois(as_f64(rep(r$p, 4)), r$lambda, lower_tail = r$lower_tail, log_p = r$log_p))[1L]
+      expect_identical(got, r$quantile, info = sprintf("case %d (%s, was %.0f)", i, r$cause, r$was))
+    }
+  })
+
+  it("matches base R for random probabilities at very large means", {
+    # the allowance for nv_ppois()'s error must not grow faster than the
+    # steps of the distribution function shrink
+    withr::local_seed(2)
+    for (lambda in c(1e10, 1e12, 1e14)) {
+      p <- runif(200)
+      expect_equal(as.vector(nv_qpois(as_f64(p), lambda)), qpois(p, lambda), tolerance = 0)
+    }
+  })
+
+  it("stays accurate at means near the top of the range, in both f32 and f64", {
+    for (dt in c("f32", "f64")) {
+      lambda <- if (dt == "f32") c(2e38, 1e30) else c(1e308, 1e300)
+      lambda <- as.vector(nv_array(lambda, dtype = dt))
+      got <- as.vector(nv_qpois(nv_array(c(0.5, 0.5), dtype = dt), nv_array(lambda, dtype = dt)))
+      # the representable count below lambda is so far below the median that
+      # its distribution function is ~0, so the quantile is lambda itself
+      expect_equal(got, lambda, tolerance = 0)
+    }
+  })
+
+  it("finds quantiles far from the Cornish-Fisher starting value", {
+    p <- c(1e-300, 1e-10, 0.5, 1 - 1e-10)
+    lambda <- c(0.01, 1e12, 1e12, 1e12)
+    expect_equal(as.vector(nv_qpois(as_f64(p), as_f64(lambda))), qpois(p, lambda), tolerance = 0)
+  })
+
+  it("returns 0 and Inf at the ends of [0, 1], and NaN outside", {
+    p <- c(-0.1, 0, 1, 1.1, NaN)
+    expect_equal(as.vector(nv_qpois(as_f64(p), 3)), c(NaN, 0, Inf, NaN, NaN), tolerance = 0)
+    expect_equal(as.vector(nv_qpois(as_f64(p), 3, lower_tail = FALSE)), c(NaN, Inf, 0, NaN, NaN), tolerance = 0)
+    lp <- c(-Inf, 0, 0.1)
+    expect_equal(as.vector(nv_qpois(as_f64(lp), 3, log_p = TRUE)), c(0, Inf, NaN), tolerance = 0)
+  })
+
+  it("matches base R qpois() for zero, infinite, negative and NaN lambda", {
+    flags <- expand.grid(lower_tail = c(TRUE, FALSE), log_p = c(FALSE, TRUE))
+    p_cases <- list(c(-0.1, 0, 0.3, 0.5, 1, 1.1, NaN), c(-Inf, -1, -0.1, 0, 0.5, NaN))
+    got <- unlist(lapply(pois_lambda_cases(), function(l) {
+      lapply(seq_len(nrow(flags)), function(i) {
+        p <- p_cases[[flags$log_p[i] + 1L]]
+        as.vector(nv_qpois(as_f64(p), as_f64_scalar(l), lower_tail = flags$lower_tail[i], log_p = flags$log_p[i]))
+      })
+    }))
+    want <- unlist(lapply(pois_lambda_cases(), function(l) {
+      lapply(seq_len(nrow(flags)), function(i) {
+        p <- p_cases[[flags$log_p[i] + 1L]]
+        suppressWarnings(qpois(p, l, lower.tail = flags$lower_tail[i], log.p = flags$log_p[i]))
+      })
+    }))
+    expect_identical(got, want)
+  })
+
+  it("inverts nv_ppois", {
+    # in f32 only while the steps of the distribution function are well above
+    # base R's fuzz of 8 ulps on p, as base R itself needs in f64
+    k <- 0:40
+    for (dt in c("f64", "f32")) {
+      p <- nv_ppois(nv_array(k, dtype = dt), 20)
+      expect_equal(as.vector(nv_qpois(p, 20)), k, tolerance = 0)
+      p <- nv_ppois(nv_array(k, dtype = dt), 20, lower_tail = FALSE, log_p = TRUE)
+      expect_equal(as.vector(nv_qpois(p, 20, lower_tail = FALSE, log_p = TRUE)), k, tolerance = 0)
+    }
+  })
+
+  it("has a zero gradient", {
+    f <- function(p, lambda) nv_sum(nv_qpois(p, lambda))
+    g <- jit(gradient(f, wrt = c("p", "lambda")))(as_f64(c(0.1, 0.5, 0.9)), as_f64(c(1, 5, 50)))
+    expect_equal(as.vector(g$p), c(0, 0, 0))
+    expect_equal(as.vector(g$lambda), c(0, 0, 0))
+  })
+
+  it("non-scalar lambda works", {
+    p <- c(0.5, 0.5, 0.5)
+    lambda <- c(0.5, 2, 60)
+    expect_equal(as.vector(nv_qpois(nv_array(p), lambda = nv_array(lambda))), qpois(p, lambda), tolerance = 0)
+  })
+
+  it("works on arrays with more than one axis", {
+    p <- matrix(c(0.01, 0.2, 0.4, 0.6, 0.8, 0.99), nrow = 2)
+    expect_equal(as_array(nv_qpois(nv_array(p, dtype = "f64"), 6)), qpois(p, 6), tolerance = 0)
+  })
+
+  it("converts lambda to the dtype of p", {
+    out <- nv_qpois(nv_array(c(0.25, 0.75), dtype = "f32"), lambda = 2L)
+    expect_equal(dtype(out), as_dtype("f32"))
+  })
+})
+
+describe("nv_dpois(), nv_ppois() and nv_qpois()", {
+  it("broadcast a scalar operand against a non-scalar lambda", {
+    lambda <- c(1, 2, 3)
+    expect_equal(as.vector(nv_dpois(as_f64_scalar(2), as_f64(lambda))), dpois(2, lambda), tolerance = 1e-14)
+    expect_equal(as.vector(nv_ppois(as_f64_scalar(2), as_f64(lambda))), ppois(2, lambda), tolerance = 1e-14)
+    expect_equal(as.vector(nv_qpois(as_f64_scalar(0.5), as_f64(lambda))), qpois(0.5, lambda), tolerance = 0)
+  })
+
+  it("name the operand when it is not a float", {
+    expect_error(nv_dpois(nv_array(1L)), "`x` must be a float data type")
+    expect_error(nv_ppois(nv_array(1L)), "`q` must be a float data type")
+    expect_error(nv_qpois(nv_array(1L)), "`p` must be a float data type")
+  })
+
+  it("need a 32- or 64-bit float", {
+    # See "the float category" below for why `jit()` is needed
+    for (fn in list(nv_dpois, nv_ppois, nv_qpois)) {
+      expect_error(
+        jit(function(x) fn(nv_convert(x, "bf16")))(nv_array(c(0.5, 0.5))),
+        "must be a 32- or 64-bit float data type"
+      )
+    }
+  })
+})
+
 describe("eager/jit equivalence", {
   it("agrees for nv_dnorm(), nv_pnorm() and nv_qnorm()", {
     f64 <- function() nv_array(c(0.25, 0.75), dtype = "f64")

@@ -41,6 +41,13 @@ bibentries <- c(
     year = "1989",
     publisher = "Ellis Horwood",
     isbn = "0-7458-0289-3"
+  ),
+  loader2000fast = bibentry(
+    bibtype = "misc",
+    title = "Fast and Accurate Computation of Binomial Probabilities",
+    author = person("Catherine", "Loader"),
+    year = "2000",
+    url = "https://www.r-project.org/doc/reports/CLoader-dbinom-2002.pdf"
   )
 )
 # nolint end
