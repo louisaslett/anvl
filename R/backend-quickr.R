@@ -118,7 +118,7 @@ compile_quickr <- function(
   if (length(used)) {
     cli_abort(c(
       "The quickr backend cannot compile this function.",
-      x = "{side_effect_def(used[[1L]])$label} is not supported on it."
+      x = "{side_effect_def(names(used)[[1L]])$label} is not supported on it."
     ))
   }
   check_single_backend(graph, expected = "quickr")

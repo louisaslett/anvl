@@ -2540,7 +2540,7 @@ prim_if <- new_primitive(
     }
     # A branch that uses a side effect closes over its value; then both return
     # the value they leave behind as one more output.
-    side_effects <- side_effects_if_outputs(current_desc, list(desc_true, desc_false), list(true_graph, false_graph))
+    fx_names <- side_effects_if_outputs(current_desc, list(desc_true, desc_false), list(true_graph, false_graph))
 
     # What the branches close over becomes their inputs -- both take all of it,
     # in the same order -- and the call's operands after `pred`.
@@ -2553,7 +2553,7 @@ prim_if <- new_primitive(
       infer_fn = infer_cond,
       desc = current_desc
     )
-    out <- side_effects_take_outputs(current_desc, side_effects, out)
+    out <- side_effects_take_outputs(current_desc, fx_names, out)
     unflatten(true_graph$out_tree, out)
   },
   subgraphs = c("true", "false"),
@@ -2637,10 +2637,10 @@ prim_while <- new_primitive(
 
     # The side effects the body uses are the last members of the loop state,
     # which `cond` takes too but does not read.
-    side_effects <- side_effects_finish(desc_body)
-    body_graph <- side_effects_add_io(body_graph, side_effects)
-    cond_graph$inputs <- c(cond_graph$inputs, lapply(side_effects, function(f) GraphValue(f$input$aval)))
-    operands <- c(flatten(init), lapply(side_effects, function(f) side_effect_get(current_desc, f$name)))
+    fx <- side_effects_used(desc_body)
+    body_graph <- side_effects_add_io(body_graph, fx)
+    cond_graph$inputs <- c(cond_graph$inputs, lapply(unname(fx), function(f) GraphValue(f$input$aval)))
+    operands <- c(flatten(init), side_effects_get_all(current_desc, names(fx)))
 
     # `cond` and `body` take the state, then what either of them closes over;
     # the call's operands are the same.
@@ -2653,7 +2653,7 @@ prim_while <- new_primitive(
       infer_fn = infer_while,
       desc = current_desc
     )
-    out <- side_effects_take_outputs(current_desc, side_effects_names(side_effects), out)
+    out <- side_effects_take_outputs(current_desc, names(fx), out)
 
     unflatten(body_graph$out_tree, out)
   },
@@ -2776,12 +2776,9 @@ prim_scan <- new_primitive(
     desc_body <- side_effects_enable(local_descriptor(), "input")
     body_graph <- trace_fn(step, list(carry = init, x = x_slices), desc = desc_body)
     # The side effects the body uses are the last leaves of the carry.
-    side_effects <- side_effects_finish(desc_body)
-    n_user_carry <- n_carry
-    body_graph$inputs <- append(body_graph$inputs, lapply(side_effects, `[[`, "input"), after = n_carry)
-    body_graph$outputs <- append(body_graph$outputs, lapply(side_effects, `[[`, "output"), after = n_carry)
-    init_flat <- c(init_flat, lapply(side_effects, function(f) side_effect_get(current_desc, f$name)))
-    n_carry <- n_carry + length(side_effects)
+    fx <- side_effects_used(desc_body)
+    body_graph <- side_effects_add_io(body_graph, fx, after = n_carry)
+    init_flat <- c(init_flat, side_effects_get_all(current_desc, names(fx)))
     # The body takes the carry, the `xs` slices, then what it closes over; the
     # call's operands are the carry, `xs`, then the same captures.
     captures <- purify_subgraphs(current_desc, list(body_graph))
@@ -2821,19 +2818,14 @@ prim_scan <- new_primitive(
         body = body_graph,
         steps = steps,
         reverse = reverse,
-        n_carry = n_carry,
+        n_carry = n_carry + length(fx),
         n_xs = n_xs,
         n_captures = length(captures)
       ),
       infer_fn = infer_fn,
       desc = current_desc
     )
-    out <- side_effects_take_outputs(
-      current_desc,
-      side_effects_names(side_effects),
-      out,
-      at = n_user_carry
-    )
+    out <- side_effects_take_outputs(current_desc, names(fx), out, at = n_carry)
     unflatten(body_graph$out_tree, out)
   },
   subgraphs = "body",

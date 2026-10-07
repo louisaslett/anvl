@@ -202,11 +202,11 @@ compile_pjrt <- function(
   # Otherwise, everything will be converted to requested device and it does not matter
   # If we found different devices during tracing.
 
-  compile_graph_pjrt(graph, donate = donate, device = device, side_effects = side_effects_finish(desc))
+  compile_graph_pjrt(graph, donate = donate, device = device, side_effects = side_effects_used(desc))
 }
 
-# `side_effects` are the side effect values the trace used (see
-# `side_effects_finish()`): the program takes them as its last inputs and
+# `side_effects` are the side effects the trace used (see
+# `side_effects_used()`): the program takes their values as its last inputs and
 # returns them as its last outputs, and pjrt supplies and stores them through a
 # state slot each.
 compile_graph_pjrt <- function(graph, donate = character(), device, side_effects = list()) {
@@ -266,7 +266,7 @@ compile_graph_pjrt <- function(graph, donate = character(), device, side_effects
     input_dtypes = input_dtypes,
     device = device(exec),
     phantom_specs = phantom_specs,
-    state = side_effects_slots(side_effects)
+    state = if (length(side_effects)) lapply(names(side_effects), function(name) side_effect_def(name)$slot())
   )
 }
 

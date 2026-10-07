@@ -143,8 +143,8 @@ transform_gradient <- function(graph, wrt) {
 # This can either be a call to the gradient (inputs are provided)
 # Or just the gradient itself, i.e. then the inputs are NULL (used for transform_gradient).
 # `extra` are further nodes of `graph` -- the side effect values it leaves
-# behind -- whose boxes in the current descriptor are returned as `extra`, with
-# its names.
+# behind -- whose boxes in the current descriptor are returned as `extra`, named
+# as `extra` is.
 graph_value_and_grad <- function(graph, wrt, inputs = NULL, extra = list()) {
   desc <- current_descriptor()
   out <- validate_gradient_output(graph$outputs)
@@ -679,16 +679,8 @@ gradient <- function(f, wrt = NULL) {
         i = "Wrap the result of {.fn gradient} in {.fn jit}, e.g. {.code jit(gradient(f))}."
       ))
     }
-    traced <- trace_gradient_fn(f, prep)
-    fwd_graph <- traced$graph
-    res <- graph_value_and_grad(
-      fwd_graph,
-      wrt,
-      gradient_operands(fwd_graph, prep$args_flat),
-      extra = traced$side_effects
-    )
-    side_effects_set_all(current_descriptor(), res$extra)
-    unflatten(gradient_out_tree(fwd_graph, wrt), res$grad)
+    res <- replay_gradient(f, prep, wrt)
+    unflatten(gradient_out_tree(res$graph, wrt), res$grad)
   }
   formals(f_gradient) <- formals2(f)
   return(f_gradient)
@@ -713,18 +705,10 @@ value_and_gradient <- function(f, wrt = NULL) {
         i = "Wrap the result of {.fn value_and_gradient} in {.fn jit}, e.g. {.code jit(value_and_gradient(f))}."
       ))
     }
-    traced <- trace_gradient_fn(f, prep)
-    fwd_graph <- traced$graph
-    res <- graph_value_and_grad(
-      fwd_graph,
-      wrt,
-      gradient_operands(fwd_graph, prep$args_flat),
-      extra = traced$side_effects
-    )
-    side_effects_set_all(current_descriptor(), res$extra)
+    res <- replay_gradient(f, prep, wrt)
     list(
-      value = unflatten(fwd_graph$out_tree, res$value),
-      grad = unflatten(gradient_out_tree(fwd_graph, wrt), res$grad)
+      value = unflatten(res$graph$out_tree, res$value),
+      grad = unflatten(gradient_out_tree(res$graph, wrt), res$grad)
     )
   }
   formals(f_value_and_grad) <- formals2(f)
@@ -732,13 +716,24 @@ value_and_gradient <- function(f, wrt = NULL) {
 }
 
 # Traces `f`, the function `gradient()` differentiates, from the prepared
-# arguments `prep`. A side effect `f` uses closes over the enclosing trace's
-# value; `side_effects` are then the nodes of the values `f` leaves behind,
-# named by side effect, which become the enclosing trace's once the graph is
-# replayed.
+# arguments `prep` and replays its forward and backward pass in the current
+# trace, differentiating with respect to `wrt`. Returns the traced graph and
+# the boxes of its outputs (`value`) and of the gradients (`grad`). `f` closes
+# over the current trace's side effect values, and the values it leaves behind
+# become the current trace's.
+replay_gradient <- function(f, prep, wrt) {
+  traced <- trace_gradient_fn(f, prep)
+  graph <- traced$graph
+  res <- graph_value_and_grad(graph, wrt, gradient_operands(graph, prep$args_flat), extra = traced$side_effects)
+  side_effects_set_all(current_descriptor(), res$extra)
+  list(graph = graph, value = res$value, grad = res$grad)
+}
+
+# Traces `f` from the prepared arguments `prep`. `side_effects` are the nodes of
+# the side effect values `f` leaves behind, named by side effect.
 trace_gradient_fn <- function(f, prep) {
   parent <- current_descriptor()
   desc <- side_effects_enable(local_descriptor(), "capture", parent)
   graph <- trace_fn(f, args_flat = prep$args_flat, in_tree = prep$in_tree, desc = desc)
-  list(graph = graph, side_effects = side_effects_values(desc))
+  list(graph = graph, side_effects = lapply(side_effects_used(desc), `[[`, "output"))
 }

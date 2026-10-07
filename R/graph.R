@@ -802,7 +802,7 @@ trace_fn <- function(
 
   graph <- descriptor_to_graph(desc)
   if (toplevel) {
-    graph <- side_effects_add_io(graph, side_effects_finish(desc))
+    graph <- side_effects_add_io(graph, side_effects_used(desc))
   }
   optimize_graph(graph, optimize)
 }
