@@ -1084,6 +1084,66 @@ describe("nv_pbinom", {
     }
   })
 
+  it("stays accurate where size is huge but size * prob is about 1", {
+    # The continued fraction's terms then span many orders of magnitude, which
+    # its scaling must keep representable. Against base R on the same rounded
+    # inputs, in both tails and on both scales.
+    for (dt in c("f32", "f64")) {
+      for (size in c(1e10, 1e20)) {
+        prob <- as.vector(nv_array(1 / size, dtype = dt))
+        q <- c(0, 1, 2, 5)
+        for (lt in c(TRUE, FALSE)) {
+          for (lp in c(FALSE, TRUE)) {
+            expect_equal(
+              as.vector(nv_pbinom(nv_array(q, dtype = dt), size = size, prob = prob, lower_tail = lt, log_p = lp)),
+              pbinom(q, size = size, prob = prob, lower.tail = lt, log.p = lp),
+              tolerance = if (dt == "f32") 1e-5 else 1e-12,
+              info = paste(dt, size, lt, lp)
+            )
+          }
+        }
+      }
+    }
+    # P(X <= 0) = (1 - prob)^size exactly
+    expect_equal(
+      as.vector(nv_pbinom(as_f64(0), size = 1e50, prob = 1e-50, log_p = TRUE)),
+      1e50 * log1p(-1e-50),
+      tolerance = 1e-14
+    )
+  })
+
+  it("stays accurate deep in the lower tail for huge size, where base R fails", {
+    # Reference values from Rmpfr at 400 bits, summing the exact Binomial
+    # probabilities. base R gives -Inf or positive log probabilities here.
+    q <- 0:5
+    expect_equal(
+      as.vector(nv_pbinom(as_f64(q), size = 1e20, prob = 1e3 / 1e20, log_p = TRUE)),
+      c(
+        -1000.0000000000001,
+        -993.09124522068487,
+        -986.87563662392711,
+        -981.06549213528399,
+        -975.54302871710217,
+        -970.24370784624102
+      ),
+      tolerance = 1e-14
+    )
+    expect_equal(
+      as.vector(nv_pbinom(as_f64(q), size = 1e50, prob = 1e3 / 1e50, log_p = TRUE)),
+      c(-1000, -993.09124522068487, -986.87563662392711, -981.06549213528388, -975.54302871710206, -970.24370784624102),
+      tolerance = 1e-14
+    )
+  })
+
+  it("agrees with base R across a batch mixing the asymptotic expansion and the continued fraction", {
+    q <- c(0, 10, 299000, 299800, 300000, 300200, 301000, 999999)
+    expect_equal(
+      as.vector(nv_pbinom(as_f64(q), size = 1e6, prob = 0.3)),
+      pbinom(q, size = 1e6, prob = 0.3),
+      tolerance = 1e-12
+    )
+  })
+
   it("keeps f32 accuracy for large size", {
     # Against base R on the same f32 inputs, so only the f32 computation differs
     prob <- as.vector(nv_array(0.99, dtype = "f32"))
@@ -1202,6 +1262,35 @@ describe("nv_qbinom", {
         as.vector(nv_qbinom(as_f64(u), size = size, prob = 0.3)),
         qbinom(u, size = size, prob = 0.3)
       )
+    }
+  })
+
+  it("is NaN where an evaluation of the distribution function fails, and unaffected elsewhere", {
+    # No input is known to make the distribution function fail, so one is made
+    # to: for size = 20 only. The search must not read the NaN as an answer.
+    # The fresh jit() traces nv_qbinom() anew, so the substitute is seen, and
+    # nothing compiled with it is cached by nv_qbinom() itself.
+    real_cdf <- binom_cdf
+    local_mocked_bindings(binom_cdf = function(k, n, p, lower_tail, log_p, op_dtype) {
+      nv_ifelse(n == 20, NaN, real_cdf(k, n, p, lower_tail, log_p, op_dtype))
+    })
+    p <- c(0.1, 0.5, 0.9)
+    size <- c(10, 20, 30)
+    out <- jit(function(p, size) nv_qbinom(p, size, 0.3))(as_f64(p), as_f64(size))
+    expect_equal(as.vector(out), c(qbinom(0.1, 10, 0.3), NaN, qbinom(0.9, 30, 0.3)))
+  })
+
+  it("matches base R qbinom() where size is huge but size * prob is about 1", {
+    for (dt in c("f32", "f64")) {
+      for (size in c(1e10, 1e20)) {
+        prob <- as.vector(nv_array(1 / size, dtype = dt))
+        p <- as.vector(nv_array(c(0.1, 0.5, 0.73, 0.95), dtype = dt))
+        expect_equal(
+          as.vector(nv_qbinom(nv_array(p, dtype = dt), size = size, prob = prob)),
+          qbinom(p, size = size, prob = prob),
+          info = paste(dt, size)
+        )
+      }
     }
   })
 

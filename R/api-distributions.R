@@ -932,68 +932,156 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 
   ab_min <- nv_pmin(a, b)
   use_asym <- (ab_min > 1000) & (lambda <= 0.03 * ab_min)
-  log_asym <- basym(
-    nv_ifelse(use_asym, a, 2000),
-    nv_ifelse(use_asym, b, 2000),
-    nv_ifelse(use_asym, lambda, 0),
-    op_dtype
-  )
+  # The expansion is long, and only needed for large a and b, so it is skipped
+  # at run time where no element needs it. That takes a loop of at most one
+  # trip: XLA turns an `nv_if()` of elementwise branches into a select, which
+  # computes both.
+  log_asym <- nv_while(
+    init = list(pending = nv_any(use_asym), value = nv_fill_like(lambda, 0)),
+    cond = function(pending, value) pending,
+    body = function(pending, value) {
+      list(
+        pending = nv_scalar(FALSE),
+        value = basym(
+          nv_ifelse(use_asym, a, 2000),
+          nv_ifelse(use_asym, b, 2000),
+          nv_ifelse(use_asym, lambda, 0),
+          op_dtype
+        )
+      )
+    }
+  )$value
 
   c <- lambda + 1
   c0 <- b / a
   c1 <- 1 / a + 1
   yp1 <- y + 1
-  zero <- nv_fill_like(lambda, 0)
-  one <- nv_fill_like(lambda, 1)
+  float_dtype <- dtype(lambda)
 
+  # TOMS 708 carries the convergents' numerators and denominators (an, anp1)
+  # and (bn, bnp1), rescaled by bnp1 every step, so that bnp1 is 1 and anp1
+  # is the current approximation r. Only an, bn and r are therefore carried,
+  # starting from the rescaled first step. The counters TOMS 708 also carries
+  # (n, p, s) are functions of the step m, which is the same for every element.
+  # Converged elements keep their r; their an and bn are left to run on, as they
+  # are no longer read.
+  ab <- a + b
+  # 1 / tau, see `step()`
+  u <- 1 / (a + 1)
+
+  # 2^-e for x = f 2^e with 1 <= f < 2, from x's exponent bits: an exact
+  # rescaling, and no division. It is applied after every step; see `step()`
+  # for what that keeps in range.
+  is_f32 <- op_dtype == "f32"
+  bits_dtype <- if (is_f32) "ui32" else "ui64"
+  n_mantissa <- if (is_f32) 23L else 52L
+  exponent_max <- if (is_f32) 254L else 2046L
+  inv_pow2 <- function(x) {
+    e <- nv_shift_right_logical(nv_bitcast_convert(x, bits_dtype), n_mantissa)
+    nv_bitcast_convert(nv_shift_left(exponent_max - e, n_mantissa), float_dtype)
+  }
+  # Step m of the continued fraction. TOMS 708's terms are
+  #   alpha = p (p + c0) e^2 w x^2,   beta = w x / s + m + e' (c + m (y + 1)),
+  # with s = a + 2 m - 1, w = m (b - m), p = (a + m - 1) / a, e = a / s,
+  # e' = (t + 1) / (c1 + 2 t) and t = m / a. Here every term is scaled by
+  # k_m = s (s + 2) / tau^2, tau = a + 1 (an equivalence transformation: beta by
+  # k_m and alpha by k_m k_(m-1), which leaves the fraction's value alone),
+  # which clears every division from the step:
+  #   alpha' = (a + m - 1) ((a + b + m - 1) x) (w x) (s + 2) (s - 2) / tau^4,
+  #   beta' = (w x (s + 2) + m s (s + 2) + (a + m) s (c + m (y + 1))) / tau^2,
+  # with k_0 = (a + 1) / tau^2, so that the factor s - 2 is 1 at m = 1.
+  #
+  # Range. The fraction is taken on the side where lambda = a - (a + b) x >= 0,
+  # so (a + b) x <= a and b x <= a. With tau = a + 1, the factors of alpha' are
+  # then w x <= m a, ((a + b + m - 1) x) / tau <= 1 + m, and three more in
+  # [1 / tau, 1 + 2 m]; and beta' >= m s (s + 2) / tau^2 >= 1.
+  #  - Denominators. After each step the pair (B_(m-1), B_m) is rescaled by a
+  #    power of two so that B_m is in [1, 2). Then B_(m-1) <= B_m / beta' <= 2.
+  #  - Numerators. A_m = r_m B_m, where r_m is the current approximation. The
+  #    limit r satisfies 1 / a <= r <= (a + 1) / a (the hypergeometric series
+  #    for I_x(a, b) has positive terms in ratio at most (a + b) x / (a + 1)),
+  #    and every r_m stayed in that range in our checks. So the numerators are
+  #    in [1 / a, 2 (a + 1) / a), and the products in the convergence test in
+  #    [1 / a, 8). Its threshold eps |A_m B_(m-1)| >= eps / a is a normal
+  #    number for a up to about 10^31 at f32 and 10^292 at f64. Beyond that it
+  #    can flush to zero, and the test then passes only if the two products
+  #    are equal, i.e. the approximations agree to rounding, or else the
+  #    element ends as NaN at the iteration cap. Only for a above about
+  #    1 / tiny (10^38 at f32, 4 10^307 at f64) can the products themselves
+  #    underflow, and a false convergence on 0 <= 0 is no longer excluded.
+  #  - alpha'. Its two factors that can be small are multiplied first, after
+  #    w x, and every factor after them lies in [1 / tau, 1 + 2 m]. So an
+  #    intermediate product only underflows if alpha' itself is below about
+  #    tiny (1 + 2 m)^3, and then its contribution alpha' B_(m-1) <= 2 alpha'
+  #    is negligible against beta' B_m >= 1. The terms of beta' are all
+  #    non-negative and beta' >= 1, so their underflow is harmless too.
+  #  - Overflow. alpha' <= m a (1 + m)^2 (1 + 2 m)^2 and beta' grows like
+  #    a m^2, so at f32 a must stay below about 10^23 to reach the iteration
+  #    cap's m without overflowing (an overflow ends as NaN); f32 holds whole
+  #    numbers only to 2^24 in any case.
+  #
+  # Divisions are what make XLA write a buffer per value, so the steps are
+  # unrolled `n_unroll` to a trip, and only normalised at the end of each.
+  step <- function(m, an, anp1, bn, bnp1) {
+    s <- a + 2 * m - 1
+    w <- m * (b - m)
+    s_minus_2 <- nv_ifelse(m == 1, 1, s - 2)
+    # Each factor of 1 / tau is folded into a factor of size up to about tau;
+    # the order of the factors in alpha is the one argued for above
+    su <- s * u
+    s2u <- (s + 2) * u
+    alpha <- (w * x) * ((ab + m - 1) * x * u) * ((a + m - 1) * u) * s2u * (s_minus_2 * u)
+    beta <- w * x * s2u * u + m * su * s2u + ((a + m) * u) * su * (c + m * yp1)
+    anp1_new <- alpha * an + beta * anp1
+    bnp1_new <- alpha * bn + beta * bnp1
+    scale <- inv_pow2(bnp1_new)
+    list(an = anp1 * scale, anp1 = anp1_new * scale, bn = bnp1 * scale, bnp1 = bnp1_new * scale)
+  }
+  n_unroll <- 4L
+  k0 <- ((a + 1) * u) * u
+  r0 <- c1 / c
+  # Normalised so that the current denominator is 1 and the numerator is the
+  # approximation r, which is positive. An element's r is stored negated once
+  # it has converged, which saves carrying a flag: each value carried out of a
+  # trip costs a recomputation of the whole trip, as XLA does not share the work
+  # between them.
   frac <- nv_while(
-    init = list(
-      i = nv_scalar(0L),
-      m = zero,
-      pp = one,
-      s = a + 1,
-      an = zero,
-      bn = one,
-      anp1 = one,
-      bnp1 = c / c1,
-      r = c1 / c,
-      done = use_asym
-    ),
-    cond = function(i, m, pp, s, an, bn, anp1, bnp1, r, done) {
-      !nv_all(done) & (i < 1000L)
+    init = list(i = nv_scalar(0L), an = nv_fill_like(lambda, 0), bn = r0 / k0, r = nv_ifelse(use_asym, -r0, r0)),
+    cond = function(i, an, bn, r) {
+      nv_any(r > 0) & (i < 1000L)
     },
-    body = function(i, m, pp, s, an, bn, anp1, bnp1, r, done) {
-      m_new <- m + 1
-      w <- m_new * x * (b - m_new)
-      t <- m_new / a
-      e <- a / s
-      alpha <- pp * (pp + c0) * e * e * (w * x)
-      e <- (t + 1) / (c1 + t + t)
-      beta <- w / s + m_new + e * (c + m_new * yp1)
-      an_new <- alpha * an + beta * anp1
-      bn_new <- alpha * bn + beta * bnp1
-      r_new <- an_new / bn_new
-      converged <- nv_abs(r_new - r) <= eps * r_new
-      # Converged elements are frozen. The others are rescaled by `bn_new`, so
-      # that the convergents stay in range.
-      keep <- function(old, new) nv_ifelse(done, old, new)
+    body = function(i, an, bn, r) {
+      done <- r < 0
+      r <- nv_abs(r)
+      cur <- list(an = an, anp1 = r, bn = bn, bnp1 = nv_fill_like(r, 1))
+      # The numerator and denominator at the step that converged, held for
+      # elements that converge during this trip
+      fa <- r
+      fb <- cur$bnp1
+      conv <- done
+      for (j in seq_len(n_unroll)) {
+        m <- nv_convert(i, float_dtype) + j
+        nxt <- step(m, cur$an, cur$anp1, cur$bn, cur$bnp1)
+        # |A' / B' - A / B| <= eps A' / B', without dividing
+        now <- !conv & (nv_abs(nxt$anp1 * cur$bnp1 - cur$anp1 * nxt$bnp1) <= eps * nv_abs(nxt$anp1 * cur$bnp1))
+        fa <- nv_ifelse(now, nxt$anp1, fa)
+        fb <- nv_ifelse(now, nxt$bnp1, fb)
+        conv <- conv | now
+        cur <- nxt
+      }
+      inv_b <- 1 / cur$bnp1
+      r_new <- nv_ifelse(done, r, nv_ifelse(conv, fa / fb, cur$anp1 * inv_b))
       list(
-        i = i + 1L,
-        m = keep(m, m_new),
-        pp = keep(pp, t + 1),
-        s = keep(s, s + 2),
-        an = keep(an, anp1 / bn_new),
-        bn = keep(bn, bnp1 / bn_new),
-        anp1 = keep(anp1, r_new),
-        bnp1 = keep(bnp1, one),
-        r = keep(r, r_new),
-        done = done | converged
+        i = i + n_unroll,
+        an = cur$an * inv_b,
+        bn = cur$bn * inv_b,
+        r = nv_ifelse(conv, -r_new, r_new)
       )
     }
   )
 
-  log_frac <- nv_log(n - k) + nv_log(p) + binom_log_density(k, n, p, n_terms) + nv_log(frac$r)
-  log_direct <- nv_ifelse(use_asym, log_asym, nv_ifelse(frac$done, log_frac, NaN))
+  log_frac <- nv_log(n - k) + nv_log(p) + binom_log_density(k, n, p, n_terms) + nv_log(-frac$r)
+  log_direct <- nv_ifelse(use_asym, log_asym, nv_ifelse(frac$r < 0, log_frac, NaN))
   # The direct tail is P(X > k) where `upper`, and P(X <= k) elsewhere
   direct_wanted <- if (lower_tail) !upper else upper
   if (log_p) {
@@ -1198,14 +1286,15 @@ nv_pbinom <- jit(
     # One convergence tolerance per width -- see `binom_cdf()`
     op_dtype <- assert_rng_float_dtype(dtype(q), arg = "q")
 
-    # Resolve to NaN matching base R rules
-    invalid <- nv_is_nan(q) |
-      nv_is_nan(prob) |
+    # Resolve to NaN matching base R rules. The parameters' own conditions are
+    # kept apart from q's, so that a scalar `size` or `prob` stays scalar.
+    invalid_param <- nv_is_nan(prob) |
       !nv_is_finite(size) |
       is_nonint(size) |
       (size < 0) |
       (prob < 0) |
       (prob > 1)
+    invalid <- invalid_param | nv_is_nan(q)
     size <- nv_round(size)
     # base R's fuzz, so that a q a hair below a whole number counts as it
     k <- nv_floor(q + 1e-7)
@@ -1219,9 +1308,11 @@ nv_pbinom <- jit(
     is_zero <- below | (!above & (prob == 1))
     is_one <- above | (!below & (prob == 0))
     resolved <- invalid | is_zero | is_one
+    # Stand-ins for the parameters are chosen on their own conditions, and the
+    # stand-in k = 0 lies in [0, size) for any of them
     k_safe <- nv_ifelse(resolved, 0, k)
-    size_safe <- nv_ifelse(resolved, 1, size)
-    prob_safe <- nv_ifelse(resolved, 0.5, prob)
+    size_safe <- nv_ifelse(invalid_param | (size < 1), 1, size)
+    prob_safe <- nv_ifelse(invalid_param | (prob == 0) | (prob == 1), 0.5, prob)
     cdf <- binom_cdf(k_safe, size_safe, prob_safe, lower_tail, log_p, op_dtype)
 
     # The values of P(X <= k) of 0 and 1, in the scale and tail asked for
@@ -1300,9 +1391,11 @@ nv_qbinom <- jit(
     }
     # Whether the support point `k` is at or above the quantile; this is
     # monotone in `k`, false below the quantile and true from it on
+    # A NaN from a failed evaluation of the distribution function is reported
+    # as such, rather than read as either answer
     at_or_above <- function(k) {
       cdf <- binom_cdf(k, size_safe, prob_safe, lower_tail, log_p, op_dtype)
-      if (lower_tail) cdf >= target else cdf < target
+      list(above = if (lower_tail) cdf >= target else cdf < target, failed = nv_is_nan(cdf))
     }
 
     # Cornish-Fisher approximation to the quantile, as base R starts from
@@ -1349,13 +1442,17 @@ nv_qbinom <- jit(
       body = function(i, lo, hi, step, started, galloping, down) {
         probe <- probe_at(lo, hi, step, started, galloping, down)
         active <- is_active(lo, hi, probe)
-        above <- at_or_above(nv_ifelse(active, probe, 0))
+        answer <- at_or_above(nv_ifelse(active, probe, 0))
+        above <- answer$above
+        # A failed evaluation ends that element's search with a NaN bracket,
+        # and so a NaN result
+        failed <- active & answer$failed
         # Galloping goes on while each probe lands on the same side as the last
         onward <- nv_ifelse(down, above, !above)
         list(
           i = i + 1L,
-          lo = nv_ifelse(active & !above, probe, lo),
-          hi = nv_ifelse(active & above, probe, hi),
+          lo = nv_ifelse(failed, NaN, nv_ifelse(active & !above, probe, lo)),
+          hi = nv_ifelse(failed, NaN, nv_ifelse(active & above, probe, hi)),
           step = nv_ifelse(started & galloping & onward, 2 * step, step),
           started = started | active,
           galloping = galloping & (!started | onward),
