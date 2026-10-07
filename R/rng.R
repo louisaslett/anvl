@@ -1,5 +1,14 @@
-#' @include aaa.R
+#' @include side-effects.R
 NULL
+
+register_side_effect(
+  "rng",
+  dtype = "ui64",
+  shape = 2L,
+  slot = function() global_rng_slot(),
+  label = "The global RNG state",
+  use = "drawn from"
+)
 
 #' @title Set the Global RNG Seed
 #' @description
@@ -106,68 +115,6 @@ with_nv_seed <- function(seed, code) {
   code
 }
 
-# The global RNG state of the trace `desc`, a GraphBox, registered on first use
-# as `desc$rng_mode` says:
-#   "input":   a fresh input of the graph, `desc$rng_input`, which is not among
-#              `desc$inputs`: whoever traced `desc` adds it where it belongs and
-#              returns the state the trace leaves behind (see `rng_finish()`).
-#              The root of a jit call and the bodies of `prim_while()` and
-#              `prim_scan()` take the state this way.
-#   "capture": the state of the enclosing trace `desc$rng_parent`, which the
-#              graph closes over. The branches of `prim_if()` and the function
-#              `gradient()` differentiates take the state this way.
-# A trace with neither cannot pass a state on, so drawing there is an error.
-rng_state_get <- function(desc) {
-  if (!is.null(desc$rng_state)) {
-    return(desc$rng_state)
-  }
-  mode <- desc$rng_mode
-  if (identical(mode, "input")) {
-    gval <- GraphValue(AbstractArray(dtype = "ui64", shape = 2L))
-    desc$rng_input <- gval
-    desc$rng_state <- register_gval(desc, gval)
-  } else if (identical(mode, "capture")) {
-    desc$rng_state <- rng_state_get(desc$rng_parent)
-  } else if (!length(globals[["DESCRIPTOR_STASH"]])) {
-    cli_abort("The global RNG state can only be drawn from in a function called through {.fn jit}.")
-  } else {
-    cli_abort(c(
-      "The global RNG state cannot be drawn from here.",
-      i = "It cannot be drawn from in the condition of {.fn nv_while}, nor in the function of a reduction or a scatter."
-    ))
-  }
-  desc$rng_state
-}
-
-# Lets the trace `desc` take the global RNG state in `mode` (see
-# `rng_state_get()`), from the enclosing trace `parent` for `"capture"`.
-rng_enable <- function(desc, mode, parent = NULL) {
-  desc$rng_mode <- mode
-  desc$rng_parent <- parent
-  invisible(desc)
-}
-
-# For a trace `desc` that took the global RNG state as an input: that input and
-# the node of the state it leaves behind, as `list(input, output)`. `NULL` when
-# the trace did not draw from it.
-rng_finish <- function(desc) {
-  if (is.null(desc$rng_input)) {
-    return(NULL)
-  }
-  list(input = desc$rng_input, output = desc$rng_state$gnode)
-}
-
-# `graph` taking the global RNG state as its last input and returning the state
-# it leaves behind as its last output, for `rng` as `rng_finish()` returns it;
-# `graph` itself when that is `NULL`.
-rng_add_io <- function(graph, rng) {
-  if (!is.null(rng)) {
-    graph$inputs <- c(graph$inputs, list(rng$input))
-    graph$outputs <- c(graph$outputs, list(rng$output))
-  }
-  graph
-}
-
 # The global RNG state slot of a program compiled from a trace that drew from
 # it (see `dispatcher()`'s `state`): pjrt's engine reads `globals$rng_state`
 # before every run -- deriving it from base R's RNG when it is not set --
@@ -190,25 +137,4 @@ rng_state_from_r <- function() {
 # `seed` read as an unsigned 32-bit integer, and the counter `0`.
 rng_state_from_seed <- function(seed, device = NULL) {
   nv_array(c(seed %% 2^32, 0), dtype = "ui64", device = device)
-}
-
-# Makes the branches of a `prim_if()` call -- their traces `descs` and graphs
-# `graphs` -- return the global RNG state after their output when one of them
-# drew from it: the state it leaves behind, or the enclosing trace `desc`'s
-# unchanged, which the branch then closes over. Returns whether they do.
-rng_if_outputs <- function(desc, descs, graphs) {
-  drew <- vapply(descs, function(d) !is.null(d$rng_state), logical(1L))
-  if (!any(drew)) {
-    return(FALSE)
-  }
-  unchanged <- desc$rng_state$gnode
-  for (i in seq_along(graphs)) {
-    graph <- graphs[[i]]
-    out <- if (drew[[i]]) descs[[i]]$rng_state$gnode else unchanged
-    if (!drew[[i]]) {
-      graph$constants <- c(graph$constants, list(unchanged))
-    }
-    graph$outputs <- c(graph$outputs, list(out))
-  }
-  TRUE
 }

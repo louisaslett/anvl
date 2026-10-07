@@ -157,7 +157,7 @@ compile_pjrt <- function(
   default_dtypes = NULL
 ) {
   desc <- local_descriptor(default_dtypes = default_dtypes, backend = "pjrt")
-  rng_enable(desc, "input")
+  side_effects_enable(desc, "input")
   graph <- trace_fn(
     f,
     desc = desc,
@@ -202,17 +202,17 @@ compile_pjrt <- function(
   # Otherwise, everything will be converted to requested device and it does not matter
   # If we found different devices during tracing.
 
-  compile_graph_pjrt(graph, donate = donate, device = device, rng = rng_finish(desc))
+  compile_graph_pjrt(graph, donate = donate, device = device, side_effects = side_effects_finish(desc))
 }
 
-# `rng` is `NULL`, or the global RNG state's `list(input, output)` of a trace
-# that drew from it (see `rng_finish()`): the program then takes the state as
-# its last input and returns it as its last output, and pjrt supplies and stores
-# it through a state slot.
-compile_graph_pjrt <- function(graph, donate = character(), device, rng = NULL) {
+# `side_effects` are the side effect values the trace used (see
+# `side_effects_finish()`): the program takes them as its last inputs and
+# returns them as its last outputs, and pjrt supplies and stores them through a
+# state slot each.
+compile_graph_pjrt <- function(graph, donate = character(), device, side_effects = list()) {
   platform_name <- if (is.character(device)) device else platform(device)
-  # Read before the state is added: it is not one of the call's inputs or
-  # outputs.
+  # Read before the side effects are added: they are not among the call's inputs
+  # or outputs.
   input_dtypes <- graph_input_dtypes(graph)
   # pjrt needs these to create templates for the outputs
   # We also provide dtype and shape because these are created BEFORE the first execution
@@ -222,7 +222,7 @@ compile_graph_pjrt <- function(graph, donate = character(), device, rng = NULL) 
       shape = shape(x$aval)
     )
   })
-  graph <- rng_add_io(graph, rng)
+  graph <- side_effects_add_io(graph, side_effects)
   out <- stablehlo(
     graph,
     donate = donate,
@@ -266,7 +266,7 @@ compile_graph_pjrt <- function(graph, donate = character(), device, rng = NULL) 
     input_dtypes = input_dtypes,
     device = device(exec),
     phantom_specs = phantom_specs,
-    state = if (!is.null(rng)) list(global_rng_slot())
+    state = side_effects_slots(side_effects)
   )
 }
 

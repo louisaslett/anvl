@@ -2530,17 +2530,17 @@ prim_if <- new_primitive(
 
     current_desc <- current_descriptor(silent = TRUE)
 
-    desc_true <- rng_enable(local_descriptor(), "capture", current_desc)
+    desc_true <- side_effects_enable(local_descriptor(), "capture", current_desc)
     true_graph <- trace_fn(true, list(), desc = desc_true)
-    desc_false <- rng_enable(local_descriptor(), "capture", current_desc)
+    desc_false <- side_effects_enable(local_descriptor(), "capture", current_desc)
     false_graph <- trace_fn(false, list(), desc = desc_false)
 
     if (!pjrt::tree_equal(true_graph$out_tree, false_graph$out_tree)) {
       cli_abort("{.arg true} and {.arg false} must return the same structure.")
     }
-    # A branch that draws from the global RNG state closes over it; then both
-    # return the state they leave behind as one more output.
-    rng <- rng_if_outputs(current_desc, list(desc_true, desc_false), list(true_graph, false_graph))
+    # A branch that uses a side effect closes over its value; then both return
+    # the value they leave behind as one more output.
+    side_effects <- side_effects_if_outputs(current_desc, list(desc_true, desc_false), list(true_graph, false_graph))
 
     # What the branches close over becomes their inputs -- both take all of it,
     # in the same order -- and the call's operands after `pred`.
@@ -2553,10 +2553,7 @@ prim_if <- new_primitive(
       infer_fn = infer_cond,
       desc = current_desc
     )
-    if (rng) {
-      current_desc$rng_state <- out[[length(out)]]
-      out <- out[-length(out)]
-    }
+    out <- side_effects_take_outputs(current_desc, side_effects, out)
     unflatten(true_graph$out_tree, out)
   },
   subgraphs = c("true", "false"),
@@ -2627,7 +2624,7 @@ prim_while <- new_primitive(
 
     desc_cond <- local_descriptor()
     cond_graph <- trace_fn(cond, init, desc = desc_cond)
-    desc_body <- rng_enable(local_descriptor(), "input")
+    desc_body <- side_effects_enable(local_descriptor(), "input")
     body_graph <- trace_fn(body, init, desc = desc_body)
 
     if (!pjrt::tree_equal(cond_graph$in_tree, body_graph$in_tree)) {
@@ -2638,16 +2635,12 @@ prim_while <- new_primitive(
       cli_abort("body must have the same input and output structure")
     }
 
-    # A body that draws from the global RNG state carries it as the last member
-    # of the loop state, which `cond` takes too but does not read.
-    rng <- rng_finish(desc_body)
-    operands <- flatten(init)
-    if (!is.null(rng)) {
-      body_graph$inputs <- c(body_graph$inputs, list(rng$input))
-      body_graph$outputs <- c(body_graph$outputs, list(rng$output))
-      cond_graph$inputs <- c(cond_graph$inputs, list(GraphValue(rng$input$aval)))
-      operands <- c(operands, list(rng_state_get(current_desc)))
-    }
+    # The side effects the body uses are the last members of the loop state,
+    # which `cond` takes too but does not read.
+    side_effects <- side_effects_finish(desc_body)
+    body_graph <- side_effects_add_io(body_graph, side_effects)
+    cond_graph$inputs <- c(cond_graph$inputs, lapply(side_effects, function(f) GraphValue(f$input$aval)))
+    operands <- c(flatten(init), lapply(side_effects, function(f) side_effect_get(current_desc, f$name)))
 
     # `cond` and `body` take the state, then what either of them closes over;
     # the call's operands are the same.
@@ -2660,10 +2653,7 @@ prim_while <- new_primitive(
       infer_fn = infer_while,
       desc = current_desc
     )
-    if (!is.null(rng)) {
-      current_desc$rng_state <- out[[length(out)]]
-      out <- out[-length(out)]
-    }
+    out <- side_effects_take_outputs(current_desc, side_effects_names(side_effects), out)
 
     unflatten(body_graph$out_tree, out)
   },
@@ -2783,17 +2773,15 @@ prim_scan <- new_primitive(
       list(carry = st$carry, out = st$out)
     }
 
-    desc_body <- rng_enable(local_descriptor(), "input")
+    desc_body <- side_effects_enable(local_descriptor(), "input")
     body_graph <- trace_fn(step, list(carry = init, x = x_slices), desc = desc_body)
-    # A body that draws from the global RNG state carries it as the last leaf
-    # of the carry.
-    rng <- rng_finish(desc_body)
-    if (!is.null(rng)) {
-      body_graph$inputs <- append(body_graph$inputs, list(rng$input), after = n_carry)
-      body_graph$outputs <- append(body_graph$outputs, list(rng$output), after = n_carry)
-      init_flat <- c(init_flat, list(rng_state_get(current_desc)))
-      n_carry <- n_carry + 1L
-    }
+    # The side effects the body uses are the last leaves of the carry.
+    side_effects <- side_effects_finish(desc_body)
+    n_user_carry <- n_carry
+    body_graph$inputs <- append(body_graph$inputs, lapply(side_effects, `[[`, "input"), after = n_carry)
+    body_graph$outputs <- append(body_graph$outputs, lapply(side_effects, `[[`, "output"), after = n_carry)
+    init_flat <- c(init_flat, lapply(side_effects, function(f) side_effect_get(current_desc, f$name)))
+    n_carry <- n_carry + length(side_effects)
     # The body takes the carry, the `xs` slices, then what it closes over; the
     # call's operands are the carry, `xs`, then the same captures.
     captures <- purify_subgraphs(current_desc, list(body_graph))
@@ -2840,10 +2828,12 @@ prim_scan <- new_primitive(
       infer_fn = infer_fn,
       desc = current_desc
     )
-    if (!is.null(rng)) {
-      current_desc$rng_state <- out[[n_carry]]
-      out <- out[-n_carry]
-    }
+    out <- side_effects_take_outputs(
+      current_desc,
+      side_effects_names(side_effects),
+      out,
+      at = n_user_carry
+    )
     unflatten(body_graph$out_tree, out)
   },
   subgraphs = "body",
@@ -3155,12 +3145,12 @@ prim_random_bits <- new_primitive(
     desc <- current_descriptor()
     out <- graph_desc_add(
       self,
-      list(state = rng_state_get(desc)),
+      list(state = side_effect_get(desc, "rng")),
       params = list(shape = shape, dtype = dtype, streams = streams),
       infer_fn = infer_random_bits,
       desc = desc
     )
-    desc$rng_state <- out$state
+    side_effect_set(desc, "rng", out$state)
     out$values
   },
   static = c("shape", "dtype", "streams")

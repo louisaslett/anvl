@@ -289,13 +289,12 @@ GraphDescriptor <- function(
   # One entry per input, set by finalize: the R storage type of an input the
   # caller supplies as bare R data, `NA` for one that arrives as an array.
   env$rdata_types <- NULL
-  # The global RNG state of the trace: the current one (a GraphBox, or `NULL`
-  # before the first draw), how the trace takes it, the enclosing trace it is
-  # captured from, and the input it arrives through (see rng_state_get()).
-  env$rng_state <- NULL
-  env$rng_mode <- NULL
-  env$rng_parent <- NULL
-  env$rng_input <- NULL
+  # The side effects of the trace (see `side_effect_get()`): per side effect
+  # used, its current value and the input it arrives through; how the trace
+  # takes them, and the enclosing trace it captures them from.
+  env$side_effects <- list()
+  env$side_effect_mode <- NULL
+  env$side_effect_parent <- NULL
 
   structure(env, class = "GraphDescriptor")
 }
@@ -704,9 +703,10 @@ name_failing_primitive <- function(e) {
 #' The resulting graph can be lowered to StableHLO (via [`stablehlo()`]) or transformed
 #' (e.g. via [`transform_gradient()`]).
 #'
-#' When `f` draws random numbers (see [nv_set_seed()]), the graph takes the
-#' global RNG state as its last input and returns the advanced state as its last
-#' output, as the program [jit()] compiles from it does.
+#' When `f` uses a value that is hidden from the user, such as the global RNG
+#' state (see [nv_set_seed()]), the graph takes it as one of its last inputs and
+#' returns the value it leaves behind as one of its last outputs, as the program
+#' [jit()] compiles from it does.
 #'
 #' @param f (`function`)\cr
 #'   The function to trace. Must not be a `JitFunction` (i.e. already jitted).
@@ -753,7 +753,7 @@ trace_fn <- function(
   f_flat <- pjrt::flatten_fun(f, in_tree = in_tree)
   toplevel <- is.null(desc)
   if (toplevel) {
-    desc <- rng_enable(local_descriptor(in_tree = in_tree), "input")
+    desc <- side_effects_enable(local_descriptor(in_tree = in_tree), "input")
   } else {
     desc$in_tree <- in_tree
   }
@@ -802,7 +802,7 @@ trace_fn <- function(
 
   graph <- descriptor_to_graph(desc)
   if (toplevel) {
-    graph <- rng_add_io(graph, rng_finish(desc))
+    graph <- side_effects_add_io(graph, side_effects_finish(desc))
   }
   optimize_graph(graph, optimize)
 }

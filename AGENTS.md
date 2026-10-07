@@ -153,6 +153,17 @@ When a function is JIT-compiled, anvl traces it by executing with `GraphBox` obj
 
 Key types: `GraphValue` (traced variable), `GraphLiteral` (embedded constant), `AbstractArray` (shape + dtype metadata), `AnvlGraph`.
 
+## Side Effects
+
+Values a program needs but the user never passes -- currently only the global RNG state -- are
+**side effects** (`R/side-effects.R`, registered with `register_side_effect()`). Each graph descriptor holds a
+current value per side effect; a primitive reads it with `side_effect_get(desc, name)` and replaces it with
+`side_effect_set(desc, name, value)` instead of taking it as an argument. The higher-order primitives
+(`prim_if`, `prim_while`, `prim_scan`), `gradient()`, `trace_fn()` and the pjrt backend thread every
+side effect a graph used generically -- as extra carries, extra branch outputs, and hidden program
+inputs/outputs read from and written back to a pjrt state slot -- so a new side effect needs no changes
+there. Don't special-case a side effect in those places. The internals article has the details.
+
 ## NSE and Tracing
 
 `force()` is only needed in higher-order primitives that trace R functions internally (e.g. `prim_sort` traces a comparator, `prim_scatter` traces an update computation). In those cases, force all arrayish inputs first so they aren't accidentally captured as unevaluated promises in the sub-graph descriptor — R's lazy evaluation otherwise causes hard-to-debug errors. Plain primitives that don't open a sub-descriptor don't need `force()`.

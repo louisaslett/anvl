@@ -446,6 +446,68 @@ f(list(w = nv_scalar(2), b = nv_scalar(5)), nv_scalar(3))
 jit_cache_size(f)
 ```
 
+### Side Effects: Values Hidden from the User
+
+Some values a program needs are never passed by the user.
+The global RNG state is one: `nv_runif(3L)` takes no state and returns only the sample, yet every draw has to read the state and leave an advanced one behind, and consecutive calls have to continue where the previous one stopped.
+{anvl} calls such a value a **side effect**: the program reads and changes it although it is neither an argument nor a return value.
+This is a value threaded through the compiled program, not R-level side effects such as printing in a jitted function, which happen only while it is traced.
+The side effects are registered with `register_side_effect()` (in `R/side-effects.R`), which declares the value's data type and shape, and the state slot a compiled program reads it from and writes it back to; the global RNG state is registered as `"rng"`.
+
+While a function is traced, every graph being built holds a current value per side effect it has used, in its descriptor's `side_effects` field.
+A primitive that uses a side effect does not take the value as an argument.
+Instead, it reads the current value with `side_effect_get()`, records an operation that takes it and returns a new one, and makes that new value the current one with `side_effect_set()`.
+For `prim_random_bits()`, on which all samplers are built, this is (simplified):
+
+```r
+desc <- current_descriptor()
+out <- graph_desc_add(self, list(state = side_effect_get(desc, "rng")), ...)
+side_effect_set(desc, "rng", out$state)
+out$values
+```
+
+The value is therefore an ordinary value flowing through the graph, and the operations that use it are chained through it.
+The first time the graph of a jitted function uses a side effect, the value becomes one more input of the graph, and the value the graph leaves behind one more output.
+These come after the user's inputs and outputs (nested graphs take the value in other ways, see below):
+
+```{r}
+graph <- trace_fn(function() prim_random_bits(2L, "ui32") + prim_random_bits(2L, "ui32"), list())
+graph
+```
+
+The second draw consumes `%1`, the state the first one left behind, which is what keeps the compiler from giving both draws the same numbers.
+A graph that uses no side effect has no such input or output, and is compiled exactly as if side effects did not exist.
+
+Graphs nested in a traced function thread the side effects they use as well:
+
+* The bodies of `nv_while()` and `nv_scan()` take each side effect they use as one more carry, after the user's.
+  After the loop, the value it ends with becomes the current value of the enclosing graph.
+* The branches of `nv_if()` close over the enclosing graph's value.
+  If one of them uses a side effect, both return the value they end with as one more output; a branch that did not use it returns the value it closed over.
+* The function `gradient()` differentiates also closes over the enclosing graph's value, and the value it leaves behind becomes the enclosing graph's once its forward pass is replayed.
+* The condition of `nv_while()` and the functions of a reduction or a scatter cannot return a value besides their own, so using a side effect there is an error.
+
+```{r}
+graph <- trace_fn(function() {
+  nv_while(
+    list(i = 0L),
+    function(i) i < 3L,
+    function(i) {
+      prim_random_bits(integer(), "ui32")
+      list(i = i + 1L)
+    }
+  )$i
+}, list())
+graph
+```
+
+At the program boundary, the compiled program takes each side effect's value as a hidden input and returns the value it leaves behind as a hidden output.
+pjrt's dispatcher supplies the input from the side effect's **state slot** before each run -- for the RNG state, `globals$rng_state`, copied to the program's device when it lives elsewhere -- and writes the output back into the slot after the run, without waiting for it.
+This is why the draws of one call continue in the next, and why it does not matter how draws are split into compiled functions: two draws in one `jit()` call give the same numbers as the same draws made one after the other.
+
+To add a side effect, register it with `register_side_effect()` and write primitives that use it through `side_effect_get()` and `side_effect_set()`.
+The higher-order primitives, `gradient()`, `trace_fn()` and the pjrt backend handle every registered side effect alike, in the order the side effects were registered, so a new side effect needs no changes there.
+
 ## Backend and Device in `jit()`
 
 A compiled program runs on one backend and on one device of that backend.

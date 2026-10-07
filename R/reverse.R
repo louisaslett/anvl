@@ -142,8 +142,9 @@ transform_gradient <- function(graph, wrt) {
 # Here we compute the gradients of a graph and write it into the current descriptor
 # This can either be a call to the gradient (inputs are provided)
 # Or just the gradient itself, i.e. then the inputs are NULL (used for transform_gradient).
-# `extra` are further nodes of `graph` -- the global RNG state it leaves behind --
-# whose boxes in the current descriptor are returned as `extra`.
+# `extra` are further nodes of `graph` -- the side effect values it leaves
+# behind -- whose boxes in the current descriptor are returned as `extra`, with
+# its names.
 graph_value_and_grad <- function(graph, wrt, inputs = NULL, extra = list()) {
   desc <- current_descriptor()
   out <- validate_gradient_output(graph$outputs)
@@ -680,8 +681,13 @@ gradient <- function(f, wrt = NULL) {
     }
     traced <- trace_gradient_fn(f, prep)
     fwd_graph <- traced$graph
-    res <- graph_value_and_grad(fwd_graph, wrt, gradient_operands(fwd_graph, prep$args_flat), extra = traced$rng)
-    rng_state_restore(res$extra)
+    res <- graph_value_and_grad(
+      fwd_graph,
+      wrt,
+      gradient_operands(fwd_graph, prep$args_flat),
+      extra = traced$side_effects
+    )
+    side_effects_set_all(current_descriptor(), res$extra)
     unflatten(gradient_out_tree(fwd_graph, wrt), res$grad)
   }
   formals(f_gradient) <- formals2(f)
@@ -709,8 +715,13 @@ value_and_gradient <- function(f, wrt = NULL) {
     }
     traced <- trace_gradient_fn(f, prep)
     fwd_graph <- traced$graph
-    res <- graph_value_and_grad(fwd_graph, wrt, gradient_operands(fwd_graph, prep$args_flat), extra = traced$rng)
-    rng_state_restore(res$extra)
+    res <- graph_value_and_grad(
+      fwd_graph,
+      wrt,
+      gradient_operands(fwd_graph, prep$args_flat),
+      extra = traced$side_effects
+    )
+    side_effects_set_all(current_descriptor(), res$extra)
     list(
       value = unflatten(fwd_graph$out_tree, res$value),
       grad = unflatten(gradient_out_tree(fwd_graph, wrt), res$grad)
@@ -721,23 +732,13 @@ value_and_gradient <- function(f, wrt = NULL) {
 }
 
 # Traces `f`, the function `gradient()` differentiates, from the prepared
-# arguments `prep`. A draw from the global RNG state closes over the enclosing
-# trace's; `rng` is then the node of the state `f` leaves behind (a list of
-# one), for `rng_state_restore()` once the graph is replayed, and otherwise
-# empty.
+# arguments `prep`. A side effect `f` uses closes over the enclosing trace's
+# value; `side_effects` are then the nodes of the values `f` leaves behind,
+# named by side effect, which become the enclosing trace's once the graph is
+# replayed.
 trace_gradient_fn <- function(f, prep) {
   parent <- current_descriptor()
-  desc <- rng_enable(local_descriptor(), "capture", parent)
+  desc <- side_effects_enable(local_descriptor(), "capture", parent)
   graph <- trace_fn(f, args_flat = prep$args_flat, in_tree = prep$in_tree, desc = desc)
-  list(graph = graph, rng = if (!is.null(desc$rng_state)) list(desc$rng_state$gnode))
-}
-
-# Makes the replayed global RNG state `extra` (a list of at most one box) that
-# of the current trace.
-rng_state_restore <- function(extra) {
-  if (length(extra)) {
-    desc <- current_descriptor()
-    desc$rng_state <- extra[[1L]]
-  }
-  invisible(NULL)
+  list(graph = graph, side_effects = side_effects_values(desc))
 }

@@ -76,4 +76,6 @@ globals[["CURRENT_DESCRIPTOR"]] <- NULL
 globals[["LOWERING_PLATFORM"]] <- NULL
 # The global RNG state (see `global_rng_slot()`).
 globals$rng_state <- NULL
+# The registered side effects (see `register_side_effect()`).
+globals$side_effects <- list()
 utils::globalVariables(c("globals", "self"))
