@@ -720,7 +720,9 @@ bd0 <- function(x, np, is_f32) {
   v <- nv_ifelse(near, ds / ss, 0)
   w <- v * v
   series <- d * v + x * v * w * (2 * horner(w, if (is_f32) bd0_f32_coefs else bd0_f64_coefs))
-  direct <- x * log_ratio(x, np, is_f32) + np - x
+  # np - x first: near the top of the range x log(x / np) + np can overflow
+  # where the whole cannot
+  direct <- x * log_ratio(x, np, is_f32) + (np - x)
   nv_ifelse(near, series, direct)
 }
 
@@ -736,33 +738,123 @@ dpois_log_raw <- function(x, lambda, is_f32) {
   nv_ifelse(at_zero, -lambda, -saddle - 0.5 * nv_log(x_pos) - 0.5 * base::log(2 * pi))
 }
 
+# 2^-e for a normal x = f 2^e with 1 <= f < 2, from x's exponent bits: an exact
+# rescaling, and no division. x must be below the largest power of two, or the
+# result is not normal.
+inv_pow2 <- function(x) {
+  is_f32 <- dtype(x) == "f32"
+  bits_dtype <- if (is_f32) "ui32" else "ui64"
+  n_mantissa <- if (is_f32) 23L else 52L
+  exponent_max <- if (is_f32) 254L else 2046L
+  e <- nv_shift_right_logical(nv_bitcast_convert(x, bits_dtype), n_mantissa)
+  nv_bitcast_convert(nv_shift_left(exponent_max - e, n_mantissa), dtype(x))
+}
+
+# `compute()` where `pending`, else `init`. XLA's CPU backend turns a
+# conditional of elementwise branches into a select, which evaluates both; a
+# loop of at most one trip is not converted, so this does skip the work.
+skip_unless <- function(pending, init, compute) {
+  nv_while(
+    init = list(pending = pending, value = init),
+    cond = function(pending, value) pending,
+    body = function(pending, value) list(pending = nv_scalar(FALSE), value = compute())
+  )$value
+}
+
 # Sum of the series
 #   upper: lambda / (k + 1) + lambda^2 / ((k + 1)(k + 2)) + ...
 #   lower: k / lambda + k (k - 1) / lambda^2 + ...  (finite: stops at k terms)
 # which multiply the probability of k to give P(X > k) and P(X <= k) - p(k)
-# respectively (R's `pd_upper_series()` and `pd_lower_series()`). The ratio of
-# successive terms is below one and decreasing, so once a term is below
-# (1 - ratio) * sum * eps / 2 the rest of the series cannot move the sum by half
-# an ulp. Each element is frozen there (its term set to zero), so it does not
-# depend on how long the others in the array take to converge -- at most ~170
-# terms in f64 and ~90 in f32 within the regions `ppois_raw()` uses them in. A
-# while loop has no gradient, so the inputs must not carry one.
+# respectively (R's `pd_upper_series()` and `pd_lower_series()`).
+#
+# Each term is the one before times u_n / a_n, with u_n = lambda and
+# a_n = k + 1 + n (upper), or u_n = k - n and a_n = lambda (lower). Divisions
+# are by far the most expensive operation here, so the sum is carried as a
+# fraction num / den, with term / den the current term:
+#   term <- term u_n,  num <- num a_n + term,  den <- den a_n,
+# and divided out once at the end. Every u_n and a_n is first scaled by the
+# same power of two c, which leaves both fractions alone and makes the a_n
+# close to 1 + n / (k + 1); every 8 steps num, den and term are rescaled by a
+# power of two that puts den in [1, 2), and (a_n c)^8 < 2^80 keeps them in
+# range for the 1000 steps allowed. Both rescalings are exact, so the
+# arithmetic is that of the plain fractions.
+#
+# The ratio of successive terms is below one and decreasing, so once a term is
+# below (1 - ratio) * sum * eps / 2 the rest of the series cannot move the sum
+# by half an ulp; without dividing, term u_(n+1) <= (a_(n+1) - u_(n+1)) num
+# eps / 2. That takes at most ~170 terms in f64 and ~90 in f32 within the
+# regions `ppois_raw()` uses the series in, but far fewer for most inputs, so
+# the first steps are unrolled for every element, and a loop finishes the
+# rest for those that need it, eight steps a trip. In the loop each element is
+# frozen once converged (u = 0 and a = 1 leave num and den exactly as they
+# are), so it does not depend on how long the others take. The unrolled steps
+# are the same for every element anyway, and are not frozen: an element that
+# has converged only takes on terms below half an ulp, or a rounding of num and
+# den alike, and freezing each step doubled the cost of the function for no
+# measurable change in accuracy. A while loop has no gradient, so the inputs
+# must not carry one.
 poisson_series <- function(k, lambda, upper, is_f32) {
   tol <- if (is_f32) 2^-24 else 2^-53
-  term <- nv_ifelse(upper, lambda / (k + 1), k / lambda)
+  # Tuned on the CPU backend for lambda from 1 to 150 (a trip costs about as
+  # much as several unrolled steps; frozen steps cost more than plain ones)
+  n_unroll <- if (is_f32) 8L else 24L
+  steps_per_trip <- 8L
+  # u_n = u0 - n du and a_n = a0 + n da, scaled by c so that a0 is in [1, 2)
+  # (or a little more where it is beyond the largest power of two). The lower
+  # series is finite: its u_n reach zero at n = k, after which the steps only
+  # multiply a zero term. With k >= 1 it has lambda > k >= 1, so c <= 1 and
+  # n du stays small; but at k = 0 (the only count below a mean under 1) c is
+  # about 1 / lambda, and n c overflows for a small enough lambda, making the
+  # zero term NaN. The series has no terms there at all, so du is zero.
+  a0 <- nv_ifelse(upper, k + 1, lambda)
+  c <- inv_pow2(nv_pmin(a0, if (is_f32) 2^126 else 2^1022))
+  u0 <- nv_ifelse(upper, lambda, k) * c
+  du <- nv_ifelse(upper | (k == 0), 0, c)
+  a0 <- a0 * c
+  da <- nv_ifelse(upper, c, 0)
+  normalise <- function(f) {
+    s <- inv_pow2(f$den)
+    list(term = f$term * s, num = f$num * s, den = f$den * s)
+  }
+  step <- function(f, n, live = NULL) {
+    u <- u0 - n * du
+    a <- a0 + n * da
+    if (!is.null(live)) {
+      u <- nv_ifelse(live, u, 0)
+      a <- nv_ifelse(live, a, 1)
+    }
+    term <- f$term * u
+    list(term = term, num = f$num * a + term, den = f$den * a)
+  }
+  # Whether the series has converged after term n; if so, term is set to zero
+  settle <- function(f, n) {
+    u <- u0 - (n + 1) * du
+    a <- a0 + (n + 1) * da
+    f$term <- nv_ifelse(f$term * u <= (a - u) * f$num * tol, 0, f$term)
+    f
+  }
+
+  f <- normalise(list(term = u0, num = u0, den = a0))
+  for (n in seq_len(n_unroll)) {
+    f <- step(f, n)
+    if (n %% steps_per_trip == 0L || n == n_unroll) {
+      f <- normalise(f)
+    }
+  }
+  f <- settle(f, n_unroll)
   out <- nv_while(
-    init = list(n = nv_scalar_like(k, 0), term = term, sum = term),
-    cond = function(n, term, sum) (n < 1000) & nv_any(term > 0),
-    body = function(n, term, sum) {
-      n <- n + 1
-      ratio <- nv_ifelse(upper, lambda / (k + 1 + n), (k - n) / lambda)
-      term <- term * ratio
-      sum <- sum + term
-      converged <- term <= (1 - ratio) * sum * tol
-      list(n = n, term = nv_ifelse(converged, 0, term), sum = sum)
+    init = list(n = nv_scalar_like(k, n_unroll), term = f$term, num = f$num, den = f$den),
+    cond = function(n, term, num, den) (n < 1000) & nv_any(term != 0),
+    body = function(n, term, num, den) {
+      f <- list(term = term, num = num, den = den)
+      for (j in seq_len(steps_per_trip)) {
+        f <- settle(step(f, n + j, live = f$term != 0), n + j)
+      }
+      f <- normalise(f)
+      list(n = n + steps_per_trip, term = f$term, num = f$num, den = f$den)
     }
   )
-  out$sum
+  out$num / out$den
 }
 
 # log(1 + t) - t for |t| <= 1/4, by the series in r = t / (2 + t) of R's
@@ -861,29 +953,51 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 
   log_density <- dpois_log_raw(k, lambda, is_f32)
 
-  # Elements outside both series are given k = 0, whose lower series is 0
-  sum <- poisson_series(
-    nv_ifelse(use_series, k, 0),
-    nv_ifelse(use_series, lambda, 1),
-    upper,
-    is_f32
-  )
-  log_tail <- log_density + nv_ifelse(upper, nv_log(nv_ifelse(upper, sum, 1)), nv_log1p(sum))
-  # `log_tail` is the log of P(X > k) for the upper series, P(X <= k) for the lower
-  direct <- if (lower_tail) lower else upper
-  from_series <- if (log_p) {
-    nv_ifelse(direct, log_tail, log1mexp(log_tail))
-  } else {
-    nv_ifelse(direct, nv_exp(log_tail), -nv_expm1(log_tail))
+  # The asymptotic expansion is computed only if some element needs it (see
+  # `skip_unless()`). The series is not gated the same way, though it costs
+  # about a third of the time of a batch that is all asymptotic (large lambda
+  # with counts near it): its result then has to cross a loop boundary, which
+  # on the CPU backend cost up to ~18% (f64) on batches that need only the
+  # series (lambda below ~200, the common case for count data) at 1e7
+  # elements, ~3-5% at 1e6.
+  series_branch <- function() {
+    # Elements outside both series are given k = 0, whose lower series is 0
+    sum <- poisson_series(nv_ifelse(use_series, k, 0), nv_ifelse(use_series, lambda, 1), upper, is_f32)
+    # The upper series starts at lambda / (k + 1), which underflows for a tiny
+    # enough lambda (below the smallest normal times k + 1), leaving the sum zero
+    # and its log -Inf. The later terms are then below eps of it, so the series
+    # is lambda / (k + 1) to working precision, and its log is taken directly.
+    # Only computed if some element needs it.
+    smallest_normal <- if (is_f32) 2^-126 else 2^-1022
+    underflowed <- upper & (sum < smallest_normal)
+    log_upper_sum <- nv_log(nv_ifelse(upper, sum, 1))
+    log_upper_sum <- skip_unless(nv_any(underflowed), log_upper_sum, function() {
+      nv_ifelse(
+        underflowed,
+        -log_ratio(nv_ifelse(underflowed, k + 1, 1), nv_ifelse(underflowed, lambda, 1), is_f32),
+        log_upper_sum
+      )
+    })
+    log_tail <- log_density + nv_ifelse(upper, log_upper_sum, nv_log1p(sum))
+    # `log_tail` is the log of P(X > k) for the upper series, P(X <= k) for the lower
+    direct <- if (lower_tail) lower else upper
+    from_series <- if (log_p) {
+      nv_ifelse(direct, log_tail, log1mexp(log_tail))
+    } else {
+      nv_ifelse(direct, nv_exp(log_tail), -nv_expm1(log_tail))
+    }
+    from_series
   }
-
-  asymp <- ppois_asymp(
-    nv_ifelse(use_series, 200, k),
-    nv_ifelse(use_series, 200, lambda),
-    lower_tail,
-    log_p,
-    is_f32
-  )
+  from_series <- series_branch()
+  asymp <- skip_unless(nv_any(!use_series), nv_fill_like(k, 0), function() {
+    ppois_asymp(
+      nv_ifelse(use_series, 200, k),
+      nv_ifelse(use_series, 200, lambda),
+      lower_tail,
+      log_p,
+      is_f32
+    )
+  })
   list(value = nv_ifelse(use_series, from_series, asymp), log_density = log_density, use_series = use_series)
 }
 
@@ -951,6 +1065,23 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #' `lambda = 0` is the point mass at zero, and a `lambda` of `Inf` is admitted
 #' as in base R: the probabilities are those of an infinitely distant mass,
 #' and quantiles are `NaN`.
+#'
+#' @section Numerical limits:
+#' On the XLA CPU backend these functions were tested on, subnormal numbers are
+#' treated as zero (other backends have not been checked). There, a `lambda`
+#' below the smallest normal float (`2^-126` in `f32`, `2^-1022` in `f64`) acts
+#' as `lambda = 0`, and a probability or density that would be subnormal is
+#' returned as zero: `nv_dpois(1, 2^-126)` in `f32` is `0`, where base R gives
+#' `2^-126`. On the log scale such values stay finite.
+#'
+#' Above `2^24` in `f32` and `2^53` in `f64` not every whole number is a
+#' float. `nv_qpois` then returns the smallest float \eqn{x} with
+#' \eqn{P(X \le x) \ge p}, which can be one float above base R's answer (base
+#' R's result can correspond to rounding the mathematical quantile to the
+#' available precision). Where no finite float qualifies, which can happen
+#' only at `lambda` equal to the largest float, `nv_qpois` returns the largest
+#' float, as base R does: a saturating convention, and an exception to that
+#' rule.
 #'
 #' @section Gradients:
 #' `nv_dpois` and `nv_ppois` are differentiable in `lambda`; for `nv_ppois`
@@ -1092,6 +1223,7 @@ nv_qpois <- jit(
     lambda <- stop_gradient(args$lambda)
     is_f32 <- op_dtype == "f32"
     eps <- if (is_f32) 2^-23 else 2^-52
+    max_float <- if (is_f32) (2 - 2^-23) * 2^127 else .Machine$double.xmax
 
     # Resolved directly, in base R's order: NaN outside the admissible range,
     # 0 for `lambda = 0` and at the bottom of the probability scale, and Inf
@@ -1111,10 +1243,14 @@ nv_qpois <- jit(
     p <- nv_ifelse(regular, p, if (log_p) -1 else 0.5)
     lambda <- nv_ifelse(regular, lambda, 1)
 
-    # Cornish-Fisher starting value, with the skewness correction
+    # Cornish-Fisher starting value, with the skewness correction. base R rounds
+    # it, but it lands about a half above the quantile of a `p` at a jump, so
+    # rounding often starts the search one too high; rounded down, the
+    # quantile is nearly always the start or the next count, which the search
+    # below settles in two evaluations. The start does not change the answer.
     sigma <- nv_sqrt(lambda)
     z <- nv_qnorm(p, lower_tail = lower_tail, log_p = log_p)
-    y0 <- nv_pmax(nv_round(lambda + sigma * (z + (z * z - 1) / (6 * sigma))), 0)
+    y0 <- nv_pmax(nv_floor(lambda + sigma * (z + (z * z - 1) / (6 * sigma))), 0)
     y0 <- nv_ifelse(nv_is_finite(y0), y0, 0)
 
     # The quantile is the smallest whole y at which this holds. As base R, the
@@ -1152,24 +1288,40 @@ nv_qpois <- jit(
         extra <- nv_pmin(16 * eps * ulps, 0.25) * scale
         threshold <- if (lower_tail) threshold - extra else threshold + extra
       }
-      if (lower_tail) prob >= threshold else prob < threshold
+      # The largest float is taken as satisfying (see `next_probe()`). Below
+      # lambda = the largest float that changes nothing: the condition holds a
+      # few sd above lambda, far less than an ulp there, so the largest float
+      # already satisfies it wherever the search reaches it. At lambda = the
+      # largest float there may be no finite float that satisfies it, and this
+      # returns the largest float instead of Inf: a saturating convention, as
+      # base R's.
+      (if (lower_tail) prob >= threshold else prob < threshold) | (y == max_float)
     }
 
     # Bracket the quantile between `lo` (not satisfied; -1 if none is known)
-    # and `hi` (satisfied; Inf if none is known), galloping away from y0 with
-    # doubling steps until both are known, then bisecting. The first step is
-    # at least an ulp of y0, so it always moves.
+    # and `hi` (satisfied; Inf if none is known), galloping away from y0 until
+    # both are known, then bisecting. The gallop steps are s, s, 2 s, 4 s, ...
+    # (`step` starts at s / 2 and doubles, and moves by its ceiling), so that a
+    # quantile two away is reached without overshooting; s is at least an ulp
+    # of y0, so the first step always moves. Every element pays for as many
+    # evaluations as the slowest one needs. The probe at y0 is made before the
+    # loop: inside it, as the loop's first trip, the program would hold one copy
+    # of the distribution function rather than two and compile faster, but each
+    # call would pay a trip's worth of loop overhead.
     sat0 <- satisfied(y0)
     lo <- nv_ifelse(sat0, -1, y0)
     hi <- nv_ifelse(sat0, y0, Inf)
-    step <- nv_pmax(nv_floor(y0 * (4 * eps)), 1)
+    step <- 0.5 * nv_pmax(nv_floor(y0 * (4 * eps)), 1)
     next_probe <- function(lo, hi, step) {
       up <- hi == Inf
       down <- !up & (lo == -1)
+      move <- nv_ceiling(step)
+      # Galloping up is capped at the largest float, which a step of a few ulps
+      # would otherwise pass straight to Inf near the top of the range
       probe <- nv_ifelse(
         up,
-        lo + step,
-        nv_ifelse(down, nv_pmax(hi - step, 0), nv_floor(lo + 0.5 * (hi - lo)))
+        nv_pmin(lo + move, max_float),
+        nv_ifelse(down, nv_pmax(hi - move, 0), nv_floor(lo + 0.5 * (hi - lo)))
       )
       list(probe = probe, active = (probe > lo) & (probe < hi), gallop = up | down)
     }

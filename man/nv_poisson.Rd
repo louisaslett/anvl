@@ -90,6 +90,25 @@ to \code{1e14}), which is not a guarantee beyond them.
 as in base R: the probabilities are those of an infinitely distant mass,
 and quantiles are \code{NaN}.
 }
+\section{Numerical limits}{
+
+On the XLA CPU backend these functions were tested on, subnormal numbers are
+treated as zero (other backends have not been checked). There, a \code{lambda}
+below the smallest normal float (\code{2^-126} in \code{f32}, \code{2^-1022} in \code{f64}) acts
+as \code{lambda = 0}, and a probability or density that would be subnormal is
+returned as zero: \code{nv_dpois(1, 2^-126)} in \code{f32} is \code{0}, where base R gives
+\code{2^-126}. On the log scale such values stay finite.
+
+Above \code{2^24} in \code{f32} and \code{2^53} in \code{f64} not every whole number is a
+float. \code{nv_qpois} then returns the smallest float \eqn{x} with
+\eqn{P(X \le x) \ge p}, which can be one float above base R's answer (base
+R's result can correspond to rounding the mathematical quantile to the
+available precision). Where no finite float qualifies, which can happen
+only at \code{lambda} equal to the largest float, \code{nv_qpois} returns the largest
+float, as base R does: a saturating convention, and an exception to that
+rule.
+}
+
 \section{Gradients}{
 
 \code{nv_dpois} and \code{nv_ppois} are differentiable in \code{lambda}; for \code{nv_ppois}

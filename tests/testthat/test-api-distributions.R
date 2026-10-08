@@ -1143,11 +1143,24 @@ describe("nv_ppois", {
 
   it("does not depend on the other elements of the array", {
     # The series run in one loop for the whole array, until every element has
-    # converged. An element that converged early must not keep accumulating.
-    k <- 0:60
+    # converged, and an element that converged early must not keep accumulating;
+    # and the series and the asymptotic expansion are each skipped when no
+    # element needs them, which must not change the elements that do. At
+    # lambda = 300 the counts take both. Each element is compared with a batch
+    # of copies of itself of the same length, which needs only its own branch:
+    # XLA can compile arrays of different lengths to code that rounds
+    # differently (by an ulp in f32), which is not what is tested here.
+    lambda <- 300
+    k <- unique(floor(seq(0, 600, length.out = 41)))
     for (dt in c("f32", "f64")) {
-      together <- as.vector(nv_ppois(nv_array(k, dtype = dt), 20))
-      alone <- vapply(k, function(i) as.vector(nv_ppois(nv_array(i, dtype = dt), 20)), numeric(1))
+      together <- as.vector(nv_ppois(nv_array(k, dtype = dt), lambda))
+      alone <- vapply(
+        k,
+        function(i) {
+          as.vector(nv_ppois(nv_array(rep(i, length(k)), dtype = dt), lambda))[1L]
+        },
+        numeric(1)
+      )
       expect_identical(together, alone)
     }
   })
@@ -1584,6 +1597,106 @@ describe("nv_dpois(), nv_ppois() and nv_qpois()", {
         jit(function(x) fn(nv_convert(x, "bf16")))(nv_array(c(0.5, 0.5))),
         "must be a 32- or 64-bit float data type"
       )
+    }
+  })
+})
+
+describe("nv_dpois(), nv_ppois() and nv_qpois() at the ends of the range", {
+  # Found by a sweep over the smallest and largest means and counts each dtype
+  # holds; the regions the accuracy grids above sample never reach them.
+  at <- function(x, dt) nv_array(rep(x, 4), dtype = dt)
+  first <- function(a) as.vector(a)[1L]
+
+  it("the zero count at a tiny mean, in all four tail/scale combinations", {
+    # The finite lower series has no terms at k = 0, but its steps once still
+    # computed n / lambda, which overflows here, and made the zero term NaN
+    for (dt in c("f64", "f32")) {
+      lambda <- if (dt == "f64") 1e-307 else 2^-126
+      for (lt in c(TRUE, FALSE)) {
+        for (lp in c(FALSE, TRUE)) {
+          got <- first(nv_ppois(at(0, dt), at(lambda, dt), lower_tail = lt, log_p = lp))
+          expect_equal(got, ppois(0, lambda, lower.tail = lt, log.p = lp), tolerance = 1e-6, info = paste(dt, lt, lp))
+        }
+      }
+      expect_identical(first(nv_qpois(at(0.5, dt), at(lambda, dt))), 0)
+    }
+  })
+
+  it("the upper tail on the log scale at a tiny mean", {
+    # The upper series starts at lambda / (k + 1), which underflows here; its
+    # log, and with it log P(X > k), was -Inf
+    cases <- list(
+      list(dt = "f64", lambda = 2^-1022, k = c(1, 5, 1e10)),
+      list(dt = "f64", lambda = 1e-300, k = c(1e10, 1e30)),
+      list(dt = "f32", lambda = 2^-126, k = c(1, 5, 1e10)),
+      list(dt = "f32", lambda = 1e-30, k = c(1e10, 1e30))
+    )
+    for (cs in cases) {
+      lambda <- as.vector(nv_array(cs$lambda, dtype = cs$dt))
+      got <- as.vector(nv_ppois(
+        nv_array(cs$k, dtype = cs$dt),
+        nv_array(rep(lambda, length(cs$k)), dtype = cs$dt),
+        lower_tail = FALSE,
+        log_p = TRUE
+      ))
+      want <- ppois(as.vector(nv_array(cs$k, dtype = cs$dt)), lambda, lower.tail = FALSE, log.p = TRUE)
+      expect_equal(got, want, tolerance = if (cs$dt == "f64") 1e-12 else 1e-6, info = cs$dt)
+    }
+    # which the quantile search relies on: every probe used to satisfy it
+    expect_identical(
+      first(nv_qpois(at(-1000, "f32"), at(2^-126, "f32"), lower_tail = FALSE, log_p = TRUE)),
+      qpois(-1000, 2^-126, lower.tail = FALSE, log.p = TRUE)
+    )
+  })
+
+  it("quantiles at the largest means stay finite", {
+    # The upward gallop's first step is a few ulps, which passed straight from
+    # just below the largest float to Inf. At lambda = the float below the
+    # largest, the largest float is the smallest that satisfies the condition
+    # (it holds a few sd above lambda, far less than an ulp there); at lambda =
+    # the largest float, none may, and the largest float is returned by a
+    # saturating convention, as base R does.
+    for (dt in c("f64", "f32")) {
+      top <- if (dt == "f32") (2 - 2^-23) * 2^127 else .Machine$double.xmax
+      ulp_below <- if (dt == "f32") top * (1 - 2^-24) else top * (1 - 2^-53)
+      for (lambda in c(top, ulp_below)) {
+        lambda <- as.vector(nv_array(lambda, dtype = dt))
+        for (lt in c(TRUE, FALSE)) {
+          for (lp in c(FALSE, TRUE)) {
+            # a probability whose quantile lies above lambda
+            p <- if (lt) 0.9 else 0.1
+            if (lp) {
+              p <- log(p)
+            }
+            got <- first(nv_qpois(at(p, dt), at(lambda, dt), lower_tail = lt, log_p = lp))
+            expect_identical(got, top, info = paste(dt, lambda == top, lt, lp))
+          }
+        }
+      }
+    }
+  })
+
+  it("the log density near the largest count, on both sides of the mean", {
+    # Above the mean, x log(x / lambda) + lambda overflowed (it is now summed as
+    # x log(x / lambda) + (lambda - x)); below it, neither grouping can. base R
+    # itself overflows at the f64 cases; the reference is the saddle point form,
+    # whose stirlerr and log(2 pi x) / 2 are negligible here. The tail beyond x
+    # is then within rounding of the density.
+    for (dt in c("f32", "f64")) {
+      top <- if (dt == "f32") (2 - 2^-23) * 2^127 else .Machine$double.xmax
+      for (above in c(TRUE, FALSE)) {
+        x <- as.vector(nv_array(if (above) top else top / 2, dtype = dt))
+        lambda <- as.vector(nv_array(if (above) top / 2 else top, dtype = dt))
+        want <- -(x * log(x / lambda) + (lambda - x))
+        info <- paste(dt, if (above) "above" else "below")
+        expect_equal(first(nv_dpois(at(x, dt), at(lambda, dt), log = TRUE)), want, tolerance = 1e-6, info = info)
+        expect_equal(
+          first(nv_ppois(at(x, dt), at(lambda, dt), lower_tail = !above, log_p = TRUE)),
+          want,
+          tolerance = 1e-6,
+          info = info
+        )
+      }
     }
   })
 })
