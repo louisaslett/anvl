@@ -4,6 +4,8 @@
   create an array of the data type in their name.
 * New functions for the binomial distribution: `nv_dbinom()`, `nv_pbinom()` and
   `nv_qbinom()`.
+* New functions for the exponential distribution: `nv_dexp()`, `nv_pexp()`,
+  and `nv_qexp()`.
 
 # anvl 0.5.1
 
