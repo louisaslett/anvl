@@ -1623,7 +1623,14 @@ nv_qbinom <- jit(
     q_safe <- 1 - prob_safe
     sigma <- nv_sqrt(size_safe * prob_safe * q_safe)
     gamma <- (q_safe - prob_safe) / sigma
+    # z is clamped to [-40, 40], beyond any probability on the plain scale: at
+    # an extreme log probability z * z overflows, or nv_qnorm() itself returns
+    # NaN (below log p = -8.9e307), either of which would make the start NaN
+    # and stop the search where it began. A NaN z only arises from a vanishing
+    # probability in the tail asked for, so it takes that tail's end. Out there
+    # the start is only a guess, and the search walks from it.
     z <- nv_qnorm(p_safe, lower_tail = lower_tail, log_p = log_p)
+    z <- nv_ifelse(nv_is_nan(z), if (lower_tail) -40 else 40, nv_pmin(nv_pmax(z, -40), 40))
     start <- nv_round(size_safe * prob_safe + sigma * (z + gamma * (z * z - 1) / 6))
 
     # The quantile lies in (lo, hi]: `lo` is below it, `hi` at or above it.

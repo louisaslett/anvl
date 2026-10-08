@@ -1404,6 +1404,32 @@ cmd_selftest <- function(opt) {
         sp_all$nv_qexp$ref_grad(2^-1074, list(rate = pi * 1e-10), list(lower_tail = TRUE, log_p = FALSE))$rate,
         -0x1.193907f0a4bb8p-1011
       )
+    ),
+    check(
+      "dbinom's stable density at a subnormal size * prob is 5.2e-309, not 0: x / (n p) overflows there, so the logs are differenced",
+      near(
+        sp_all$nv_dbinom$ref_stable(105554688211119 * 2^-1074, list(x = 1, size = 10), list(log = FALSE)),
+        1055546882111190 * 2^-1074,
+        n = 256
+      )
+    ),
+    check(
+      "dbinom's stable density at x = 0 is (1 - p)^n where 1 - p is exact, not exp(n log1p(-p))",
+      identical(sp_all$nv_dbinom$ref_stable(0.5, list(x = 0, size = 1000), list(log = FALSE)), 2^-1000)
+    ),
+    check(
+      "pbinom's lower log_p stable reference at q = 25.5 (size 1e6, prob 0.3) is finite where base R's is -Inf",
+      near(
+        sp_all$nv_pbinom$ref_stable(25.5, list(size = 1e6, prob = 0.3), list(lower_tail = TRUE, log_p = TRUE)),
+        -0x1.5c0e2f8499441p+18
+      )
+    ),
+    check(
+      "pbinom's lower log_p stable reference at q = 37.5 (size 1e6, prob 1e-3) is -844, where base R gives a finite -603",
+      near(
+        sp_all$nv_pbinom$ref_stable(37.5, list(size = 1e6, prob = 1e-3), list(lower_tail = TRUE, log_p = TRUE)),
+        -0x1.a615c35146fcp+9
+      )
     )
   )
 

@@ -2025,6 +2025,31 @@ describe("nv_qbinom", {
     expect_equal(as.vector(out), c(qbinom(0.1, 10, 0.3), NaN, qbinom(0.9, 30, 0.3)))
   })
 
+  it("finds the quantile at extreme log probabilities, where the starting guess overflows", {
+    # z * z from the normal quantile overflows here; the search must still run
+    for (dt in c("f32", "f64")) {
+      lp <- if (dt == "f32") c(-1e30, -1.7e38) else c(-1e300, -9e307)
+      for (args in list(c(20, 0.3), c(1e6, 0.3))) {
+        expect_equal(
+          as.vector(nv_qbinom(nv_array(lp, dtype = dt), size = args[[1L]], prob = args[[2L]], log_p = TRUE)),
+          qbinom(lp, size = args[[1L]], prob = args[[2L]], log.p = TRUE),
+          info = paste(dt, args[[1L]])
+        )
+        expect_equal(
+          as.vector(nv_qbinom(
+            nv_array(lp, dtype = dt),
+            size = args[[1L]],
+            prob = args[[2L]],
+            lower_tail = FALSE,
+            log_p = TRUE
+          )),
+          qbinom(lp, size = args[[1L]], prob = args[[2L]], lower.tail = FALSE, log.p = TRUE),
+          info = paste(dt, args[[1L]], "upper")
+        )
+      }
+    }
+  })
+
   it("matches base R qbinom() where size is huge but size * prob is about 1", {
     for (dt in c("f32", "f64")) {
       for (size in c(1e10, 1e20)) {
