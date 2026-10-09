@@ -1721,7 +1721,6 @@ run_points <- function(fun, ref, dtype, outputs, pts, domain = c(-Inf, Inf), sta
 ## reducers hold rather than the finished tables (see sweep_state()). Every
 ## chunk is seeded on its own, so the parts of a cell, absorbed in order by
 ## sweep_assemble(), give exactly what the cell gives when swept in one piece.
-## `on_chunk(k)`, when given, is called after each chunk.
 run_sweep <- function(
   fun,
   ref,
@@ -1734,8 +1733,7 @@ run_sweep <- function(
   ctx = NULL,
   stable = NULL,
   chunks = NULL,
-  finish = TRUE,
-  on_chunk = NULL
+  finish = TRUE
 ) {
   plan <- sweep_plan(dtype, depth)
   ## A caller that has already evaluated the exact points passes the
@@ -1782,7 +1780,6 @@ run_sweep <- function(
       }
       if (progress) cli::cli_progress_update()
     }
-    if (!is.null(on_chunk)) on_chunk(k)
   }
   elapsed <- proc.time()[["elapsed"]] - t0
   if (progress) {

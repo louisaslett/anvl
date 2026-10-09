@@ -97,6 +97,17 @@ jax_dtype <- function(dtype) {
   if (dtype == "f32") jnp$float32 else jnp$float64
 }
 
+## An R vector as a JAX array, through NumPy: reticulate hands a bare R vector
+## to Python as a list, which JAX then reads value by value -- 0.4 s for a
+## chunk of 2^20 samples, against 1 ms. A single value stays a scalar.
+jax_array <- function(x, dtype) {
+  jnp <- reticulate::import("jax.numpy", convert = FALSE)
+  if (length(x) > 1L) {
+    x <- reticulate::np_array(x)
+  }
+  jnp$asarray(x, dtype = jax_dtype(dtype))
+}
+
 ## jax.scipy.stats.binom has pmf and logpmf only, by the direct formula
 ## lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1) + k log p + (n - k) log1p(-p).
 ## It has no distribution or quantile function. The distribution function
@@ -113,19 +124,28 @@ jax_dtype <- function(dtype) {
 ## the swept argument first.
 jax_binom <- function() {
   jax_init()
-  reticulate::py_run_string(
-    "
+  ## Defined once per process, and each twin jitted once per variant
+  ## (lru_cache): rebuilt on every call, JAX re-traced every chunk, at
+  ## ~0.5 s a call against ~0.02 s. The program, and so every output, is
+  ## the same either way.
+  if (!reticulate::py_has_attr(reticulate::py, "_binom_density_value")) {
+    reticulate::py_run_string(
+      "
 import jax
+import functools
 import jax.numpy as jnp
 from jax.scipy.stats import binom as _b
 from jax.scipy.special import betainc as _betainc
+@functools.lru_cache(maxsize=None)
 def _binom_density_value(log):
     f = _b.logpmf if log else _b.pmf
     return jax.jit(lambda p, k, n: f(k, n, p))
+@functools.lru_cache(maxsize=None)
 def _binom_density_grad(log):
     f = _b.logpmf if log else _b.pmf
     g = jax.grad(lambda p, k, n: f(k, n, p), argnums=0)
     return jax.jit(jax.vmap(g, in_axes=(0, None, None)))
+@functools.lru_cache(maxsize=None)
 def _binom_cdf(lower, log):
     def f(q, n, p):
         k = jnp.floor(q + 1e-7)
@@ -141,14 +161,12 @@ def _binom_cdf(lower, log):
         return jnp.log(v) if log else v
     return jax.jit(f)
 "
-  )
+    )
+  }
   invisible(TRUE)
 }
 
-jax_scalar <- function(v, dtype) {
-  jnp <- reticulate::import("jax.numpy", convert = FALSE)
-  jnp$asarray(v, dtype = jax_dtype(dtype))
-}
+jax_scalar <- function(v, dtype) jax_array(v, dtype)
 
 jax_dbinom_value <- function(pr, dtype, p, log) {
   jax_binom()

@@ -29,7 +29,8 @@
 ##
 ##   <queue>/plan.rds             the plan: cells, parts, run ID, depth
 ##   <queue>/claims/<part>.<n>/   attempt n at a part; its mtime is a
-##                                heartbeat, touched as the part progresses
+##                                heartbeat, touched every minute while the
+##                                worker lives (see start_heartbeat())
 ##   <queue>/done/<part>.rds      the part's state, or its error
 ##   <queue>/done/<part>~<s>~<e>  an empty marker, written after the state:
 ##                                the part's cost in seconds and whether it
@@ -39,8 +40,9 @@
 ##   <queue>/final/<cell key>/    the claim to assemble a cell; `done` inside
 ##                                once it is in the store
 ##
-## A claim whose heartbeat is older than --stale-minutes belongs to a worker
-## that died, and the next worker takes the part over as attempt n + 1. A part
+## A claim whose heartbeat is older than --stale-minutes (default 10) belongs
+## to a worker that died, and the next worker takes the part over as attempt
+## n + 1. A part
 ## swept twice (a worker that was only slow) is swept identically, so the
 ## second write changes nothing that matters.
 ## ---------------------------------------------------------------------------
@@ -337,9 +339,48 @@ claim_next <- function(q, pl, last_cell, until, stale_sec, owner) {
 
 ## ---- working ---------------------------------------------------------------
 
+## A claim's heartbeat: a background shell loop that touches the claim every
+## `every` seconds for as long as this R process is alive and the claim's
+## `beating` file exists. It cannot run in R itself: R is blocked inside one
+## chunk's evaluation, and a single chunk of a slow cell can take longer than
+## any sensible stale threshold -- a heartbeat between chunks once made live
+## workers look dead, and four of them swept one part at once. A worker killed
+## outright (out of memory, say) stops beating within `every` seconds. Returns
+## the `beating` file; removing it (stop_heartbeat()) ends the loop.
+start_heartbeat <- function(claim, every = 60) {
+  beating <- file.path(claim, "beating")
+  file.create(beating)
+  loop <- sprintf(
+    "while [ -e %s ] && kill -0 %d 2>/dev/null; do touch -c %s; sleep %d; done",
+    shQuote(beating),
+    Sys.getpid(),
+    shQuote(claim),
+    as.integer(every)
+  )
+  system2("sh", c("-c", shQuote(loop)), wait = FALSE, stdout = FALSE, stderr = FALSE)
+  beating
+}
+
+stop_heartbeat <- function(beating) unlink(beating)
+
+## This process's memory in MB: resident now and its peak, as Linux reports
+## them in /proc/self/status (VmRSS, VmHWM) -- what a scheduler's memory limit
+## and sacct's MaxRSS see. Elsewhere, resident from `ps` and no peak.
+process_memory <- function() {
+  f <- "/proc/self/status"
+  if (file.exists(f)) {
+    l <- readLines(f, warn = FALSE)
+    kb <- function(k) as.numeric(sub("^\\S+:\\s*([0-9]+).*", "\\1", grep(paste0("^", k, ":"), l, value = TRUE)[1L]))
+    return(c(now = kb("VmRSS"), peak = kb("VmHWM")) / 1024)
+  }
+  rss <- suppressWarnings(as.numeric(system2("ps", c("-o", "rss=", "-p", Sys.getpid()), stdout = TRUE)))
+  c(now = rss / 1024, peak = NA_real_)
+}
+
 ## The worker's own description, as it goes into its claims and parts.
 worker_owner <- function() {
-  job <- Sys.getenv("SLURM_JOB_ID", "")
+  ## an array task as Slurm's own tools name it, <array job>_<task>
+  job <- Sys.getenv("SLURM_ARRAY_JOB_ID", Sys.getenv("SLURM_JOB_ID", ""))
   task <- Sys.getenv("SLURM_ARRAY_TASK_ID", "")
   sprintf(
     "%s pid %d%s",
@@ -398,7 +439,7 @@ cmd_work <- function(opt) {
   ensure_run_row(dir, pv)
 
   until <- opt$until %||% Inf
-  stale_sec <- 60 * (opt$stale_minutes %||% 30)
+  stale_sec <- 60 * (opt$stale_minutes %||% 10)
   owner <- worker_owner()
   wopt <- plan_opt(pl)
   cat(sprintf("worker %s | run %s | depth %s | store %s\n", owner, pl$run_id, pl$depth, dir))
@@ -423,18 +464,11 @@ cmd_work <- function(opt) {
     names(setups) <- u$cell_id
     last <- u$cell_id
 
-    ## the heartbeat: at most once a minute, whatever the chunk rate
-    beat <- 0
-    heartbeat <- function(k) {
-      now <- as.numeric(Sys.time())
-      if (now - beat >= 60) {
-        Sys.setFileTime(u$claim, Sys.time())
-        beat <<- now
-      }
-    }
+    beat <- start_heartbeat(u$claim)
     t0 <- Sys.time()
-    out <- cell_sweep(cs, row, wopt, chunks = u$from:u$to, finish = FALSE, on_chunk = heartbeat)
+    out <- cell_sweep(cs, row, wopt, chunks = u$from:u$to, finish = FALSE)
     elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    stop_heartbeat(beat)
     failed <- inherits(out, "sweep_error")
     if (!failed && u$part > 1L) {
       attr(out, "points") <- NULL # the first part's are the cell's
@@ -460,8 +494,10 @@ cmd_work <- function(opt) {
     } else {
       n_ok <- n_ok + 1L
     }
+    ## memory after every part, so a worker's growth can be read off its log
+    mem <- process_memory()
     cat(sprintf(
-      "[%s] %-5s %s  part %d/%d, chunks %d-%d, %.0f s (expected %.0f)%s\n",
+      "[%s] %-5s %s  part %d/%d, chunks %d-%d, %.0f s (expected %.0f), mem %.0f MB (peak %.0f)%s\n",
       u$unit,
       if (failed) "ERROR" else "OK",
       u$cell_id,
@@ -471,6 +507,8 @@ cmd_work <- function(opt) {
       u$to,
       elapsed,
       u$est,
+      mem[["now"]],
+      mem[["peak"]],
       if (failed) paste0("\n        ", strsplit(as.character(out), "\n", fixed = TRUE)[[1L]][1L]) else ""
     ))
     fin <- finalise_ready(q, pl, specs, dir, pv, cells = u$cell_id)
@@ -479,6 +517,7 @@ cmd_work <- function(opt) {
     }
   }
   cat(sprintf("\nworker done: %d part(s) ok, %d error; stopped because %s\n", n_ok, n_err, reason))
+  cat(sprintf("peak memory %.0f MB\n", process_memory()[["peak"]]))
   invisible(n_err)
 }
 
@@ -600,7 +639,7 @@ cmd_queue <- function(opt) {
   if (isTRUE(opt$release)) {
     queue_release(q, pl)
   }
-  st <- queue_state(q, pl, 60 * (opt$stale_minutes %||% 30))
+  st <- queue_state(q, pl, 60 * (opt$stale_minutes %||% 10))
   fin <- file.exists(queue_path(q, "final", cell_key(pl$cells$cell_id), "done"))
   ready <- tapply(st$done, st$cell_id, all)[pl$cells$cell_id]
 

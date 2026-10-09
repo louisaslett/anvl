@@ -108,12 +108,18 @@ cell's last part assembles the cell into its store. Workers share the queue
 directory and, normally, one store; every file is written once under a unique
 name.
 
-**Failures.** A claim carries a heartbeat, touched at most once a minute as
-the part progresses. A claim silent for longer than `--stale-minutes` (default
-30) belongs to a dead worker, and the next worker takes the part over. Set it
-above the slowest single chunk. When no worker is running -- say, every one of
-them hit its time limit -- `queue --release` drops the claims of unfinished
-parts at once, so that new workers start on them immediately. A part that
+**Failures.** A claim carries a heartbeat: a background loop touches it every
+minute for as long as its worker's process is alive, however long one chunk
+takes. A claim silent for longer than `--stale-minutes` (default 10) belongs
+to a dead worker -- killed for running out of memory, say -- and the next
+worker takes the part over. A heartbeat that only ticked between chunks once
+made live workers on a slow cell look dead, and four of them swept one part
+side by side; that cannot happen now. Keep the threshold a few minutes above
+the one-minute beat, since node clocks can differ.
+
+When no worker is running -- say, every one of them hit its time limit --
+`queue --release` drops the claims of unfinished parts at once, so that new
+workers start on them immediately. A part that
 errors is recorded, and its cell is recorded as errored, as `run` would. To
 retry, delete the part's files from `done/` and its cell's directory from
 `final/`.
@@ -130,7 +136,8 @@ The queue directory holds:
 
 ```text
 plan.rds               the cells, their parts, the run ID and depth
-claims/<part>.<n>/     attempt n at a part; its mtime is the heartbeat
+claims/<part>.<n>/     attempt n at a part; its mtime is the heartbeat, its
+                       owner file the worker (host, pid, Slurm task)
 done/<part>.rds        the part's reducer state, or its error
 done/<part>~<s>~<e>    an empty marker: its cost in seconds, whether it erred
 final/<cell key>/done  the cell is in the store

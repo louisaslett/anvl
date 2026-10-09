@@ -292,7 +292,7 @@ cell_setup <- function(spec, row) {
 ## sweep with the points as attribute "points", or a "sweep_error". A part
 ## evaluates the points too: they give the behaviour at +-0 that classifies
 ## its samples, and the parts of a cell must classify alike.
-cell_sweep <- function(cs, row, opt, chunks = NULL, finish = TRUE, on_chunk = NULL) {
+cell_sweep <- function(cs, row, opt, chunks = NULL, finish = TRUE) {
   cf <- cs$cf
   tryCatch(
     {
@@ -309,8 +309,7 @@ cell_sweep <- function(cs, row, opt, chunks = NULL, finish = TRUE, on_chunk = NU
         ctx = attr(pr, "context"),
         stable = cf$stable,
         chunks = chunks,
-        finish = finish,
-        on_chunk = on_chunk
+        finish = finish
       )
       attr(pr, "context") <- NULL
       attr(sw, "points") <- pr
@@ -1838,6 +1837,23 @@ cmd_selftest <- function(opt) {
         claims$d$part$attempt == 1L &&
         grepl("\\.2$", claims$d$part$claim)
     ),
+    check("a claim's heartbeat beats while R is busy in one long call, and stops when told", {
+      cl <- tempfile("selftest-claim")
+      dir.create(cl)
+      old <- Sys.time() - 3600
+      age <- function() as.numeric(Sys.time()) - as.numeric(file.mtime(cl))
+      Sys.setFileTime(cl, old)
+      b <- start_heartbeat(cl, every = 1)
+      Sys.sleep(2.5) # R blocked, as in a long chunk
+      fresh <- age() < 3
+      stop_heartbeat(b)
+      Sys.sleep(1.5)
+      Sys.setFileTime(cl, old)
+      Sys.sleep(1.5)
+      stopped <- age() > 3000
+      unlink(cl, recursive = TRUE)
+      fresh && stopped
+    }),
     check("a later cost source overrides an earlier one, whatever the depth; within one, the plan's depth wins", {
       cst <- data.frame(
         cell_id = c("a", "a", "b", "d", "d"),
