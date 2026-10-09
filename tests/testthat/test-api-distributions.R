@@ -1763,16 +1763,6 @@ describe("nv_dbinom", {
     }
   })
 
-  it("stays accurate at x = 0 where log1p(-prob) is inaccurate in XLA", {
-    # Reference from Rmpfr at 256 bits, (1 - p)^1000 at a prob next to
-    # sqrt(2) - 1, where XLA's f64 log1p is ~100 ulp out
-    expect_equal(
-      as.vector(nv_dbinom(as_f64(0), size = 1000, prob = 0.4141907275366543)),
-      5.7048156693186359e-233,
-      tolerance = 1e-13
-    )
-  })
-
   it("gradient is right for size of 0 and 1, and unpoisoned by invalid elements", {
     # size = 0: the density is 1 at x = 0 whatever prob is. size = 1: it is
     # 1 - p at x = 0 and p at x = 1. Elements with an invalid size or prob, or

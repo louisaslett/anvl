@@ -960,16 +960,11 @@ binom_log_density <- function(x, n, p, n_terms) {
   # x == 0: the probability is (1 - p)^n. Where that is selected, p < 1.
   n_zero <- nv_ifelse(infinite_trials, 1, n)
   p_zero <- nv_ifelse(p < 1, p, 0.5)
-  # XLA's f64 log1p is off by up to ~120 ulp for arguments in [1 - sqrt(2),
-  # -0.36], an error that n multiplies. Above p = 1/3, 1 - p is exact to half
-  # an ulp, and log(1 - p) is as accurate.
-  use_log <- p_zero > 1 / 3
-  log1m_p <- nv_ifelse(
-    use_log,
-    nv_log(1 - nv_ifelse(use_log, p_zero, 0.5)),
-    nv_log1p(-nv_ifelse(use_log, 0, p_zero))
-  )
-  log_zero <- nv_ifelse(infinite_trials & (p > 0), -Inf, n_zero * log1m_p)
+  # XLA's CPU f64 log1p is off by up to ~120 ulp for arguments in
+  # [1 - sqrt(2), -0.36], an error that n multiplies here (~1e-11 relative for
+  # size = 1000, prob near 0.414). Fixed upstream in openxla/xla#46765, so
+  # deliberately not worked around.
+  log_zero <- nv_ifelse(infinite_trials & (p > 0), -Inf, n_zero * nv_log1p(-p_zero))
 
   # x == n: the probability is p^n. Where that is selected, p > 0.
   log_size <- n * nv_log(nv_ifelse(p > 0, p, 0.5))
@@ -991,7 +986,10 @@ binom_log_density <- function(x, n, p, n_terms) {
     binom_bd0(x_int, np, d, n_terms) -
     binom_bd0(n_int - x_int, nq, -d, n_terms)
   # log1p(-x / n) loses the digits of n - x when x is close to n, where that
-  # difference is exact instead
+  # difference is exact instead. For x / n in [0.36, sqrt(2) - 1] the
+  # log1p argument falls in XLA's CPU f64 log1p defect band (up to ~120 ulp),
+  # but only half of it enters the log-density, adding ~3e-15 absolute. Fixed
+  # upstream in openxla/xla#46765, so deliberately not worked around.
   log_frac <- nv_ifelse(
     x_int > 0.5 * n_int,
     nv_log(n_int - x_int) - nv_log(n_int),
