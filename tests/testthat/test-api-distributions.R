@@ -1750,6 +1750,29 @@ describe("nv_dbinom", {
     expect_equal(g, c(-10, 10, 10, -10, 0, 0, 0, 0))
   })
 
+  it("gradient stays right for a tiny prob whose density is still representable", {
+    # d/dp 10 p (1 - p)^9 is about 10 near p = 0. The density there is about
+    # 10 p, so the gradient must not be scaled by it before the 1 / p from the
+    # log-density is applied, which would underflow.
+    for (dt in c("f32", "f64")) {
+      prob <- if (dt == "f32") c(1e-30, 1e-20, 1e-15) else c(2.3e-308, 1e-300, 1e-200, 1e-155, 1e-150)
+      prob <- as.vector(nv_array(prob, dtype = dt))
+      f <- function(prob) nv_sum(nv_dbinom(nv_scalar(1, dtype = dt), size = 10, prob = prob))
+      g <- as.vector(jit(gradient(f, wrt = "prob"))(nv_array(prob, dtype = dt))[[1L]])
+      expect_equal(g, 10 * (1 - prob)^8 * (1 - 10 * prob), tolerance = if (dt == "f32") 1e-5 else 1e-12, info = dt)
+    }
+  })
+
+  it("stays accurate at x = 0 where log1p(-prob) is inaccurate in XLA", {
+    # Reference from Rmpfr at 256 bits, (1 - p)^1000 at a prob next to
+    # sqrt(2) - 1, where XLA's f64 log1p is ~100 ulp out
+    expect_equal(
+      as.vector(nv_dbinom(as_f64(0), size = 1000, prob = 0.4141907275366543)),
+      5.7048156693186359e-233,
+      tolerance = 1e-13
+    )
+  })
+
   it("gradient is right for size of 0 and 1, and unpoisoned by invalid elements", {
     # size = 0: the density is 1 at x = 0 whatever prob is. size = 1: it is
     # 1 - p at x = 0 and p at x = 1. Elements with an invalid size or prob, or
@@ -1925,6 +1948,18 @@ describe("nv_pbinom", {
     )
   })
 
+  it("applies base R's fuzz without rounding at f32", {
+    # At f32, q + 1e-7 would round 1 - 2^-23 up to 1
+    q <- c(1 - 2^-23, 2 - 2^-23, 3 - 2^-22, 1 - 1e-7)
+    prob <- as.vector(nv_array(0.3, dtype = "f32"))
+    q32 <- as.vector(nv_array(q, dtype = "f32"))
+    expect_equal(
+      as.vector(nv_pbinom(nv_array(q, dtype = "f32"), size = 20, prob = prob)),
+      pbinom(q32, size = 20, prob = prob),
+      tolerance = 1e-5
+    )
+  })
+
   it("matches base R pbinom() off the support and for degenerate, invalid, infinite and NaN parameters", {
     q <- c(-Inf, -1, 0, 2.5, 3, 10, 11, Inf, NaN)
     combos <- expand.grid(lt = c(TRUE, FALSE), lp = c(FALSE, TRUE))
@@ -2047,6 +2082,19 @@ describe("nv_qbinom", {
           info = paste(dt, args[[1L]], "upper")
         )
       }
+    }
+  })
+
+  it("finds the quantile of the smallest normal probability", {
+    # The fuzz on p would take it subnormal, where XLA flushes it to zero
+    for (dt in c("f32", "f64")) {
+      p <- if (dt == "f32") c(2^-126, 2^-125) else c(2^-1022, 2^-1021)
+      prob <- as.vector(nv_array(0.3, dtype = dt))
+      expect_equal(
+        as.vector(nv_qbinom(nv_array(p, dtype = dt), size = 1e6, prob = prob)),
+        qbinom(p, size = 1e6, prob = prob),
+        info = dt
+      )
     }
   })
 

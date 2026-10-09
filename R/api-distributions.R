@@ -930,11 +930,15 @@ binom_bd0 <- function(x, np, d, n_terms) {
   tail <- horner(w, 1 / (2 * rev(seq_len(n_terms)) + 1))
   series <- d * v + 2 * x * v * w * tail
 
-  # x / np cannot overflow: in `binom_log_density()` x <= n, so x / np <= 1 / p
-  # (and (n - x) / nq <= 1 / q) for any normal p (and q, which is never
-  # subnormal). A subnormal p is flushed to zero by XLA before it gets here.
-  log_ratio <- nv_log(x / np)
-  direct <- nv_ifelse(x > np, x * (log_ratio - 1) + np, x * log_ratio + np - x)
+  # The log of the ratio is taken with the ratio at most 1. Its derivative is
+  # then the reciprocal of a number no larger than n, which the gradient of the
+  # density can be scaled by without underflowing; the reciprocal of
+  # x / np for x much larger than np underflows the gradient of a tiny density.
+  # Neither ratio overflows nor turns subnormal: in `binom_log_density()`
+  # x <= n, so p <= np / x and x / np <= 1 / p (and likewise for q) for any
+  # normal p (and q, which is never subnormal). A subnormal p is flushed to zero
+  # by XLA before it gets here.
+  direct <- nv_ifelse(x > np, np - x * (nv_log(np / x) + 1), x * nv_log(x / np) + np - x)
 
   nv_ifelse(use_series, series, direct)
 }
@@ -956,7 +960,16 @@ binom_log_density <- function(x, n, p, n_terms) {
   # x == 0: the probability is (1 - p)^n. Where that is selected, p < 1.
   n_zero <- nv_ifelse(infinite_trials, 1, n)
   p_zero <- nv_ifelse(p < 1, p, 0.5)
-  log_zero <- nv_ifelse(infinite_trials & (p > 0), -Inf, n_zero * nv_log1p(-p_zero))
+  # XLA's f64 log1p is off by up to ~120 ulp for arguments in [1 - sqrt(2),
+  # -0.36], an error that n multiplies. Above p = 1/3, 1 - p is exact to half
+  # an ulp, and log(1 - p) is as accurate.
+  use_log <- p_zero > 1 / 3
+  log1m_p <- nv_ifelse(
+    use_log,
+    nv_log(1 - nv_ifelse(use_log, p_zero, 0.5)),
+    nv_log1p(-nv_ifelse(use_log, 0, p_zero))
+  )
+  log_zero <- nv_ifelse(infinite_trials & (p > 0), -Inf, n_zero * log1m_p)
 
   # x == n: the probability is p^n. Where that is selected, p > 0.
   log_size <- n * nv_log(nv_ifelse(p > 0, p, 0.5))
@@ -1517,8 +1530,16 @@ nv_pbinom <- jit(
       (prob > 1)
     invalid <- invalid_param | nv_is_nan(q)
     size <- nv_round(size)
-    # base R's fuzz, so that a q a hair below a whole number counts as it
-    k <- nv_floor(q + 1e-7)
+    # base R's fuzz, so that a q a hair below a whole number counts as it. At
+    # f32, q + 1e-7 rounds up to the next whole number from as far as half an
+    # ulp below it, so the gap to it is tested instead: (k + 1) - q is exact
+    # wherever it can be small.
+    k <- if (op_dtype == "f32") {
+      k_floor <- nv_floor(q)
+      nv_ifelse((k_floor + 1) - q <= 1e-7, k_floor + 1, k_floor)
+    } else {
+      nv_floor(q + 1e-7)
+    }
 
     # Below the support, at or above `size`, and at `prob` of 0 or 1 the
     # distribution function is resolved directly, in base R's order. Elsewhere
@@ -1606,7 +1627,10 @@ nv_qbinom <- jit(
       fuzzed <- p_safe * (if (lower_tail) 1 + 2 * eps else 1 - 2 * eps)
       nv_ifelse(nv_is_finite(fuzzed), fuzzed, p_safe)
     } else if (lower_tail) {
-      p_safe * (1 - 8 * eps)
+      # Just above the smallest normal number the fuzz makes p subnormal, which
+      # XLA flushes to zero; p is left as it is there
+      fuzzed <- p_safe * (1 - 8 * eps)
+      nv_ifelse(fuzzed > 0, fuzzed, p_safe)
     } else {
       nv_ifelse(1 - p_safe > 32 * eps, p_safe * (1 + 8 * eps), p_safe)
     }
