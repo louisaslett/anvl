@@ -882,7 +882,7 @@ sub_exact_prod <- function(c, a, b) {
 # Stirling's formula error, log(n!) - log(sqrt(2 pi n) (n / e)^n), for whole
 # n >= 1, as in R's `stirlerr()`. Up to n = 15 the exact values are tabulated;
 # above that the series in 1 / n^2 has converged to double precision by its
-# seventh term, which is the term count R uses there.
+# seventh term, which is the term count R uses.
 binom_stirlerr <- function(n) {
   series <- horner(1 / (n * n), stirlerr_series) / n
   Reduce(
@@ -894,8 +894,15 @@ binom_stirlerr <- function(n) {
 
 # 1/12 - 1/(360 n^2) + 1/(1260 n^4) - ..., as a polynomial in 1 / n^2, highest
 # power first
+# See `src/nmath/stirlerr.c` in R source code for values in `stirlerr_series`
+# and `stirlerr_table`
 stirlerr_series <- c(1 / 156, -691 / 360360, 1 / 1188, -1 / 1680, 1 / 1260, -1 / 360, 1 / 12)
 
+# Only whole-number entries from R's sferr_halves table are needed here:
+# the binomial calls stirlerr at n, x, and n - x, all positive whole numbers.
+# Revisit before reusing this helper for other distributions: Student's t
+# needs half-integer (and, for non-whole degrees of freedom, general real)
+# arguments, which this helper is not designed to handle.
 stirlerr_table <- c(
   0.0810614667953272582196702,
   0.0413406959554092940938221,
@@ -914,11 +921,15 @@ stirlerr_table <- c(
   0.005554733551962801371038690
 )
 
-# Deviance term x log(x / np) + np - x of Loader's saddle point expansion, as in
-# R's `bd0()`, for x > 0 and np > 0, given d = x - np computed without rounding
-# np first. Close to np this cancels, so it is summed as the series in
-# v = d / (x + np) instead. There |v| < 0.1, so the series has converged after
-# `n_terms` terms: 8 reach double precision, 4 single.
+# Compute x * log(x / np) + np - x for positive x and np, as in base R's
+# internal bd0() function. This is a term in Loader's saddle-point formula
+# for the binomial probability.
+# The caller supplies d = x - n*p, calculated more accurately than subtracting
+# the rounded product np from x.
+#
+# Near x = np, the direct formula subtracts nearly equal terms and loses
+# precision. Instead, use a series in v = d / (x + np). We use it only when
+# |v| < 0.1, where 4 correction terms suffice for f32 and 8 for f64.
 binom_bd0 <- function(x, np, d, n_terms) {
   use_series <- nv_abs(d) < 0.1 * (x + np)
 
@@ -928,14 +939,15 @@ binom_bd0 <- function(x, np, d, n_terms) {
   tail <- horner(w, 1 / (2 * rev(seq_len(n_terms)) + 1))
   series <- d * v + 2 * x * v * w * tail
 
-  # The log of the ratio is taken with the ratio at most 1. Its derivative is
-  # then the reciprocal of a number no larger than n, which the gradient of the
-  # density can be scaled by without underflowing; the reciprocal of
-  # x / np for x much larger than np underflows the gradient of a tiny density.
-  # Neither ratio overflows nor turns subnormal: in `binom_log_density()`
-  # x <= n, so p <= np / x and x / np <= 1 / p (and likewise for q) for any
-  # normal p (and q, which is never subnormal). A subnormal p is flushed to zero
-  # by XLA before it gets here.
+  # Use whichever of np / x and x / np is <= 1 as the log argument.
+  # Both forms give the same result, but this choice helps preserve gradients:
+  # log(r) has derivative 1/r, so a large r introduces a tiny factor that can
+  # underflow when multiplied by an already tiny probability gradient.
+  #
+  # The binomial caller has 1 <= x <= n and np = n*p. For a normal positive p,
+  # these bounds keep both ratios from overflowing or becoming subnormal.
+  # The same holds for the failure counts, using 1-p instead of p.
+  # XLA treats a subnormal p as zero, which the caller handles separately.
   direct <- nv_ifelse(x > np, np - x * (nv_log(np / x) + 1), x * nv_log(x / np) + np - x)
 
   nv_ifelse(use_series, series, direct)
