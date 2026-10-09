@@ -851,21 +851,19 @@ is_nonint <- function(x) {
   nv_abs(x - nv_round(x)) > 1e-9 * nv_pmax(nv_abs(x), 1)
 }
 
-# c - a * b as a single float, without first rounding a * b (after Dekker), to
-# reduce the cancellation error when c is close to a * b. Each factor is split
-# into a head holding the upper half of its significand and the remainder, so
-# that the partial products are exact (bar remainder times remainder at f64,
-# which can round by one bit). When c is within a factor of two of the product
-# of the heads, c minus it is exact too, and the three remaining subtractions
-# round once each, at the scale of the cross terms: a 2^-12 (f32) or 2^-26 (f64)
-# fraction of a * b, against a rounding of a * b itself in the naive form. This
-# bounds the absolute error, not the relative error of a result much smaller
-# than the cross terms. Where c is not close to a * b the result is not small,
-# and the ordinary rounding of the first subtraction is harmless.
+# Computes c - a * b with less rounding error when c is close to a * b.
+# Splits a and b into high and low parts using bit operations, then subtracts
+# their partial products separately. The result is not guaranteed exact.
 #
-# The split is a bit mask: Veltkamp's multiply by a constant would be folded
-# away by XLA. The heads carry no gradient (a bitcast has none), so it flows
-# through the remainders and comes out as that of c - a * b.
+# Adapted from Dekker's splitting technique:
+# T. J. Dekker (1971), "A floating-point technique for extending the available
+# precision", Numerische Mathematik 18, 224–242.
+# https://doi.org/10.1007/BF01397083
+#
+# Use bit operations for the split because XLA could simplify away an
+# arithmetic splitting method based on multiplication by a constant.
+# Bitcasts carry no gradient, but the remainders a - a_hi and b - b_hi
+# preserve the derivatives needed for c - a * b.
 sub_exact_prod <- function(c, a, b) {
   is_f32 <- dtype(a) == "f32"
   bits_dtype <- if (is_f32) "ui32" else "ui64"
@@ -945,11 +943,13 @@ binom_bd0 <- function(x, np, d, n_terms) {
 
 # Log of the Binomial probability mass at whole `x`, for whole `n >= 0` and
 # `0 <= p <= 1`, as in R's `dbinom_raw()` (Loader's saddle point algorithm).
+# Avoids constructing huge factorials or subtracting large, nearly equal
+# log-factorial expressions.
 # Each branch is fed safe stand-ins on the elements where it is not selected, so
 # that it cannot poison the gradient. The stand-ins for `n` and `p` are chosen
-# by conditions on `n` and `p` alone, so a scalar `n` or `p` stays scalar and
-# the work done on it alone is not repeated for every element of `x`.
+# by conditions on `n` and `p` alone, so a scalar `n` or `p` stays scalar.
 binom_log_density <- function(x, n, p, n_terms) {
+  # flags to identify cases later
   outside <- x < 0 | x > n | x == Inf
   zero_trials <- n == 0
   impossible <- (p == 0 & x > 0) | (p == 1 & x < n)
@@ -957,7 +957,9 @@ binom_log_density <- function(x, n, p, n_terms) {
   at_size <- x == n
   infinite_trials <- n == Inf
 
-  # x == 0: the probability is (1 - p)^n. Where that is selected, p < 1.
+  # Two edge cases, then interior case
+
+  # x == 0: the log probability is n*log(1 - p).
   n_zero <- nv_ifelse(infinite_trials, 1, n)
   p_zero <- nv_ifelse(p < 1, p, 0.5)
   # XLA's CPU f64 log1p is off by up to ~120 ulp for arguments in
@@ -966,20 +968,22 @@ binom_log_density <- function(x, n, p, n_terms) {
   # deliberately not worked around.
   log_zero <- nv_ifelse(infinite_trials & (p > 0), -Inf, n_zero * nv_log1p(-p_zero))
 
-  # x == n: the probability is p^n. Where that is selected, p > 0.
+  # x == n: the log probability n*log(p).
   log_size <- n * nv_log(nv_ifelse(p > 0, p, 0.5))
 
-  # 0 < x < n and 0 < p < 1, so n >= 2 there. The stand-in x = 1 is inside the
-  # support of any stand-in n.
+  # 0 < x < n and 0 < p < 1, interior cases, so necessarily n >= 2.
   interior <- !(outside | zero_trials | impossible | at_zero | at_size | infinite_trials)
+  # When not interior ensure safe inputs
+  # The safety value x = 1 is inside the support of any safety choice for n.
   x_int <- nv_ifelse(interior, x, 1)
   n_int <- nv_ifelse((n >= 2) & !infinite_trials, n, 2)
   p_int <- nv_ifelse((p > 0) & (p < 1), p, 0.5)
   np <- n_int * p_int
   nq <- n_int * (1 - p_int)
-  # (n - x) - nq is exactly -(x - np), which is the one difference worth
-  # carrying exactly
+  # (n - x) - nq is exactly -(x - np)
   d <- sub_exact_prod(x_int, n_int, p_int)
+  # First three terms: Stirling factorial corrections for n!, x!, and (n-x)!
+  # Last two terms: success and failure count deviance 
   lc <- binom_stirlerr(n_int) -
     binom_stirlerr(x_int) -
     binom_stirlerr(n_int - x_int) -
@@ -990,11 +994,13 @@ binom_log_density <- function(x, n, p, n_terms) {
   # log1p argument falls in XLA's CPU f64 log1p defect band (up to ~120 ulp),
   # but only half of it enters the log-density, adding ~3e-15 absolute. Fixed
   # upstream in openxla/xla#46765, so deliberately not worked around.
+  # log((n-x)/n) computed stabley
   log_frac <- nv_ifelse(
     x_int > 0.5 * n_int,
     nv_log(n_int - x_int) - nv_log(n_int),
     nv_log1p(-x_int / n_int)
   )
+  # Log of the square-root prefactor from Stirling's formula
   lf <- base::log(2 * pi) + nv_log(x_int) + log_frac
   log_interior <- lc - 0.5 * lf
 
@@ -1452,12 +1458,11 @@ nv_dbinom <- jit(
     x <- args$x
     size <- args$size
     prob <- args$prob
-    # One series length per width, so a narrower float has none
     op_dtype <- assert_rng_float_dtype(dtype(x), arg = "x")
 
-    # Resolve to NaN matching base R rules. NaN fails every comparison, so is
-    # tested for directly. The parameters' own conditions are kept apart from
-    # x's, so that a scalar `size` or `prob` stays scalar.
+    # Match base R rules for returning NaN. Range checks do not detect NaN, so
+    # tested directly. Keep parameter checks independent of x to avoid expanding
+    # scalar parameters to x's shape.
     invalid_param <- nv_is_nan(size) |
       nv_is_nan(prob) |
       (prob < 0) |
@@ -1465,36 +1470,44 @@ nv_dbinom <- jit(
       (size < 0) |
       is_nonint(size)
     invalid <- invalid_param | nv_is_nan(x)
-    # Rounded once checked, as base R does. Non-whole x moved to probability
-    # zero input. Invalid elements get safe values to avoid gradient poisoning.
+    # Match base R by rounding after checks. Values of x outside the whole-number
+    # tolerance in `is_nonint()` are mapped to -1, giving probability zero.
+    # Invalid elements get safe values to avoid gradient poisoning.
     x_whole <- nv_ifelse(nv_is_nan(x), 0, nv_ifelse(is_nonint(x), -1, nv_round(x)))
     size <- nv_ifelse(invalid_param, 1, nv_round(size))
     prob <- nv_ifelse(invalid_param, 0.5, prob)
 
+    # Choose series length for Loader's saddle point expansion (`binom_bd0()`)
+    # and compute log-density
     n_terms <- if (op_dtype == "f32") 4L else 8L
     log_density <- binom_log_density(x_whole, size, prob, n_terms)
+    # Resolve based on log
     density <- if (log) {
       log_density
     } else {
-      # Next to an end of the support, at x = 1 for prob = 0 and x = size - 1
+      # Next to an end of the support, so at x = 1 for prob = 0 and x = size - 1
       # for prob = 1, the density is zero but gradient is not. However, just
       # exp(log_density) loses gradient, so compute directly for these cases.
-      # The polynomials depend on `size` and `prob` alone, and are guarded on
-      # them alone, so that they stay scalar for scalar parameters.
       finite_size <- nv_is_finite(size)
       edge_low <- (prob == 0) & (x_whole == 1) & finite_size
       edge_high <- (prob == 1) & (x_whole == size - 1) & finite_size
+
+      # Keep safety checks and direct calcs independent of `x`, so that scalar
+      # `size` and `prob` produce scalar results until final selection.
+
+      # Note: always 0/1, but needed to keep grandient flow.
       p_low <- nv_ifelse(prob == 0, prob, 0)
       p_high <- nv_ifelse(prob == 1, prob, 1)
-      size_poly <- nv_ifelse(finite_size, size, 2)
+      # Safe guard size for infinite inputs
+      size_safe <- nv_ifelse(finite_size, size, 2)
       nv_ifelse(
         edge_low,
         # n p (1 - p)^{n-1}
-        size_poly * p_low * nv_exp((size_poly - 1) * nv_log1p(-p_low)),
+        size_safe * p_low * nv_exp((size_safe - 1) * nv_log1p(-p_low)),
         nv_ifelse(
           edge_high,
           # n (1 - p) p^{n-1}
-          size_poly * (1 - p_high) * nv_exp((size_poly - 1) * nv_log(p_high)),
+          size_safe * (1 - p_high) * nv_exp((size_safe - 1) * nv_log(p_high)),
           # easy cases don't need direct computation
           nv_exp(log_density)
         )
