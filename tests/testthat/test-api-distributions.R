@@ -879,7 +879,7 @@ pois_grid <- function() {
 # exactly. `expect_equal()` measures the mean relative difference over the whole
 # vector, which tiny elements barely move, and compares absolutely when the
 # expected values are smaller than the tolerance.
-expect_equal_elementwise <- function(object, expected, tolerance = 1e-13) {
+expect_equal_elementwise <- function(object, expected, tolerance = 1e-13, info = NULL) {
   close <- (abs(object - expected) <= tolerance * abs(expected)) %in% TRUE
   ok <- ifelse(is.nan(expected), is.nan(object), !is.nan(object) & (object == expected | close))
   bad <- which(!ok)
@@ -890,7 +890,8 @@ expect_equal_elementwise <- function(object, expected, tolerance = 1e-13) {
       paste(bad, collapse = ", "),
       paste(format(object[bad], digits = 17), collapse = ", "),
       paste(format(expected[bad], digits = 17), collapse = ", ")
-    )
+    ),
+    info = info
   )
   invisible(object)
 }
@@ -903,7 +904,7 @@ describe("nv_dpois", {
 
   it("matches base R dpois() with custom lambda", {
     x <- c(0, 1, 2, 5, 10, 20)
-    expect_equal(as.vector(nv_dpois(nv_array(x), lambda = 4.5)), dpois(x, 4.5), tolerance = 1e-6)
+    expect_equal_elementwise(as.vector(nv_dpois(nv_array(x), lambda = 4.5)), dpois(x, 4.5), tolerance = 1e-6)
   })
 
   it("log = TRUE matches base R dpois(..., log = TRUE)", {
@@ -1001,6 +1002,32 @@ describe("nv_dpois", {
     expect_equal(as.vector(g$x), rep(0, length(x)))
   })
 
+  it("gradient wrt lambda keeps its x / lambda term at tiny means", {
+    # There the density (the gradient arriving at the log in bd0()) is tiny and
+    # x / lambda huge; dividing one by the other before multiplying by
+    # 1 / lambda would underflow. Counts whose density is a normal float only:
+    # a subnormal one is flushed to zero, gradient and all.
+    f <- function(x, lambda) nv_sum(nv_dpois(x, lambda))
+    grad <- jit(gradient(f, wrt = "lambda"))
+    cases <- list(
+      list(dt = "f64", lambda = c(1e-300, 1e-200, 1e-150, 1e-100), x = c(1, 1, 2, 3)),
+      list(dt = "f32", lambda = c(1e-30, 1e-20, 1e-12), x = c(1, 1, 3))
+    )
+    for (cs in cases) {
+      lambda <- as.vector(nv_array(cs$lambda, dtype = cs$dt))
+      for (i in seq_along(lambda)) {
+        got <- as.vector(grad(nv_array(cs$x[i], dtype = cs$dt), nv_array(lambda[i], dtype = cs$dt))$lambda)
+        want <- dpois(cs$x[i], lambda[i]) * (cs$x[i] / lambda[i] - 1)
+        expect_equal_elementwise(
+          got,
+          want,
+          tolerance = if (cs$dt == "f64") 1e-12 else 1e-5,
+          info = paste(cs$dt, lambda[i])
+        )
+      }
+    }
+  })
+
   it("gradients stay finite where the probability is resolved directly (untaken branches don't poison them via nv_ifelse)", {
     x <- c(-Inf, -1, 0.5, 0, 2, Inf, 3)
     lambda <- c(2, 2, 2, 0, 0, 2, Inf)
@@ -1026,7 +1053,9 @@ describe("nv_dpois", {
 
   it("works on arrays with more than one axis", {
     x <- matrix(c(0, 3, 5, 12, 40, 7), nrow = 2)
-    expect_equal(as_array(nv_dpois(nv_array(x, dtype = "f64"), 6)), dpois(x, 6), tolerance = 1e-14)
+    out <- as_array(nv_dpois(nv_array(x, dtype = "f64"), 6))
+    expect_equal(dim(out), dim(x))
+    expect_equal_elementwise(as.vector(out), as.vector(dpois(x, 6)), tolerance = 1e-14)
   })
 
   it("converts lambda to the dtype of x", {
@@ -1048,7 +1077,7 @@ describe("nv_ppois", {
 
   it("lower_tail = FALSE matches base R ppois(..., lower.tail = FALSE)", {
     q <- c(0, 1, 2, 5, 10, 20)
-    expect_equal(
+    expect_equal_elementwise(
       as.vector(nv_ppois(nv_array(q), lambda = 4.5, lower_tail = FALSE)),
       ppois(q, 4.5, lower.tail = FALSE),
       tolerance = 1e-6
@@ -1057,7 +1086,7 @@ describe("nv_ppois", {
 
   it("log_p = TRUE matches base R ppois(..., log.p = TRUE)", {
     q <- c(0, 1, 2, 5, 10, 20)
-    expect_equal(
+    expect_equal_elementwise(
       as.vector(nv_ppois(nv_array(q), lambda = 4.5, log_p = TRUE)),
       ppois(q, 4.5, log.p = TRUE),
       tolerance = 1e-6
@@ -1584,6 +1613,69 @@ describe("nv_dpois(), nv_ppois() and nv_qpois()", {
     expect_equal(as.vector(nv_qpois(as_f64_scalar(0.5), as_f64(lambda))), qpois(0.5, lambda), tolerance = 0)
   })
 
+  it("give a scalar lambda the sum of the per-element derivatives, masked elements included", {
+    # A scalar lambda is kept scalar rather than broadcast, so its gradient is
+    # the reduction of every element's derivative, including those resolved
+    # directly (outside the support, or infinite), which must contribute zero
+    x <- c(-Inf, -1, 0.5, 0, 1, 3, 10, 990, 1000, 1010, Inf)
+    k <- ifelse(is.finite(x) & x >= 0, floor(x), NA)
+    in_support <- !is.na(k) & x == k
+    fd <- function(x, lambda, log = FALSE) nv_sum(nv_dpois(x, lambda, log = log))
+    gd <- jit(gradient(fd, wrt = "lambda"), static = "log")
+    fp <- function(q, lambda, lower_tail = TRUE, log_p = FALSE) {
+      nv_sum(nv_ppois(q, lambda, lower_tail = lower_tail, log_p = log_p))
+    }
+    gp <- jit(gradient(fp, wrt = "lambda"), static = c("lower_tail", "log_p"))
+    # The error of a sum is relative to the magnitudes summed, not to the sum,
+    # which can cancel (to ~2e-16 for the density at the tiny mean), where
+    # expect_equal() would fall back to an absolute comparison
+    expect_sum <- function(got, terms, tol, info) {
+      err <- abs(got - sum(terms)) / sum(abs(terms))
+      expect(
+        err <= tol,
+        sprintf("got %.17g, expected %.17g (error %.3g of the magnitudes summed)", got, sum(terms), err),
+        info = info
+      )
+    }
+    # small and large counts take each series, those near 1000 the asymptotic
+    # expansion, and a tiny mean puts most densities near the bottom of the range
+    for (lambda in c(3, 1000, 1e-300)) {
+      xs <- x[in_support]
+      for (lg in c(FALSE, TRUE)) {
+        terms <- if (lg) xs / lambda - 1 else dpois(xs, lambda) * (xs / lambda - 1)
+        got <- as.vector(gd(as_f64(x), as_f64_scalar(lambda), log = lg)$lambda)
+        expect_sum(got, terms, 1e-12, paste("dpois", lambda, lg))
+      }
+      ks <- k[!is.na(k)]
+      for (lt in c(TRUE, FALSE)) {
+        for (lp in c(FALSE, TRUE)) {
+          # d/dlambda P(X <= k) = -dpois(k), over the probability on the log
+          # scale. That ratio is taken as a difference of logs, which neither
+          # underflows, but which leaves the reference itself about
+          # eps |log dpois| out (~1e-10 at the tiny mean)
+          log_density <- dpois(ks, lambda, log = TRUE)
+          each <- if (lp) exp(log_density - ppois(ks, lambda, lower.tail = lt, log.p = TRUE)) else dpois(ks, lambda)
+          tol <- if (lp) max(1e-12, 4 * .Machine$double.eps * max(abs(log_density))) else 1e-12
+          got <- as.vector(gp(as_f64(x), as_f64_scalar(lambda), lower_tail = lt, log_p = lp)$lambda)
+          expect_sum(got, (if (lt) -1 else 1) * each, tol, paste("ppois", lambda, lt, lp))
+        }
+      }
+    }
+    # At a tiny mean d/dlambda log P(X > k) is (k + 1) / lambda to within a
+    # relative lambda, a reference with no error of its own. nv_ppois() forms it
+    # as exp(log p(k) - log P(X > k)), so it is itself good to about
+    # eps |log p(k)| (measured: within that for each count here)
+    got <- as.vector(gp(as_f64(x), as_f64_scalar(1e-300), lower_tail = FALSE, log_p = TRUE)$lambda)
+    tol <- .Machine$double.eps * max(abs(dpois(k, 1e-300, log = TRUE)), na.rm = TRUE)
+    expect_sum(got, (k[!is.na(k)] + 1) / 1e-300, tol, "exact, tiny mean")
+    # At lambda = 0 only nv_dpois(0, lambda) has a (right) derivative; the
+    # other probabilities resolved there directly contribute zero by convention
+    for (lg in c(FALSE, TRUE)) {
+      expect_identical(as.vector(gd(as_f64(x), as_f64_scalar(0), log = lg)$lambda), -1)
+    }
+    expect_identical(as.vector(gp(as_f64(x), as_f64_scalar(0))$lambda), 0)
+  })
+
   it("name the operand when it is not a float", {
     expect_error(nv_dpois(nv_array(1L)), "`x` must be a float data type")
     expect_error(nv_ppois(nv_array(1L)), "`q` must be a float data type")
@@ -1615,7 +1707,8 @@ describe("nv_dpois(), nv_ppois() and nv_qpois() at the ends of the range", {
       for (lt in c(TRUE, FALSE)) {
         for (lp in c(FALSE, TRUE)) {
           got <- first(nv_ppois(at(0, dt), at(lambda, dt), lower_tail = lt, log_p = lp))
-          expect_equal(got, ppois(0, lambda, lower.tail = lt, log.p = lp), tolerance = 1e-6, info = paste(dt, lt, lp))
+          want <- ppois(0, lambda, lower.tail = lt, log.p = lp)
+          expect_equal_elementwise(got, want, tolerance = 1e-6, info = paste(dt, lt, lp))
         }
       }
       expect_identical(first(nv_qpois(at(0.5, dt), at(lambda, dt))), 0)
@@ -1640,7 +1733,7 @@ describe("nv_dpois(), nv_ppois() and nv_qpois() at the ends of the range", {
         log_p = TRUE
       ))
       want <- ppois(as.vector(nv_array(cs$k, dtype = cs$dt)), lambda, lower.tail = FALSE, log.p = TRUE)
-      expect_equal(got, want, tolerance = if (cs$dt == "f64") 1e-12 else 1e-6, info = cs$dt)
+      expect_equal_elementwise(got, want, tolerance = if (cs$dt == "f64") 1e-12 else 1e-6, info = cs$dt)
     }
     # which the quantile search relies on: every probe used to satisfy it
     expect_identical(

@@ -721,21 +721,39 @@ bd0 <- function(x, np, is_f32) {
   w <- v * v
   series <- d * v + x * v * w * (2 * horner(w, if (is_f32) bd0_f32_coefs else bd0_f64_coefs))
   # np - x first: near the top of the range x log(x / np) + np can overflow
-  # where the whole cannot
-  direct <- x * log_ratio(x, np, is_f32) + (np - x)
+  # where the whole cannot. The log is of np / x, not x / np, for the
+  # gradient: reverse mode divides the incoming gradient by the ratio before
+  # it multiplies by 1 / np. At a tiny np the density (the incoming gradient)
+  # is tiny and x / np huge, so with log(x / np) that intermediate would
+  # underflow and drop the x / lambda term from the density's derivative.
+  direct <- (np - x) - x * log_ratio(np, x, is_f32)
   nv_ifelse(near, series, direct)
 }
 
-# Log of the Poisson probability of a whole x >= 0 at a finite lambda > 0, with
-# lambda = 0 admitted at x = 0. By Loader's saddle point expansion
+# Log of the Poisson probability of a whole x >= 0 at a finite lambda >= 0. By
+# Loader's saddle point expansion
 #   log p(x) = -stirlerr(x) - bd0(x, lambda) - log(2 pi x) / 2
-# for x >= 1, and exactly -lambda at x = 0.
+# for x >= 1, and exactly -lambda at x = 0. At x = 0 the expansion is still
+# evaluated, at x = 1 and the same lambda, so that a scalar lambda need not be
+# replaced per element and stays scalar. That value is finite for every finite
+# lambda > 0 but infinite at lambda = 0, where it is discarded by the selection
+# (and its only caller, `ppois_raw()`, replaces lambda = 0 beforehand). Used
+# without gradient.
 dpois_log_raw <- function(x, lambda, is_f32) {
   at_zero <- x == 0
   x_pos <- nv_ifelse(at_zero, 1, x)
-  lambda_pos <- nv_ifelse(at_zero, 1, lambda)
-  saddle <- stirlerr(x_pos, is_f32) + bd0(x_pos, lambda_pos, is_f32)
+  saddle <- stirlerr(x_pos, is_f32) + bd0(x_pos, lambda, is_f32)
   nv_ifelse(at_zero, -lambda, -saddle - 0.5 * nv_log(x_pos) - 0.5 * base::log(2 * pi))
+}
+
+# Broadcast a scalar operand (the first of args) against a non-scalar lambda,
+# but leave a scalar lambda scalar, so that work on lambda alone is done once
+# rather than for every element.
+broadcast_operand <- function(args) {
+  if (!length(shape(args[[1L]])) && length(shape(args$lambda))) {
+    args[[1L]] <- nv_broadcast_to(args[[1L]], shape(args$lambda))
+  }
+  args
 }
 
 # 2^-e for a normal x = f 2^e with 1 <= f < 2, from x's exponent bits: an exact
@@ -961,8 +979,10 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
   # series (lambda below ~200, the common case for count data) at 1e7
   # elements, ~3-5% at 1e6.
   series_branch <- function() {
-    # Elements outside both series are given k = 0, whose lower series is 0
-    sum <- poisson_series(nv_ifelse(use_series, k, 0), nv_ifelse(use_series, lambda, 1), upper, is_f32)
+    # Elements outside both series are given k = 0, whose lower series has no
+    # terms for any finite lambda > 0 (see `poisson_series()`), so lambda is
+    # passed as it is and a scalar lambda stays scalar
+    sum <- poisson_series(nv_ifelse(use_series, k, 0), lambda, upper, is_f32)
     # The upper series starts at lambda / (k + 1), which underflows for a tiny
     # enough lambda (below the smallest normal times k + 1), leaving the sum zero
     # and its log -Inf. The later terms are then below eps of it, so the series
@@ -989,10 +1009,13 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
     from_series
   }
   from_series <- series_branch()
+  # The series' elements are given k = lambda. Where lambda is tiny that can
+  # overflow inside the expansion, but only on elements that are then not
+  # selected, and the expansion is taken without gradient.
   asymp <- skip_unless(nv_any(!use_series), nv_fill_like(k, 0), function() {
     ppois_asymp(
-      nv_ifelse(use_series, 200, k),
-      nv_ifelse(use_series, 200, lambda),
+      nv_ifelse(use_series, lambda, k),
+      lambda,
       lower_tail,
       log_p,
       is_f32
@@ -1124,7 +1147,7 @@ nv_dpois <- jit(
   function(x, lambda = 1, log = FALSE) {
     assert_flag(log)
     args <- promote_distribution_args(x = x, lambda = lambda)
-    args <- nv_broadcast_scalars(x = args$x, lambda = args$lambda)
+    args <- broadcast_operand(args)
     x <- args$x
     lambda <- args$lambda
     op_dtype <- assert_rng_float_dtype(dtype(x), arg = "x")
@@ -1144,12 +1167,14 @@ nv_dpois <- jit(
     valid <- !nv_is_nan(x) & (lambda >= 0)
 
     # Each branch is fed a safe stand-in where it is not selected, so it cannot
-    # poison the gradient
+    # poison the gradient. lambda is guarded on its own conditions alone, so a
+    # scalar lambda stays scalar: where lambda is valid the branches are finite
+    # at the stand-in x anyway.
     at_zero <- x_whole == 0
     pos <- valid & !zero & !at_zero
     x_pos <- nv_ifelse(pos, x_whole, 1)
-    lambda_pos <- nv_ifelse(pos, lambda, 1)
-    lambda_zero <- nv_ifelse(valid & !zero & at_zero, lambda, 0)
+    lambda_pos <- nv_ifelse((lambda > 0) & (lambda != Inf), lambda, 1)
+    lambda_zero <- nv_ifelse((lambda >= 0) & (lambda != Inf), lambda, 0)
 
     saddle <- stirlerr(x_pos, is_f32) + bd0(x_pos, lambda_pos, is_f32)
     density <- if (log) {
@@ -1170,7 +1195,7 @@ nv_ppois <- jit(
     assert_flag(lower_tail)
     assert_flag(log_p)
     args <- promote_distribution_args(q = q, lambda = lambda)
-    args <- nv_broadcast_scalars(q = args$q, lambda = args$lambda)
+    args <- broadcast_operand(args)
     q <- args$q
     lambda <- args$lambda
     op_dtype <- assert_rng_float_dtype(dtype(q), arg = "q")
@@ -1191,7 +1216,9 @@ nv_ppois <- jit(
     q_reg <- stop_gradient(nv_ifelse(regular, q, 0))
     k <- nv_floor(q_reg)
     k <- nv_ifelse((k + 1) - q_reg <= 1e-7, k + 1, k)
-    lambda_reg <- nv_ifelse(regular, lambda, 1)
+    # Guarded on lambda's own conditions, so a scalar lambda stays scalar; the
+    # elements it replaces are among those resolved directly below
+    lambda_reg <- nv_ifelse((lambda > 0) & (lambda != Inf), lambda, 1)
     raw <- ppois_raw(k, stop_gradient(lambda_reg), lower_tail, log_p, is_f32)
 
     # The summation is not differentiable, so the exact derivative wrt `lambda`,
@@ -1215,7 +1242,7 @@ nv_qpois <- jit(
     assert_flag(lower_tail)
     assert_flag(log_p)
     args <- promote_distribution_args(p = p, lambda = lambda)
-    args <- nv_broadcast_scalars(p = args$p, lambda = args$lambda)
+    args <- broadcast_operand(args)
     op_dtype <- assert_rng_float_dtype(dtype(args$p), arg = "p")
     # A step function has a zero gradient, and the search below is a while
     # loop, which has none at all
@@ -1241,7 +1268,9 @@ nv_qpois <- jit(
     zero_result <- (lambda == 0) | p_zero
     regular <- valid & !zero_result & !p_one
     p <- nv_ifelse(regular, p, if (log_p) -1 else 0.5)
-    lambda <- nv_ifelse(regular, lambda, 1)
+    # Guarded on lambda's own conditions, so a scalar lambda stays scalar; the
+    # elements it replaces are among those resolved directly above
+    lambda <- nv_ifelse((lambda > 0) & nv_is_finite(lambda), lambda, 1)
 
     # Cornish-Fisher starting value, with the skewness correction. base R rounds
     # it, but it lands about a half above the quantile of a `p` at a jump, so
