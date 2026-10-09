@@ -42,6 +42,16 @@ bibentries <- c(
     publisher = "Ellis Horwood",
     isbn = "0-7458-0289-3"
   ),
+  dekker1971floating = bibentry(
+    bibtype = "article",
+    title = "A floating-point technique for extending the available precision",
+    author = person("T. J.", "Dekker"),
+    journal = "Numerische Mathematik",
+    year = "1971",
+    volume = "18",
+    pages = "224--242",
+    doi = "10.1007/BF01397083"
+  ),
   loader2000fast = bibentry(
     bibtype = "misc",
     title = "Fast and Accurate Computation of Binomial Probabilities",

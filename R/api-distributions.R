@@ -1428,7 +1428,7 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 #' @templateVar params `size` or `prob`
 #' @template section_distribution_dtype
 #' @references
-#' `r format_bib("loader2000fast", "didonato1992algorithm")`
+#' `r format_bib("loader2000fast", "didonato1992algorithm", "dekker1971floating")`
 #' @seealso [nv_rbinom()] for sampling from a Binomial distribution.
 #' @return ([`arrayish`])\cr
 #' `nv_dbinom()`, `nv_pbinom()`, and `nv_qbinom()` return an [`arrayish`] with

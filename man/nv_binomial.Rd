@@ -154,6 +154,11 @@ DiDonato A, Morris A (1992).
 \dQuote{Algorithm 708: Significant Digit Computation of the Incomplete Beta Function Ratios.}
 \emph{ACM Transactions on Mathematical Software}, \bold{18}(3), 360--373.
 \doi{10.1145/131766.131776}.
+
+Dekker T (1971).
+\dQuote{A floating-point technique for extending the available precision.}
+\emph{Numerische Mathematik}, \bold{18}, 224--242.
+\doi{10.1007/BF01397083}.
 }
 \seealso{
 \code{\link[=nv_rbinom]{nv_rbinom()}} for sampling from a Binomial distribution.
