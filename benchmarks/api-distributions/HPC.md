@@ -108,6 +108,16 @@ cell's last part assembles the cell into its store. Workers share the queue
 directory and, normally, one store; every file is written once under a unique
 name.
 
+**Memory.** A worker's memory creeps up over its life -- a few MB a cell,
+from about 0.6 GB after its first part, measured on a cluster in 2026-10 --
+and no cause has been found: anvl's and JAX's compilation caches and glibc's
+allocator arenas were each ruled out. So `work --max-memory <MB>` bounds it
+instead: past that resident size, checked after each part, the worker stops at
+the part boundary and exits with status **3**, and whatever started it starts
+a fresh process, which begins clean. Nothing is lost but a few seconds of
+start-up. Size the memory limit as the threshold plus a part's transient peak
+(about 0.4 GB) plus what the scheduler counts beyond the worker itself.
+
 **Failures.** A claim carries a heartbeat: a background loop touches it every
 minute for as long as its worker's process is alive, however long one chunk
 takes. A claim silent for longer than `--stale-minutes` (default 10) belongs

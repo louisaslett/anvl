@@ -449,6 +449,7 @@ cmd_work <- function(opt) {
 
   setups <- list()
   last <- NULL
+  restart <- FALSE
   n_ok <- n_err <- 0L
   repeat {
     cl <- claim_next(q, pl, last, until, stale_sec, owner)
@@ -515,10 +516,19 @@ cmd_work <- function(opt) {
     for (m in fin) {
       cat(m, "\n", sep = "")
     }
+    ## Past --max-memory, stop at this part boundary for a fresh process to
+    ## take over: memory creeps up over a worker's life by a few MB a cell,
+    ## for no cause found, and only a new process starts clean.
+    if (!is.null(opt$max_memory) && process_memory()[["now"]] > opt$max_memory) {
+      reason <- "its memory passed --max-memory; restart it"
+      restart <- TRUE
+      break
+    }
   }
   cat(sprintf("\nworker done: %d part(s) ok, %d error; stopped because %s\n", n_ok, n_err, reason))
-  cat(sprintf("peak memory %.0f MB\n", process_memory()[["peak"]]))
-  invisible(n_err)
+  mem <- process_memory()
+  cat(sprintf("memory %.0f MB, peak %.0f MB\n", mem[["now"]], mem[["peak"]]))
+  invisible(structure(n_err, restart = restart))
 }
 
 ## ---- assembling cells ------------------------------------------------------

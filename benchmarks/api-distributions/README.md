@@ -116,7 +116,7 @@ interpreter selection to reticulate.
 | `merge` | all table files from `--from` | destination store |
 | `selftest` | synthetic cells and harness assertions | selected store |
 | `plan` | current grid, cut into parts for a work queue; `--queue`, `--depth`, `--filter`, `--backends`, `--costs`, `--unit-minutes`, `--max-parts`; `--dry-run` previews it | queue directory |
-| `work` | parts from `--queue` until none are left; `--until`/`--hours`, `--stale-minutes` | queue directory and store |
+| `work` | parts from `--queue` until none are left; `--until`/`--hours`, `--stale-minutes`, `--max-memory` (exits with status 3 for a restart) | queue directory and store |
 | `finalise` | cells of `--queue` whose parts are all done but not yet assembled | store |
 | `queue` | progress of `--queue`; `--release` drops the claims of unfinished parts | none, except with `--release` |
 

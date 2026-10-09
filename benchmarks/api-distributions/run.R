@@ -74,14 +74,16 @@ parse_args <- function(argv) {
     run = NULL,
     ## the work queue (R/queue.R): its directory, the planned part size, the
     ## most parts a cell is cut into, earlier costs to size parts by, the time
-    ## by which a worker must be done (epoch seconds), and when a claim is
-    ## given up for dead
+    ## by which a worker must be done (epoch seconds), when a claim is given
+    ## up for dead, and the memory (MB) past which a worker stops for a fresh
+    ## process to take over
     queue = NULL,
     unit_minutes = NULL,
     max_parts = NULL,
     costs = NULL,
     until = NULL,
     stale_minutes = NULL,
+    max_memory = NULL,
     release = FALSE
   )
   i <- 1L
@@ -178,6 +180,10 @@ parse_args <- function(argv) {
       },
       `stale-minutes` = {
         o$stale_minutes <- as.numeric(val())
+        i <- i + 1L
+      },
+      `max-memory` = {
+        o$max_memory <- as.numeric(val())
         i <- i + 1L
       },
       backends = {
@@ -1805,8 +1811,32 @@ cmd_selftest <- function(opt) {
     pa <- lapply(list(1:100, 100:256), function(ch) cell_sweep(cs, row, o_st, chunks = ch, finish = FALSE))
     identical(tryCatch(sweep_assemble(pa, "f64", "smoke", "value"), error = function(e) "refused"), "refused")
   })
+  ## past --max-memory a worker stops after its part and asks for a restart;
+  ## a fresh worker carries on from there
+  wp_restart <- local({
+    q3 <- tempfile("selftest-restart")
+    o3 <- utils::modifyList(
+      plan_opt_st,
+      list(
+        queue = q3,
+        filter = "spec=selftest,dtype=f64,kind=value,param_set=clean,flags=broken=FALSE",
+        max_parts = 2L,
+        store = tempfile("selftest-restart-store")
+      )
+    )
+    utils::capture.output(cmd_plan(o3))
+    sink(nullfile())
+    r1 <- cmd_work(utils::modifyList(o3, list(max_memory = 1)))
+    n1 <- sum(queue_state(q3, queue_plan(q3), Inf)$done)
+    r2 <- cmd_work(o3)
+    sink()
+    all2 <- all(queue_state(q3, queue_plan(q3), Inf)$done)
+    unlink(c(q3, o3$store), recursive = TRUE)
+    isTRUE(attr(r1, "restart")) && n1 == 1L && !isTRUE(attr(r2, "restart")) && all2
+  })
   assign("CHUNK_INDEX", chunk_index, envir = globalenv())
   pq <- c(
+    check("past --max-memory a worker stops after its part and asks to be restarted; the next carries on", wp_restart),
     check(
       "a cell swept in parts, cut inside a failure region, is identical to the cell swept whole (f64 value)",
       wp_seams
@@ -2563,7 +2593,8 @@ main <- function() {
     merge = cmd_merge(a$opt),
     `validate-refs` = cmd_validate_refs(a$opt),
     plan = cmd_plan(a$opt),
-    work = cmd_work(a$opt),
+    ## exit status 3: stopped past --max-memory, to be started again
+    work = if (isTRUE(attr(cmd_work(a$opt), "restart"))) quit(status = 3L),
     finalise = cmd_finalise(a$opt),
     queue = cmd_queue(a$opt),
     stop(
