@@ -568,36 +568,49 @@ finalise_ready <- function(q, pl, specs, dir, pv, cells = NULL, force = FALSE) {
 
 ## One cell from its parts, into the store under the plan's run. A part that
 ## errored makes the cell an errored cell, as `run` would have recorded it.
+## The parts are read one at a time and absorbed as they come (see
+## sweep_assembler()): a cell can have hundreds of ~10 MB parts, and reading
+## them all first once took the assembling worker past its memory limit.
 finalise_cell <- function(q, pl, specs, dir, pv, id) {
   u <- pl$units[pl$units$cell_id == id, , drop = FALSE]
   u <- u[order(u$part), , drop = FALSE]
-  recs <- lapply(queue_path(q, "done", paste0(u$unit, ".rds")), readRDS)
   row <- pl$cells[match(id, pl$cells$cell_id), , drop = FALSE]
   rownames(row) <- NULL
   cs <- cell_setup(specs[[row$spec]], row)
   opt <- plan_opt(pl)
-  elapsed <- sum(vapply(recs, `[[`, 0, "elapsed"))
 
-  bad <- which(!is.na(vapply(recs, `[[`, "", "error")))
-  out <- if (length(bad)) {
-    r <- recs[[bad[1L]]]
-    structure(
-      sprintf("part %d/%d (chunks %d-%d): %s", r$part, r$parts, u$from[bad[1L]], u$to[bad[1L]], r$error),
-      class = "sweep_error"
-    )
-  } else {
-    sw <- sweep_assemble(lapply(recs, `[[`, "sweep"), row$dtype, pl$depth, cs$cf$outputs, pl$topk, cs$cf$stable)
-    attr(sw, "points") <- attr(recs[[1L]]$sweep, "points")
+  asm <- sweep_assembler(row$dtype, pl$depth, cs$cf$outputs, pl$topk)
+  elapsed <- 0
+  cpus <- character(0)
+  points <- NULL
+  err <- NULL
+  for (i in seq_len(nrow(u))) {
+    r <- readRDS(queue_path(q, "done", paste0(u$unit[i], ".rds")))
+    elapsed <- elapsed + r$elapsed
+    cpus <- union(cpus, r$cpu %||% NA_character_)
+    if (!is.na(r$error)) {
+      err <- sprintf("part %d/%d (chunks %d-%d): %s", r$part, r$parts, u$from[i], u$to[i], r$error)
+      break
+    }
+    if (i == 1L) {
+      points <- attr(r$sweep, "points") # the first part's are the cell's
+    }
+    asm$absorb(r$sweep)
+  }
+  out <- if (is.null(err)) {
+    sw <- asm$finish(cs$cf$stable)
+    attr(sw, "points") <- points
     sw
+  } else {
+    structure(err, class = "sweep_error")
   }
   st <- record_cell(row, opt, pv, dir, cs$cf, out, elapsed)
 
-  cpus <- unique(vapply(recs, function(r) r$cpu %||% NA_character_, ""))
   sprintf(
     "  assembled %-5s %s from %d part(s), %.1f core-hours%s",
     st$status,
     id,
-    length(recs),
+    nrow(u),
     elapsed / 3600,
     if (length(cpus) > 1L) {
       sprintf("\n  WARNING: its parts ran on %d CPU models: %s", length(cpus), paste(cpus, collapse = "; "))

@@ -1847,33 +1847,63 @@ sweep_state <- function(acc) {
 ## assembly exact (see the reducers' absorb()). The elapsed time is the sum of
 ## the parts': the cost of the cell, not the wall time of any one process.
 sweep_assemble <- function(parts, dtype, depth, outputs, topk = 10L, stable = NULL) {
-  plan <- sweep_plan(dtype, depth)
   failed <- !vapply(parts, function(p) is.list(p) && !is.null(p$state), TRUE)
   if (any(failed)) {
     stop("a part has no sweep state to assemble: ", paste(unlist(parts[failed]), collapse = "; "), call. = FALSE)
   }
-  parts <- parts[order(vapply(parts, function(p) p$chunks[1L], 1L))]
-  covered <- unlist(lapply(parts, `[[`, "chunks"))
-  if (!identical(covered, seq_len(plan$n_chunks))) {
+  asm <- sweep_assembler(dtype, depth, outputs, topk)
+  for (p in parts[order(vapply(parts, function(p) p$chunks[1L], 1L))]) {
+    asm$absorb(p)
+  }
+  asm$finish(stable)
+}
+
+## The same, one part at a time, for parts that should not all be held at
+## once: at full depth a part's state is ~10 MB (mostly per-binade tallies, per
+## output and sign), a cell can have hundreds of parts, and holding them all
+## once took workers past their memory limit. absorb() takes the parts in chunk
+## order, each starting where the last ended; finish() checks that they
+## reached the last chunk and returns the result.
+sweep_assembler <- function(dtype, depth, outputs, topk = 10L) {
+  plan <- sweep_plan(dtype, depth)
+  acc <- sweep_reducers(plan, outputs, topk)
+  next_chunk <- 1L
+  elapsed <- 0
+  uncovered <- function() {
     stop(
-      sprintf("the parts do not cover chunks 1..%d exactly once at depth '%s'", plan$n_chunks, depth),
+      sprintf("the parts do not cover chunks 1..%d exactly once, in order, at depth '%s'", plan$n_chunks, depth),
       call. = FALSE
     )
   }
-  acc <- sweep_reducers(plan, outputs, topk)
-  for (p in parts) {
-    for (o in outputs) {
-      a <- acc[[o]]
-      st <- p$state[[o]]
-      a$topk$absorb(st$topk)
-      a$hist$absorb(st$hist)
-      a$bands$absorb(st$bands)
-      a$runs[[1L]]$absorb(st$runs[[1L]])
-      a$runs[[2L]]$absorb(st$runs[[2L]])
-      a$disputes$absorb(st$disputes)
+  list(
+    absorb = function(p) {
+      if (!is.list(p) || is.null(p$state)) {
+        stop("a part has no sweep state to assemble: ", paste(unlist(p), collapse = "; "), call. = FALSE)
+      }
+      if (p$chunks[1L] != next_chunk) {
+        uncovered()
+      }
+      for (o in outputs) {
+        a <- acc[[o]]
+        st <- p$state[[o]]
+        a$topk$absorb(st$topk)
+        a$hist$absorb(st$hist)
+        a$bands$absorb(st$bands)
+        a$runs[[1L]]$absorb(st$runs[[1L]])
+        a$runs[[2L]]$absorb(st$runs[[2L]])
+        a$disputes$absorb(st$disputes)
+      }
+      next_chunk <<- p$chunks[length(p$chunks)] + 1L
+      elapsed <<- elapsed + p$elapsed
+      invisible(NULL)
+    },
+    finish = function(stable = NULL) {
+      if (next_chunk != plan$n_chunks + 1L) {
+        uncovered()
+      }
+      sweep_result(acc, plan, outputs, stable, elapsed)
     }
-  }
-  sweep_result(acc, plan, outputs, stable, sum(vapply(parts, `[[`, 0, "elapsed")))
+  )
 }
 
 ## The finished tables, per output, from a sweep's reducers.
