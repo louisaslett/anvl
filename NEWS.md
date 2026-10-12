@@ -1,5 +1,6 @@
 # anvl (development version)
 
+* Bugfix: `nv_subset()` accepts an R value as `x`, like `nv_subset_assign()` does.
 * Bugfix: `nv_rnorm()` no longer returns `Inf` / `-Inf` when a uniform draw is exactly 0.
 * Bugfix: `nv_mean()`, `nv_var()` and `nv_sd()` no longer overflow on an integer input, which is now
   summed at the default float.
