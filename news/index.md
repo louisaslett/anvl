@@ -2,6 +2,20 @@
 
 ## anvl (development version)
 
+- Bugfix:
+  [`nv_subset()`](https://r-xla.github.io/anvl/reference/nv_subset.md)
+  accepts an R value as `x`, like
+  [`nv_subset_assign()`](https://r-xla.github.io/anvl/reference/nv_subset_assign.md)
+  does.
+- Bugfix:
+  [`nv_rnorm()`](https://r-xla.github.io/anvl/reference/nv_normal.md) no
+  longer returns `Inf` / `-Inf` when a uniform draw is exactly 0.
+- Bugfix:
+  [`nv_mean()`](https://r-xla.github.io/anvl/reference/nv_mean.md),
+  [`nv_var()`](https://r-xla.github.io/anvl/reference/nv_var.md) and
+  [`nv_sd()`](https://r-xla.github.io/anvl/reference/nv_sd.md) no longer
+  overflow on an integer input, which is now summed at the default
+  float.
 - New
   [`nv_bool()`](https://r-xla.github.io/anvl/reference/nv_dtype_constructors.md),
   `nv_int{8,16,32,64}()`, `nv_uint{8,16,32,64}()`,
@@ -14,6 +28,10 @@
   [`nv_pexp()`](https://r-xla.github.io/anvl/reference/nv_exponential.md),
   and
   [`nv_qexp()`](https://r-xla.github.io/anvl/reference/nv_exponential.md).
+- [`nv_chol()`](https://r-xla.github.io/anvl/reference/nv_chol.md) /
+  [`prim_chol()`](https://r-xla.github.io/anvl/reference/prim_chol.md)
+  now lower to a LAPACK (CPU) / cuSOLVER (CUDA) `potrf` custom call,
+  which is about ten times faster on CPU.
 
 ## anvl 0.5.1
 
