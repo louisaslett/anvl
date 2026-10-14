@@ -1,5 +1,7 @@
 # anvl (development version)
 
+* Bugfix: The gradient of `nv_pad()` / `prim_pad()` works for negative edge
+  padding.
 * Bugfix: The gradient of `prim_broadcast_in_axes()` is no longer permuted for
   broadcast axes that are not in increasing order.
 * Bugfix: An `NA` in an `array()` subset index now gives an informative error.
