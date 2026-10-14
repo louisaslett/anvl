@@ -1,5 +1,6 @@
 # anvl (development version)
 
+* Bugfix: An `NA` in an `array()` subset index now gives an informative error.
 * Bugfix: the common data type of arrays and R values no longer depends on the order of the
   arguments; the R values take the data type the arrays agree on.
 * Bugfix: `nv_squeeze(x, axes = integer(0))` no longer drops every axis.
