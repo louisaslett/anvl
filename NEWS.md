@@ -1,5 +1,7 @@
 # anvl (development version)
 
+* Bugfix: The gradient of `prim_broadcast_in_axes()` is no longer permuted for
+  broadcast axes that are not in increasing order.
 * Bugfix: An `NA` in an `array()` subset index now gives an informative error.
 * Bugfix: the common data type of arrays and R values no longer depends on the order of the
   arguments; the R values take the data type the arrays agree on.
