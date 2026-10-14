@@ -1057,8 +1057,9 @@ prim_static_slice[["reverse"]] <- rule_reverse(function(inputs, outputs, grads, 
       input_shape <- shape(x)
       grad_shape <- shape(grad)
       edge_padding_low <- start_indices - 1L
-      edge_padding_high <- input_shape - start_indices - (grad_shape - 1L) * strides
       interior_padding <- strides - 1L
+      # An axis of size zero has no gaps to fill with interior padding.
+      edge_padding_high <- input_shape - edge_padding_low - grad_shape - pmax(grad_shape - 1L, 0L) * interior_padding
       prim_pad(
         grad,
         zeros(dtype(grad), integer()),
