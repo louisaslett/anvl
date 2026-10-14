@@ -1,5 +1,6 @@
 # anvl (development version)
 
+* Bugfix: `nv_seq()` counts down at an unsigned data type instead of erroring.
 * Bugfix: The gradient of an empty strided `prim_static_slice()` has the shape
   of its input.
 * Bugfix: The gradient of `x^y` is 0 instead of `NaN` in `y` at base 0 and in
