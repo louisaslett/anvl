@@ -1,5 +1,9 @@
 # anvl (development version)
 
+* `AnvlArray`s can now be saved with `saveRDS()` and friends; they load onto
+  the default device, not the one they were saved from. Arrays of the
+  pjrt backend no longer cache their device in a `$device` field.
+
 * Bugfix: `nv_rnorm()` returns `NaN` for a `NaN` `mean` or a non-finite or
   negative `sd`, like `rnorm()`.
 * Bugfix: `nv_rbinom()` accepts `size = 0`, like `rbinom()`, and `nv_sample()`
