@@ -949,15 +949,10 @@ skip_unless <- function(pending, init, compute) {
 }
 
 # log(x / y) for positive normal x and y, kept accurate where the ratio over- or
-# underflows by rescaling y by a power of two first. That brings every ratio
-# back into range except one below 2^-2044 (f64) / 2^-252 (f32), which still
-# underflows to -Inf.
-#
-# The derivative, 1 / x and -1 / y, is attached by hand. Through reverse mode
-# XLA rewrites the derivative wrt x as y / (x y), which over- or underflows far
-# inside the range, and the gradient wrt y picks up 0 * Inf = NaN from the
-# ratio that chooses the branch wherever it overflows. It is left out where x or
-# y is not normal and finite, so that the value there is unchanged.
+# underflows by rescaling y by a power of two first.
+# Derivative, 1 / x and -1 / y, is attached by hand, because in reverse mode
+# XLA rewrites the derivative wrt x as y / (x y), which can over- or underflows.
+# It is left out where x or y is not normal and finite, so that the value there is unchanged.
 log_ratio <- function(x, y) {
   x_value <- stop_gradient(x)
   y_value <- stop_gradient(y)
@@ -972,10 +967,9 @@ log_ratio <- function(x, y) {
   shift <- nv_scalar_like(x, k * base::log(2))
   value <- nv_log(x_value / y_scaled) + nv_ifelse(over, shift, nv_ifelse(under, -shift, 0))
 
-  # Zero, with gradient 1 / v wrt v. The divisor is replaced where it is not
-  # used, so that its zero gradient there stays zero. A comparison need not
-  # flush a subnormal as arithmetic does, so it is tested against the smallest
-  # normal rather than zero.
+  # Adds zero with gradient 1 / v, giving `value` its gradients 1 / x and -1 / y.
+  # Skipped where v is not normal (0 / 0 or Inf - Inf); the divisor 1 keeps the
+  # untaken branch's gradient from being NaN.
   smallest_normal <- if (is_f32) 2^-126 else 2^-1022
   log_derivative <- function(v, v_value) {
     normal <- (v_value >= smallest_normal) & (v_value != Inf)
@@ -986,18 +980,17 @@ log_ratio <- function(x, y) {
 
 # Error of Stirling's approximation to log(n!),
 #   stirlerr(n) = log(n!) - log(sqrt(2 * pi * n) * (n / e)^n),
-# for whole n >= 1, as R's `stirlerr()`: exact values up to n = 15, and past it
-# the asymptotic series 1/(12 n) - 1/(360 n^3) + ..., in powers of 1/n^2. From
-# n = 16 the series has converged to double precision by its seventh term, the
-# term count R uses, and to single precision by its fourth. The exact values are
-# gathered from a table, which measured faster than picking them out with a
+# for whole n >= 1, same approach as R's `stirlerr()`: exact values up to
+# n = 15, and beyond an asymptotic series 1/(12 n) - 1/(360 n^3) + .... From
+# n = 16 the series has converged to double precision by its seventh term (the
+# term count R uses), and to single precision by its fourth. The exact values
+# are gathered from a table, which benched faster than picking them out with a
 # chain of 15 selects (by 18% for `nv_dbinom()` in f64, and ~5% for `nv_dpois()`
 # in f32, at 1.5e6 elements).
 #
-# Only whole n are handled: the binomial calls stirlerr at n, x, and n - x, and
-# the Poisson at x, all positive whole numbers. Revisit before reusing this for
-# other distributions: Student's t needs half-integer (and, for non-whole
-# degrees of freedom, general real) arguments.
+# Only whole n are handled!!
+# NOTE: Revisit before reusing this for other distributions: Student's t needs
+# half-integer (and, for non-whole degrees of freedom, general real) arguments.
 stirlerr <- function(n) {
   # Gather only takes a vector of indices, so flatten and restore the shape
   table <- nv_array(stirlerr_table, dtype = dtype(n))
@@ -1069,23 +1062,23 @@ bd0 <- function(x, np, d = x - np) {
 }
 
 # log(1 + t) - t, for small |t|, by the series in r = t / (2 + t) of R's
-# `log1pmx()` and `rlog1()`: r (2 r^2 S(r^2) - t), S(y) = 1/3 + y/5 + y^2/7 + ...
+# `log1pmx()` and `rlog1()`. As log(1 + t) = 2 atanh(r) = 2 (r + r^3/3 + r^5/5 + ...)
+# and 2 r - t = -r t,
+#   log(1 + t) - t = r (2 r^2 S(r^2) - t),  S(y) = 1/3 + y/5 + y^2/7 + ...
 # Subtracting t from log1p(t) directly loses precision near zero. The caller
 # chooses how many terms of S its range of t needs.
 log1pmx <- function(t, n_terms) {
   r <- t / (2 + t)
   y <- r * r
-  # 1 / (2j + 3), highest power first
+  # S(y) to n_terms terms: coefficients 1 / (2k + 1), k = n_terms, ..., 1,
+  # highest power first
   r * (2 * y * horner(y, 1 / (2 * rev(seq_len(n_terms)) + 1)) - t)
 }
 
-# The whole count a distribution function's `q` stands for, as base R's
-# floor(q + 1e-7): a q within 1e-7 below a whole number counts as that number.
-# In f32 the addition can round up from much further away -- the float
-# immediately below 2 is about 1.192e-7 away, but adding 1e-7 rounds to exactly
-# 2 -- so there the gap to the next whole number is compared with 1e-7 instead;
-# subtracting nearby floats makes the gap exact. In f64 the addition is kept,
-# rounding and all, as that is what base R computes.
+# Rounds q down to an integer, with a tolerance of 1e-7: a q up to 1e-7 below
+# an integer rounds to that integer. Base R does this as floor(q + 1e-7), and
+# f64 uses that expression unchanged. In f32 the addition is too imprecise, so
+# instead we check directly whether q is within 1e-7 of the next integer.
 whole_count <- function(q) {
   if (dtype(q) == "f32") {
     k <- nv_floor(q)
@@ -1095,23 +1088,14 @@ whole_count <- function(q) {
   }
 }
 
-# The lower-tail probabilities 0 and 1 on the requested tail and scale (base
-# R's `R_DT_0` and `R_DT_1`)
+# The values a probability of 0 (dt_zero) or 1 (dt_one) takes once converted
+# to the requested tail and scale: with lower_tail = FALSE, p becomes 1 - p,
+# and with log_p = TRUE, it becomes log(p). These correspond to base R's R_DT_0
+# and R_DT_1.
 dt_zero <- function(lower_tail, log_p) {
   if (lower_tail) (if (log_p) -Inf else 0) else (if (log_p) 0 else 1)
 }
 dt_one <- function(lower_tail, log_p) dt_zero(!lower_tail, log_p)
-
-# For a discrete quantile function's `p`: whether it is a probability on the
-# requested scale (NaN is not), and whether it is the lower-tail probability 0
-# (the bottom of the support) or 1 (the top), on the requested tail
-quantile_ends <- function(p, lower_tail, log_p) {
-  list(
-    in_range = if (log_p) p <= 0 else (p >= 0) & (p <= 1),
-    at_bottom = p == dt_zero(lower_tail, log_p),
-    at_top = p == dt_one(lower_tail, log_p)
-  )
-}
 
 # The target a discrete quantile search compares the distribution function
 # with: `p` moved a few ulp toward the lower quantile, as base R does, so that a
@@ -1847,12 +1831,12 @@ nv_qbinom <- jit(
     # check, while dbinom and pbinom check it. Rounding happens before the
     # negative-size check, as in base R, so e.g. size = -0.4 is treated as 0.
     size <- nv_round(size)
-    # Check p on the supplied scale and identify the probabilities that stand
-    # for the bottom and top of the support.
-    ends <- quantile_ends(p, lower_tail, log_p)
+    in_range <- if (log_p) p <= 0 else (p >= 0) & (p <= 1)
+    at_bottom <- p == dt_zero(lower_tail, log_p)
+    at_top <- p == dt_one(lower_tail, log_p)
     # Match base R rules for returning NaN. Both parameters must be finite;
     # p may be -Inf on the log scale, where it represents probability zero.
-    invalid <- !ends$in_range |
+    invalid <- !in_range |
       !nv_is_finite(size) |
       !nv_is_finite(prob) |
       (size < 0) |
@@ -1860,8 +1844,8 @@ nv_qbinom <- jit(
       (prob > 1)
     # Resolve probability endpoints before distributions concentrated at 0
     # or size, matching base R's order.
-    is_zero <- ends$at_bottom | (!ends$at_top & ((prob == 0) | (size == 0)))
-    is_size <- ends$at_top | (prob == 1)
+    is_zero <- at_bottom | (!at_top & ((prob == 0) | (size == 0)))
+    is_size <- at_top | (prob == 1)
     resolved <- invalid | is_zero | is_size
     # Give invalid or already-resolved elements safe inputs for the search.
     # Their search results are replaced before returning.
@@ -2394,10 +2378,12 @@ nv_qpois <- jit(
     # Resolved directly, in base R's order: NaN outside the admissible range,
     # 0 for `lambda = 0` and at the bottom of the probability scale, and Inf
     # at the top
-    ends <- quantile_ends(p, lower_tail, log_p)
-    valid <- ends$in_range & nv_is_finite(lambda) & (lambda >= 0)
-    zero_result <- (lambda == 0) | ends$at_bottom
-    regular <- valid & !zero_result & !ends$at_top
+    in_range <- if (log_p) p <= 0 else (p >= 0) & (p <= 1)
+    at_bottom <- p == dt_zero(lower_tail, log_p)
+    at_top <- p == dt_one(lower_tail, log_p)
+    valid <- in_range & nv_is_finite(lambda) & (lambda >= 0)
+    zero_result <- (lambda == 0) | at_bottom
+    regular <- valid & !zero_result & !at_top
     p <- nv_ifelse(regular, p, if (log_p) -1 else 0.5)
     # Guarded on lambda's own conditions, so a scalar lambda stays scalar; the
     # elements it replaces are among those resolved directly above
@@ -2452,7 +2438,7 @@ nv_qpois <- jit(
     }
     found <- discrete_search(start, satisfied, max_float)
 
-    res <- nv_ifelse(zero_result, 0, nv_ifelse(ends$at_top, Inf, found))
+    res <- nv_ifelse(zero_result, 0, nv_ifelse(at_top, Inf, found))
     nv_ifelse(valid, res, NaN)
   },
   static = c("lower_tail", "log_p")
