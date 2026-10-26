@@ -896,26 +896,30 @@ sub_exact_prod <- function(c, a, b) {
   (((c - a_hi * b_hi) - a_hi * b_lo) - a_lo * b_hi) - a_lo * b_lo
 }
 
-# `x` with no gradient flowing back through it. Only correct where the true
-# derivative along that path is zero, or where the derivative is attached by
-# hand, as `y + (x - stop_gradient(x)) * dydx`: the added term is zero, but its
-# gradient wrt `x` is `dydx`. anvl has no stop-gradient primitive atm, but the
-# reverse rule of a bitcast is zero, and a round trip through the integer data
-# type of the same width leaves the bits unchanged.
+# Returns x unchanged, with no gradient flowing back through it (anvl currently
+# has no stop gradient primitive).
+#
+# Use where the derivative along this path should be zero, or when attaching
+# a derivative explicitly:
+#
+#   y + (x - stop_gradient(x)) * dydx
+#
+# The added term is zero, but contributes dydx to the gradient with respect
+# to x.
 stop_gradient <- function(x) {
   float_dtype <- dtype(x)
   int_dtype <- if (float_dtype == "f32") "i32" else "i64"
   nv_bitcast_convert(nv_bitcast_convert(x, int_dtype), float_dtype)
 }
 
-# Returns the power of two that, multiplied by x, gives a number between 1
-# and 2.
+# Returns a power of two, s, such that 1 <= x * s < 2.
 #
-# Some loops carry values that keep growing or shrinking, and would overflow
-# or underflow. Multiplying them by this power of two (for exactness) keeps them
-# near 1.
+# Used to rescale values in loops before they overflow or underflow.
+# Scaling by a power of two preserves the significand, introduces no rounding
+# if the scaled values remain in the normal range.
 #
-# x must not be zero, tiny, huge, infinite or NaN.
+# Requires positive, normal, finite x, with a scaling factor s that is
+# also normal and finite.
 inv_pow2 <- function(x) {
   is_f32 <- dtype(x) == "f32"
   bits_dtype <- if (is_f32) "ui32" else "ui64"
@@ -925,21 +929,22 @@ inv_pow2 <- function(x) {
   nv_bitcast_convert(nv_shift_left(exponent_max - e, n_mantissa), dtype(x))
 }
 
-# Runs and returns `compute()` if the scalar boolean `pending` is TRUE, and
-# otherwise returns `init` without running `compute()`.
+# Evaluates and returns compute() when the scalar boolean pending is TRUE;
+# otherwise returns init without evaluating compute().
 #
-# Used on an expensive branch that only a few elements need, such as an
-# asymptotic expansion for large parameters.
-# e.g. passing `nv_any(mask)` as `pending` means a batch where no element needs
-# slow branch will then skip it entirely:
+# Skips expensive work when no element in a batch needs it. For example:
 #
 #   out <- skip_unless(nv_any(mask), nv_fill_like(x, 0), function() {
 #     expensive(nv_ifelse(mask, x, safe_value))
 #   })
 #   nv_ifelse(mask, out, cheap)
 #
-# NB (i) `nv_if()` on XLA's CPU runs both branches; (ii) careful as while loop
-# has no gradient.
+# Here, expensive() runs only if at least one element needs it. Elements
+# outside mask receive safe_value to keep the batched computation valid.
+#
+# Uses a loop that runs at most once because nv_if() executes both branches
+# on XLA's CPU backend. This helper does not support differentiation through
+# the loop.
 skip_unless <- function(pending, init, compute) {
   nv_while(
     init = list(pending = pending, value = init),
@@ -948,11 +953,13 @@ skip_unless <- function(pending, init, compute) {
   )$value
 }
 
-# log(x / y) for positive normal x and y, kept accurate where the ratio over- or
-# underflows by rescaling y by a power of two first.
-# Derivative, 1 / x and -1 / y, is attached by hand, because in reverse mode
-# XLA rewrites the derivative wrt x as y / (x y), which can over- or underflows.
-# It is left out where x or y is not normal and finite, so that the value there is unchanged.
+# Computes log(x / y) for positive normal x and y, rescaling y by a power
+# of two to avoid overflow or loss of precision in the ratio.
+# Attaches the derivatives 1 / x and -1 / y explicitly: in reverse mode,
+# XLA otherwise rewrites the derivative with respect to x as y / (x * y),
+# whose intermediate product can overflow or underflow.
+# Each gradient correction is zero unless its input is positive, normal,
+# and finite; the corrections leave the computed value unchanged.
 log_ratio <- function(x, y) {
   x_value <- stop_gradient(x)
   y_value <- stop_gradient(y)
@@ -962,14 +969,14 @@ log_ratio <- function(x, y) {
   over <- r == Inf
   under <- r < 2^-k
   y_scaled <- nv_ifelse(over, y_value * 2^k, nv_ifelse(under, y_value * 2^-k, y_value))
-  # Built at `x`'s data type: with only R values to choose between, the shift
-  # would materialize at the default float
+  # Builds the shift with x's data type; choosing between plain R values
+  # would instead materialize it with the default floating-point type.
   shift <- nv_scalar_like(x, k * base::log(2))
   value <- nv_log(x_value / y_scaled) + nv_ifelse(over, shift, nv_ifelse(under, -shift, 0))
 
-  # Adds zero with gradient 1 / v, giving `value` its gradients 1 / x and -1 / y.
-  # Skipped where v is not normal (0 / 0 or Inf - Inf); the divisor 1 keeps the
-  # untaken branch's gradient from being NaN.
+  # Returns zero with derivative 1 / v for positive, normal, finite v.
+  # Otherwise returns zero without a gradient correction. Using 1 as the
+  # divisor in that case also prevents NaN gradients in the untaken branch.
   smallest_normal <- if (is_f32) 2^-126 else 2^-1022
   log_derivative <- function(v, v_value) {
     normal <- (v_value >= smallest_normal) & (v_value != Inf)
@@ -1075,10 +1082,10 @@ log1pmx <- function(t, n_terms) {
   r * (2 * y * horner(y, 1 / (2 * rev(seq_len(n_terms)) + 1)) - t)
 }
 
-# Rounds q down to an integer, with a tolerance of 1e-7: a q up to 1e-7 below
-# an integer rounds to that integer. Base R does this as floor(q + 1e-7), and
-# f64 uses that expression unchanged. In f32 the addition is too imprecise, so
-# instead we check directly whether q is within 1e-7 of the next integer.
+# Rounds q down, treating values within 1e-7 below an integer as that integer.
+# For f64, uses floor(q + 1e-7), as base R does. For f32, adding the tolerance
+# can itself round q up to the next integer, even outside that tolerance.
+# Instead, compares the distance to the next integer directly.
 whole_count <- function(q) {
   if (dtype(q) == "f32") {
     k <- nv_floor(q)
@@ -1097,15 +1104,14 @@ dt_zero <- function(lower_tail, log_p) {
 }
 dt_one <- function(lower_tail, log_p) dt_zero(!lower_tail, log_p)
 
-# The target a discrete quantile search compares the distribution function
-# with: `p` moved a few ulp toward the lower quantile, as base R does, so that a
-# `p` computed as the distribution function at a whole number maps back to it
-# despite rounding (which this cannot guarantee when nearby values round
-# alike). Lower-tail targets decrease and upper-tail targets increase; on the
-# log scale, multiplying a negative value reverses the direction. The move is
-# skipped where it overflows to -Inf, and where it makes a tiny `p` subnormal,
-# which XLA flushes to zero, so that every count would satisfy it. Near one in
-# the upper tail it is skipped so that it cannot push `p` across the boundary.
+# Adjusts p by a few ulps before a discrete quantile search, as base R does.
+# Rounding can leave the CDF at the correct count just below the target,
+# causing the search to return the next count. To compensate, move the
+# target slightly down for the lower tail or up for the upper tail.
+# On the log scale, p is negative, so these adjustments use factors
+# greater than or less than one, respectively.
+# Leave p unchanged if the adjustment would underflow to zero, become
+# non-finite, or affect an upper-tail probability too close to one.
 quantile_target <- function(p, lower_tail, log_p) {
   eps <- if (dtype(p) == "f32") 2^-23 else 2^-52
   if (log_p) {
@@ -1119,39 +1125,36 @@ quantile_target <- function(p, lower_tail, log_p) {
   }
 }
 
-# The Cornish-Fisher approximation to the quantile at `p`, from the mean,
-# standard deviation and skewness, as base R starts its discrete quantile
-# searches. Extreme log probabilities can make z * z overflow, or `nv_qnorm()`
-# return NaN, so z is limited to [-40, 40], with NaN taken to be the tail asked
-# for. The search from it compares against the full target, so the limit can
-# only cost steps, not change the answer.
+# Returns a Cornish-Fisher quantile approximation using the mean, standard
+# deviation and skewness. Used as a starting point for discrete quantile
+# searches, as in base R.
+# Extreme log probabilities can make nv_qnorm() return NaN or make z * z
+# overflow. Clamp z to [-40, 40], replacing NaN with -40 for the lower tail
+# or 40 for the upper tail.
+# The subsequent search uses the original target probability, so clamping
+# can increase the number of search steps but does not change the answer.
 cornish_fisher <- function(p, mean, sd, skew, lower_tail, log_p) {
   z <- nv_qnorm(p, lower_tail = lower_tail, log_p = log_p)
   z <- nv_ifelse(nv_is_nan(z), if (lower_tail) -40 else 40, nv_pmin(nv_pmax(z, -40), 40))
   mean + sd * (z + skew * (z * z - 1) / 6)
 }
 
-# The smallest whole y in [0, upper] at which `satisfied(y)` holds, for a
-# condition that holds from some count on. `satisfied(y)` returns a list with
-# `sat`, and optionally `failed`, true where the distribution function could not
-# be evaluated, which makes that element's result NaN. `upper` counts as
-# satisfied without asking, so `satisfied()` need not be able to evaluate it.
-# Above 2^24 in f32 and 2^53 in f64 not every whole number is a float; the
-# result is then the smallest float y that satisfies. A while loop has no
-# gradient, so the inputs must not carry one.
+# Finds the smallest whole y in [0, upper] satisfying a condition that
+# remains true for all larger counts. Takes growing steps from start to
+# bracket the answer, then bisects.
 #
-# The quantile is bracketed between `lo` (not satisfied; -1 while none is
-# known) and `hi` (satisfied; Inf while none is known), galloping away from
-# `start` until both are known, then bisecting. The gallop steps are s, s, 2 s,
-# 4 s, ... (`step` starts at s / 2 and doubles, and moves by its ceiling), so
-# that a quantile two away is reached without overshooting; s is at least an
-# ulp of the start, so the first step always moves. Galloping up is capped at
-# `upper`. Every element pays for as many evaluations as the slowest one needs.
-# The probe at the start is made before the loop: inside it, as the loop's
-# first trip, the program would hold one copy of the distribution function
-# rather than two and compile faster, but each call would pay a trip's worth of
-# loop overhead. The loop carries as few values as it can, because XLA's CPU
-# backend recomputes the body's shared work for each value carried out of it.
+# satisfied(y) returns a list with sat = TRUE where the condition holds,
+# and optionally failed = TRUE where evaluation failed. Failed elements
+# return NaN, except at upper, which always counts as satisfied.
+#
+# Beyond the dtype's exact integer range, returns the smallest representable
+# count satisfying the condition. A while loop has no gradient, so inputs
+# must not carry one.
+#
+# Performance: batches run until the slowest element finishes. Probing start
+# before the loop saves runtime overhead at the cost of extra compilation.
+# Keep loop state small: XLA's CPU backend recomputes shared body work for
+# each value carried out.
 discrete_search <- function(start, satisfied, upper) {
   is_f32 <- dtype(start) == "f32"
   eps <- if (is_f32) 2^-23 else 2^-52
@@ -1173,6 +1176,12 @@ discrete_search <- function(start, satisfied, upper) {
   }
 
   start <- nv_ifelse(nv_is_nan(start), 0, nv_pmin(nv_pmax(start, 0), upper))
+  # lo is unsatisfied (-1 until found); hi is satisfied (Inf until found).
+  # Step lengths are ceiling(s), ceiling(2s), ceiling(4s), ..., s the initial step.
+  # Below 2^51 in f64 (2^22 in f32) s is 1/2, so the lengths are 1, 1, 2, 4, ...
+  # Repeating the first step avoids overshooting an answer two counts away.
+  # Upward probes stop at upper; downward probes stop at zero.
+  # s is at least one ulp of start, so the first step changes the probe.
   bounds <- narrow(-1, Inf, start, TRUE, check(start))
   step <- 0.5 * nv_pmax(nv_floor(start * (4 * eps)), 1)
   next_probe <- function(lo, hi, step) {
