@@ -1761,6 +1761,32 @@ describe("nv_dbinom", {
     }
   })
 
+  it("log = TRUE gradient wrt prob stays right at sizes where n p x overflows", {
+    # The derivative of log(n p / x) in bd0() must not be formed through a
+    # product such as n p x, which overflows long before the score does
+    cases <- list(
+      list(dt = "f64", x = c(3e199, 1, 7e199), size = 1e200, prob = c(0.5, 1e-150, 0.9)),
+      list(dt = "f32", x = c(3e24, 1, 7e24), size = 1e25, prob = c(0.5, 1e-20, 0.9))
+    )
+    f <- function(x, size, prob) nv_sum(nv_dbinom(x, size, prob, log = TRUE))
+    for (cs in cases) {
+      x <- as.vector(nv_array(cs$x, dtype = cs$dt))
+      size <- as.vector(nv_array(rep(cs$size, length(x)), dtype = cs$dt))
+      prob <- as.vector(nv_array(cs$prob, dtype = cs$dt))
+      g <- jit(gradient(f, wrt = "prob"))(
+        nv_array(x, dtype = cs$dt),
+        nv_array(size, dtype = cs$dt),
+        nv_array(prob, dtype = cs$dt)
+      )
+      expect_equal(
+        as.vector(g$prob),
+        x / prob - (size - x) / (1 - prob),
+        tolerance = if (cs$dt == "f64") 1e-12 else 1e-5,
+        info = cs$dt
+      )
+    }
+  })
+
   it("gradient is right for size of 0 and 1, and unpoisoned by invalid elements", {
     # size = 0: the density is 1 at x = 0 whatever prob is. size = 1: it is
     # 1 - p at x = 0 and p at x = 1. Elements with an invalid size or prob, or
@@ -2202,6 +2228,28 @@ describe("nv_qbinom", {
     expect_error(nv_pbinom(nv_array(TRUE), 2, 0.5), "`q` must be a numeric data type")
     expect_error(nv_dbinom(nv_array(TRUE), 2, 0.5), "`x` must be a numeric data type")
   })
+
+  it("finds the quantile where whole numbers are more than one float apart", {
+    # The result is the smallest float at or above the quantile, so within one
+    # float spacing of base R's: 4 near 5e7 in f32, 8 near 5e16 in f64
+    p <- c(0.001, 0.3, 0.7, 0.999)
+    got <- as.vector(nv_qbinom(nv_array(p, dtype = "f32"), size = 1e8, prob = 0.5))
+    expect_lte(max(abs(got - qbinom(p, 1e8, 0.5))), 4)
+    got <- as.vector(nv_qbinom(as_f64(p), size = 1e17, prob = 0.5))
+    expect_lte(max(abs(got - qbinom(p, 1e17, 0.5))), 8)
+  })
+
+  it("does not lose a p at the smallest normal float to the fuzz", {
+    expect_equal(as.vector(nv_qbinom(nv_array(2^-126, dtype = "f32"), 400, 0.5)), qbinom(2^-126, 400, 0.5))
+    expect_equal(as.vector(nv_qbinom(as_f64(2^-1022), 3000, 0.5)), qbinom(2^-1022, 3000, 0.5))
+  })
+
+  it("has a zero gradient", {
+    f <- function(p, prob) nv_sum(nv_qbinom(p, 10, prob))
+    g <- jit(gradient(f, wrt = c("p", "prob")))(as_f64(c(0.1, 0.5, 0.9)), as_f64(c(0.3, 0.3, 0.3)))
+    expect_equal(as.vector(g$p), c(0, 0, 0))
+    expect_equal(as.vector(g$prob), c(0, 0, 0))
+  })
 })
 
 # Means exercised against base R by the nv_dpois/nv_ppois/nv_qpois agreement
@@ -2377,6 +2425,44 @@ describe("nv_dpois", {
     }
   })
 
+  it("log = TRUE gradient wrt lambda stays right where x^2 or x * lambda overflows", {
+    # The derivative of log(lambda / x) in bd0() must not be formed through a
+    # product such as x^2 or x * lambda, which overflows long before
+    # x / lambda - 1 does. Also at a huge and a tiny lambda for a moderate x.
+    cases <- list(
+      list(dt = "f64", x = c(1e160, 1e200, 1e15, 3), lambda = c(1e-140, 1e180, 1e300, 1e-300)),
+      list(dt = "f32", x = c(1e20, 1e20, 1e5, 3), lambda = c(1e-17, 1e19, 1e37, 1e-30))
+    )
+    f <- function(x, lambda) nv_sum(nv_dpois(x, lambda, log = TRUE))
+    for (cs in cases) {
+      x <- as.vector(nv_array(cs$x, dtype = cs$dt))
+      lambda <- as.vector(nv_array(cs$lambda, dtype = cs$dt))
+      g <- jit(gradient(f, wrt = "lambda"))(nv_array(x, dtype = cs$dt), nv_array(lambda, dtype = cs$dt))
+      expect_equal(
+        as.vector(g$lambda),
+        x / lambda - 1,
+        tolerance = if (cs$dt == "f64") 1e-12 else 1e-5,
+        info = cs$dt
+      )
+    }
+  })
+
+  it("gradient wrt lambda is not NaN at a subnormal lambda", {
+    # Arithmetic flushes the subnormal to zero; at x = 0 the derivative of
+    # -lambda is -1 all the same
+    f <- function(x, lambda) nv_sum(nv_dpois(x, lambda, log = TRUE))
+    for (dt in c("f32", "f64")) {
+      lambda <- if (dt == "f32") 2^-140 else 2^-1050
+      g <- jit(gradient(f, wrt = "lambda"))(
+        nv_array(c(0, 1, 5), dtype = dt),
+        nv_array(rep(lambda, 3), dtype = dt)
+      )
+      g <- as.vector(g$lambda)
+      expect_false(anyNA(g), info = dt)
+      expect_equal(g[[1L]], -1, info = dt)
+    }
+  })
+
   it("gradients stay finite where the probability is resolved directly (untaken branches don't poison them via nv_ifelse)", {
     x <- c(-Inf, -1, 0.5, 0, 2, Inf, 3)
     lambda <- c(2, 2, 2, 0, 0, 2, Inf)
@@ -2509,6 +2595,11 @@ describe("nv_ppois", {
     # In f32, adding the 1e-7 to q would round up to 1 from 1 - 2^-23
     q <- c(1 - 2^-23, 1 - 2^-24)
     expect_equal(as.vector(nv_ppois(nv_array(q, dtype = "f32"), 2)), ppois(c(0, 1), 2), tolerance = 1e-6)
+    # In f64 base R adds the 1e-7, rounding and all: just over 1e-7 below a
+    # large whole number, the sum still rounds up to it
+    q <- 2^25 - 1.01e-7
+    expect_equal(as.vector(nv_ppois(as_f64(q), 2^25)), ppois(q, 2^25), tolerance = 1e-12)
+    expect_equal(ppois(q, 2^25), ppois(2^25, 2^25))
   })
 
   it("matches base R ppois() for zero, infinite, negative and NaN lambda", {
@@ -2959,6 +3050,13 @@ describe("nv_qpois", {
   it("converts lambda to the dtype of p", {
     out <- nv_qpois(nv_array(c(0.25, 0.75), dtype = "f32"), lambda = 2L)
     expect_equal(dtype(out), as_dtype("f32"))
+  })
+
+  it("does not lose a p at the smallest normal float to the fuzz", {
+    # Moving p down by a few ulp makes it subnormal there, which XLA flushes to
+    # zero, so that every count would satisfy it
+    expect_equal(as.vector(nv_qpois(nv_array(2^-126, dtype = "f32"), 200)), qpois(2^-126, 200))
+    expect_equal(as.vector(nv_qpois(as_f64(2^-1022), 1000)), qpois(2^-1022, 1000))
   })
 })
 

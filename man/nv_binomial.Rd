@@ -65,7 +65,9 @@ that base R's \code{\link[stats:pbeta]{stats::pbeta()}} uses: a continued fracti
 expansion for large \code{size} near the mean. If the continued fraction has not
 converged after 1000 iterations, the result is \code{NaN}. \code{nv_qbinom} finds the
 smallest \eqn{x} with \eqn{P(X \le x) \ge p}, starting from a Cornish-Fisher
-approximation as base R does.
+approximation as base R does. Above \code{2^24} in \code{f32} and \code{2^53} in \code{f64} not
+every whole number is a float, and \code{nv_qbinom} then returns the smallest float
+\eqn{x} with \eqn{P(X \le x) \ge p}.
 }
 \section{Gradients}{
 
@@ -74,8 +76,9 @@ approximation as base R does.
 \code{x > 0}, the log-density is \code{-Inf} and has no derivative: it diverges. With
 \code{log = TRUE} the gradient returned there is zero, which is a convention of
 this implementation, not the mathematical derivative.
-\code{nv_pbinom} and \code{nv_qbinom} iterate until convergence in a
-\code{\link[=nv_while]{nv_while()}} loop, so \code{\link[=gradient]{gradient()}} cannot differentiate them.
+\code{nv_pbinom} iterates until convergence in a \code{\link[=nv_while]{nv_while()}} loop, so
+\code{\link[=gradient]{gradient()}} cannot differentiate it. \code{nv_qbinom} is a step function, and
+autodiff returns a zero gradient for all of its arguments.
 }
 
 \section{Data Types}{
