@@ -974,13 +974,16 @@ log_ratio <- function(x, y) {
   shift <- nv_scalar_like(x, k * base::log(2))
   value <- nv_log(x_value / y_scaled) + nv_ifelse(over, shift, nv_ifelse(under, -shift, 0))
 
-  # Returns zero with derivative 1 / v for positive, normal, finite v.
-  # Otherwise returns zero without a gradient correction. Using 1 as the
-  # divisor in that case also prevents NaN gradients in the untaken branch.
+  # Returns zero with the derivative of log(v) for positive, normal, finite v,
+  # taken from log's own rule so that it is right to every order: dividing by
+  # the detached v would give the right first derivative but zero second.
+  # Otherwise returns zero without a gradient correction. Using 1 as the input
+  # in that case also prevents NaN gradients in the untaken branch.
   smallest_normal <- if (is_f32) 2^-126 else 2^-1022
   log_derivative <- function(v, v_value) {
     normal <- (v_value >= smallest_normal) & (v_value != Inf)
-    nv_ifelse(normal, (v - v_value) / nv_ifelse(normal, v_value, 1), 0)
+    log_v <- nv_log(nv_ifelse(normal, v, 1))
+    nv_ifelse(normal, log_v - stop_gradient(log_v), 0)
   }
   value + log_derivative(x, x_value) - log_derivative(y, y_value)
 }
@@ -2199,8 +2202,9 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #' @templateVar params `lambda`
 #' @template section_distribution_nonint
 #' @section Gradients:
-#' `nv_dpois` and `nv_ppois` can be differentiated with respect to `lambda`;
-#' for `nv_ppois` only first derivatives are supported. At `lambda = 0`, where
+#' `nv_dpois` and `nv_ppois` can be differentiated with respect to `lambda`.
+#' For `nv_ppois` only the first derivative is correct: second and higher
+#' derivatives are returned as zero. At `lambda = 0`, where
 #' only a right derivative exists, the implementation returns it for
 #' `nv_dpois(0, lambda)` and, by convention, zero for the other probabilities
 #' at `lambda = 0`. `nv_qpois` is a step function, and autodiff returns a zero

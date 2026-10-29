@@ -1751,6 +1751,23 @@ describe("nv_dbinom", {
     expect_equal(g, sum(x / 0.3 - (10 - x) / 0.7), tolerance = 1e-12)
   })
 
+  it("second derivative with respect to prob is right, near and away from the mean", {
+    # An elementwise prob, so each element's derivative is its own. At size 10
+    # and prob 0.6, x = 5 and 6 take bd0()'s series and x = 3 its direct form.
+    x <- c(0, 3, 5, 6, 10)
+    prob <- 0.6
+    second <- function(log) {
+      f <- function(prob) nv_dbinom(as_f64(x), size = 10, prob = prob, log = log)
+      d1 <- function(prob) gradient(function(prob) nv_sum(f(prob)), wrt = "prob")(prob)[[1L]]
+      d2 <- jit(gradient(function(prob) nv_sum(d1(prob)), wrt = "prob"))
+      as.vector(d2(as_f64(rep(prob, length(x))))[[1L]])
+    }
+    score <- x / prob - (10 - x) / (1 - prob)
+    curvature <- -x / prob^2 - (10 - x) / (1 - prob)^2
+    expect_equal(second(TRUE), curvature, tolerance = 1e-12)
+    expect_equal(second(FALSE), dbinom(x, 10, prob) * (score^2 + curvature), tolerance = 1e-12)
+  })
+
   it("gradient is right at prob of 0 and 1, where the density is a polynomial with a zero", {
     # d/dp (1 - p)^10 = -10 at p = 0 and d/dp p^10 = 10 at p = 1. Next to them,
     # d/dp 10 p (1 - p)^9 = 10 at p = 0 and d/dp 10 (1 - p) p^9 = -10 at p = 1,
@@ -2411,6 +2428,21 @@ describe("nv_dpois", {
     g <- grad(as_f64(x), as_f64(lambda), log = TRUE)
     expect_equal(as.vector(g$lambda), x / lambda - 1, tolerance = 1e-12)
     expect_equal(as.vector(g$x), rep(0, length(x)))
+  })
+
+  it("second derivative wrt lambda matches the analytic one, near and away from the mean", {
+    # bd0() takes its series for x = 3, 250 and 1100 here, and its direct form
+    # for x = 1, 10 and 25
+    x <- c(0, 1, 3, 10, 25, 250, 1100)
+    lambda <- c(0.5, 2, 3, 7.5, 40, 240, 1000)
+    second <- function(log) {
+      f <- function(lambda) nv_dpois(as_f64(x), lambda, log = log)
+      d1 <- function(lambda) gradient(function(lambda) nv_sum(f(lambda)), wrt = "lambda")(lambda)[[1L]]
+      d2 <- jit(gradient(function(lambda) nv_sum(d1(lambda)), wrt = "lambda"))
+      as.vector(d2(as_f64(lambda))[[1L]])
+    }
+    expect_equal(second(TRUE), -x / lambda^2, tolerance = 1e-12)
+    expect_equal(second(FALSE), dpois(x, lambda) * ((x / lambda - 1)^2 - x / lambda^2), tolerance = 1e-12)
   })
 
   it("gradient wrt lambda keeps its x / lambda term at tiny means", {
@@ -3155,7 +3187,7 @@ describe("nv_dpois(), nv_ppois() and nv_qpois()", {
     # See "the float category" below for why `jit()` is needed
     for (fn in list(nv_dpois, nv_ppois, nv_qpois)) {
       expect_error(
-        jit(function(x) fn(nv_convert(x, "bf16")))(nv_array(c(0.5, 0.5))),
+        jit(function(x) fn(nv_convert(x, "bf16"), lambda = 1))(nv_array(c(0.5, 0.5))),
         "must be a 32- or 64-bit float data type"
       )
     }
