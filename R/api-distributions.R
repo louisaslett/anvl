@@ -2083,8 +2083,8 @@ ppois_asymp <- function(k, lambda, lower_tail, log_p, is_f32) {
 # Each series gives one tail directly and the other as its complement, which is
 # taken on the log scale to keep full accuracy either side. Returns the
 # probability, the log of p(k), from which the gradient follows, and which
-# elements took a series (whose error `nv_qpois()` allows for). A while
-# loop has no gradient, so the inputs must not carry one.
+# elements took a series (whose error `nv_qpois()` allows for).
+# Due to while loop in series, no gradient support.
 ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
   upper <- (lambda <= k) & (lambda < 0.8 * (k + 51))
   lower <- (k < lambda) & (k + 1 < 0.8 * (lambda + 50))
