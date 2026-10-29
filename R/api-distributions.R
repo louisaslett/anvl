@@ -1916,44 +1916,29 @@ dpois_log_raw <- function(x, lambda) {
   nv_ifelse(x == 0, -lambda, -saddle - 0.5 * nv_log(x) - 0.5 * base::log(2 * pi))
 }
 
-# Sum of the series
+# Poisson tail series: multiplying the result by p(k) gives P(X > k) for
+# upper = TRUE, or P(X < k) otherwise, as R's `pd_upper_series()` and
+# `pd_lower_series()`:
 #   upper: lambda / (k + 1) + lambda^2 / ((k + 1)(k + 2)) + ...
-#   lower: k / lambda + k (k - 1) / lambda^2 + ...  (finite: stops at k terms)
-# which multiply the probability of k to give P(X > k) and P(X <= k) - p(k)
-# respectively (R's `pd_upper_series()` and `pd_lower_series()`).
+#   lower: k / lambda + k (k - 1) / lambda^2 + ...  (k terms)
 #
-# Each term is the one before times u_n / a_n, with u_n = lambda and
-# a_n = k + 1 + n (upper), or u_n = k - n and a_n = lambda (lower). Divisions
-# are by far the most expensive operation here, so the sum is carried as a
-# fraction num / den, with term / den the current term:
-#   term <- term u_n,  num <- num a_n + term,  den <- den a_n,
-# and divided out once at the end. Every u_n and a_n is first scaled by the
-# same power of two c, which leaves both fractions alone and makes the a_n
-# close to 1 + n / (k + 1); every 8 steps num, den and term are rescaled by a
-# power of two that puts den in [1, 2), and (a_n c)^8 < 2^80 keeps them in
-# range for the 1000 steps allowed. Both rescalings are exact, so the
-# arithmetic is that of the plain fractions.
+# To avoid a division at each step, the sum is carried as num / den and the
+# current term as term / den, and divided out once at the end. Power-of-two
+# scaling keeps them in range without rounding from the scaling itself.
 #
-# The ratio of successive terms is below one and decreasing, so once a term is
-# below (1 - ratio) * sum * eps / 2 the rest of the series cannot move the sum
-# by half an ulp; without dividing, term u_(n+1) <= (a_(n+1) - u_(n+1)) num
-# eps / 2. That takes at most ~170 terms in f64 and ~90 in f32 within the
-# regions `ppois_raw()` uses the series in, but far fewer for most inputs, so
-# the first steps are unrolled for every element, and a loop finishes the
-# rest for those that need it, eight steps a trip. In the loop each element is
-# frozen once converged (u = 0 and a = 1 leave num and den exactly as they
-# are), so it does not depend on how long the others take. The unrolled steps
-# are the same for every element anyway, and are not frozen: an element that
-# has converged only takes on terms below half an ulp, or a rounding of num and
-# den alike, and freezing each step doubled the cost of the function for no
-# measurable change in accuracy. A while loop has no gradient, so the inputs
-# must not carry one.
+# Inputs must not carry gradients: `nv_while()` has no gradient rule.
 poisson_series <- function(k, lambda, upper, is_f32) {
   tol <- if (is_f32) 2^-24 else 2^-53
   # Tuned on the CPU backend for lambda from 1 to 150 (a trip costs about as
   # much as several unrolled steps; frozen steps cost more than plain ones)
   n_unroll <- if (is_f32) 8L else 24L
+  # num, den and term are renormalised at least once every `steps_per_trip`
+  # steps. Within `max_steps` each scaled a_n is below 2^10, so 8 steps grow
+  # them by less than 2^80, which still fits in f32: raising either constant
+  # means checking this bound again. Convergence takes at most ~170 terms in
+  # f64 and ~90 in f32 in the regions `ppois_raw()` uses the series in.
   steps_per_trip <- 8L
+  max_steps <- 1000L
   # u_n = u0 - n du and a_n = a0 + n da, scaled by c so that a0 is in [1, 2)
   # (or a little more where it is beyond the largest power of two). The lower
   # series is finite: its u_n reach zero at n = k, after which the steps only
@@ -1967,6 +1952,7 @@ poisson_series <- function(k, lambda, upper, is_f32) {
   du <- nv_ifelse(upper | (k == 0), 0, c)
   a0 <- a0 * c
   da <- nv_ifelse(upper, c, 0)
+  # Put den in [1, 2), scaling num and term by the same exact power of two.
   normalise <- function(f) {
     s <- inv_pow2(f$den)
     list(term = f$term * s, num = f$num * s, den = f$den * s)
@@ -1981,7 +1967,13 @@ poisson_series <- function(k, lambda, upper, is_f32) {
     term <- f$term * u
     list(term = term, num = f$num * a + term, den = f$den * a)
   }
-  # Whether the series has converged after term n; if so, term is set to zero
+  # Term ratios are below one and decreasing in the regions `ppois_raw()` uses
+  # the series in, so the rest of the series is at most
+  # next_term / (1 - next_ratio). Requiring that to be <= sum * tol, with tol
+  # half the machine epsilon, gives without dividing
+  #   term * u <= (a - u) * num * tol
+  # where u and a are those of the next term. Once it holds, term is set to
+  # zero, which marks the element converged for the loop below.
   settle <- function(f, n) {
     u <- u0 - (n + 1) * du
     a <- a0 + (n + 1) * da
@@ -1989,6 +1981,11 @@ poisson_series <- function(k, lambda, upper, is_f32) {
     f
   }
 
+  # The unrolled steps deliberately do not freeze converged elements: such an
+  # element only takes on terms below half an ulp, and freezing doubled the
+  # measured cost for no measurable gain in accuracy. The loop does freeze
+  # them (u = 0 and a = 1 leave num and den as they are), so that an element's
+  # result does not depend on how many trips the others need.
   f <- normalise(list(term = u0, num = u0, den = a0))
   for (n in seq_len(n_unroll)) {
     f <- step(f, n)
@@ -1999,7 +1996,7 @@ poisson_series <- function(k, lambda, upper, is_f32) {
   f <- settle(f, n_unroll)
   out <- nv_while(
     init = list(n = nv_scalar_like(k, n_unroll), term = f$term, num = f$num, den = f$den),
-    cond = function(n, term, num, den) (n < 1000) & nv_any(term != 0),
+    cond = function(n, term, num, den) (n < max_steps) & nv_any(term != 0),
     body = function(n, term, num, den) {
       f <- list(term = term, num = num, den = den)
       for (j in seq_len(steps_per_trip)) {
@@ -2068,13 +2065,10 @@ ppois_asymp <- function(k, lambda, lower_tail, log_p, is_f32) {
   np <- nv_pnorm(s2pt, lower_tail = !lower_tail, log_p = log_p)
   log_dnorm <- -0.5 * s2pt * s2pt - 0.5 * base::log(2 * pi)
   if (log_p) {
-    # `nv_pnorm(log_p = TRUE)` takes log1p(-erfc) above one half, which the
-    # CPU plugin's f64 `log1p()` gets wrong by up to ~120 ulp for probabilities
-    # in about (0.586, 0.64) (fixed in openxla/xla#46765, which the CPU plugin
-    # predates). There the plain log is accurate. Drop this once the plugin
-    # includes that fix.
-    np_plain <- nv_pnorm(s2pt, lower_tail = !lower_tail)
-    np <- nv_ifelse((np_plain >= 0.5) & (np_plain <= 2 / 3), nv_log(np_plain), np)
+    # `nv_pnorm(log_p = TRUE)` takes log1p(-erfc) above one half, which XLA's
+    # CPU f64 `log1p()` gets wrong by up to ~120 ulp for probabilities in about
+    # (0.586, 0.64). Fixed upstream in openxla/xla#46765, so deliberately not
+    # worked around.
     np + nv_log1p(f * nv_exp(log_dnorm - np))
   } else {
     np + f * nv_exp(log_dnorm)
