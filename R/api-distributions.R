@@ -1626,7 +1626,8 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 #' and `prob`.
 #' @param x,q ([`arrayish`])\cr
 #'   Quantiles at which to evaluate the density (`x`) or the distribution
-#'   function (`q`). These are counts, given as integers or floats.
+#'   function (`q`). These are counts, given as integers or floats; see
+#'   Non-Integer Values for values that are not whole numbers.
 #' @param p ([`arrayish`])\cr
 #'   Probabilities at which to evaluate the quantile function. Values outside
 #'   \eqn{[0, 1]} give `NaN`. With `log_p = TRUE`, supply log-probabilities
@@ -1650,7 +1651,9 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 #' and zero elsewhere.
 #'
 #' Invalid arguments give `NaN`, as in base R, but without a warning (that is
-#' `prob` outside \eqn{[0, 1]}, or a negative `size`).
+#' `prob` outside \eqn{[0, 1]}, or a `size` that is negative or not a whole
+#' number). `size` is taken as a whole number with the same tolerance as `x`
+#' (see Non-Integer Values).
 #'
 #' `nv_dbinom` uses the saddle point expansion of
 #' `r cite_bib("loader2000fast")`, as base R does. `nv_pbinom` uses the
@@ -1675,6 +1678,7 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 #'
 #' @templateVar dist binom
 #' @templateVar params `size` or `prob`
+#' @template section_distribution_nonint
 #' @template section_distribution_dtype
 #' @references
 #' `r format_bib("loader2000fast", "didonato1992algorithm", "dekker1971floating")`
@@ -1720,9 +1724,11 @@ nv_dbinom <- jit(
       is_nonint(size)
     invalid <- invalid_param | nv_is_nan(x)
     # Match base R by rounding after checks. Values of x outside the whole-number
-    # tolerance in `is_nonint()` are mapped to -1, giving probability zero.
+    # tolerance in `is_nonint()` are mapped to -1, giving probability zero, as
+    # are negative values: the sign is tested before rounding, as base R does, so
+    # a tiny negative `x` that rounds to zero is still outside the support.
     # Invalid elements get safe values to avoid gradient poisoning.
-    x_whole <- nv_ifelse(nv_is_nan(x), 0, nv_ifelse(is_nonint(x), -1, nv_round(x)))
+    x_whole <- nv_ifelse(nv_is_nan(x), 0, nv_ifelse(is_nonint(x) | (x < 0), -1, nv_round(x)))
     size <- nv_ifelse(invalid_param, 1, nv_round(size))
     prob <- nv_ifelse(invalid_param, 0.5, prob)
 
@@ -2148,17 +2154,12 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #' @title The Poisson Distribution
 #' @name nv_poisson
 #' @description
-#' Probability mass function (`nv_dpois`), distribution function (`nv_ppois`),
-#' and quantile function (`nv_qpois`) for the Poisson distribution with mean
-#' `lambda`.
-#' @param x ([`arrayish`])\cr
-#'   Values at which to evaluate the probability mass function. Values that are
-#'   not whole numbers (up to a relative tolerance of `1e-9`, as in base R) have
-#'   probability zero.
-#' @param q ([`arrayish`])\cr
-#'   Quantiles at which to evaluate the distribution function. Values that are
-#'   not whole numbers are rounded down, except that, as in base R, one within
-#'   `1e-7` below a whole number counts as that number.
+#' Density (`nv_dpois`), distribution function (`nv_ppois`), and quantile
+#' function (`nv_qpois`) for the Poisson distribution with mean `lambda`.
+#' @param x,q ([`arrayish`])\cr
+#'   Quantiles at which to evaluate the density (`x`) or the distribution
+#'   function (`q`). These are counts, given as integers or floats; see
+#'   Non-Integer Values for values that are not whole numbers.
 #' @param p ([`arrayish`])\cr
 #'   Probabilities at which to evaluate the quantile function. Values outside
 #'   \eqn{[0, 1]} give `NaN`. With `log_p = TRUE`, supply log-probabilities
@@ -2167,8 +2168,8 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #'   Mean of the distribution. Scalars broadcast; otherwise `lambda` and
 #'   `x`/`q`/`p` must have the same shape. Negative values give `NaN`.
 #' @param log,log_p (`logical(1)`)\cr
-#'   If `TRUE`, the probabilities are given as logarithms. For `nv_qpois` this
-#'   describes the input `p`.
+#'   If `TRUE`, the densities/probabilities are given as logarithms. For
+#'   `nv_qpois` this describes the input `p`.
 #' @param lower_tail (`logical(1)`)\cr
 #'   If `TRUE` (default), probabilities are \eqn{P(X \le x)}; otherwise,
 #'   \eqn{P(X > x)}.
@@ -2177,67 +2178,56 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #' \deqn{p(x) = \frac{\lambda^x e^{-\lambda}}{x!}, \quad x = 0, 1, 2, \ldots}
 #' where \eqn{\lambda} is `lambda`.
 #'
+#' Invalid arguments give `NaN`, as in base R, but without a warning (that is
+#' a negative `lambda`). Zero and infinite `lambda` follow base R's endpoint
+#' conventions:
+#' * `lambda = 0`: the point mass at zero.
+#' * `lambda = Inf`: the probabilities are those of an infinitely distant mass,
+#'   and quantiles are `NaN`.
+#'
 #' `nv_dpois` uses the saddle point expansion of
 #' `r cite_bib("loader2000fast")`, as base R does. `nv_ppois` follows base R's
-#' `pgamma()`: a series in the tails and an asymptotic expansion where `q` and
-#' `lambda` are large and close. `nv_qpois` searches from a Cornish-Fisher
-#' approximation for the smallest whole number \eqn{x} with
-#' \eqn{P(X \le x) \ge p}, or with \eqn{P(X > x) < p} for
-#' `lower_tail = FALSE`; with `log_p = TRUE`, `p` is the log of that
-#' probability.
+#' [stats::pgamma()]: a series in the tails and an asymptotic expansion where
+#' `q` and `lambda` are large and close. `nv_qpois` finds the smallest whole
+#' number \eqn{x} with \eqn{P(X \le x) \ge p}, or with \eqn{P(X > x) < p} for
+#' `lower_tail = FALSE`, starting from a Cornish-Fisher approximation as base R
+#' does. Above `2^24` in `f32` and `2^53` in `f64` not every whole number is a
+#' float, and `nv_qpois` then returns the smallest float \eqn{x} with
+#' \eqn{P(X \le x) \ge p}. This can be one float above base R's answer, which
+#' can be the exact quantile rounded to the available precision. Where no
+#' finite float qualifies, which can happen only when `lambda` is the largest
+#' float, `nv_qpois` returns the largest float, as base R does.
 #'
-#' The comparison with `p` allows for rounding, with the intention that a `p`
-#' computed by the distribution function at \eqn{x} returns \eqn{x}; this is
-#' not guaranteed. The allowance has two parts: base R's, a few ulp of `p` (or
-#' of `log p`), and one for the error of the distribution function, relative
-#' to the smaller of the two tail probabilities (in `f64`, from about `1e-14`
-#' of it near `lambda` to about `1e-12` far into the tails, and more where a
-#' series is summed far from `lambda`). A `p` within the
-#' allowance of a jump of the distribution function cannot be told apart from
-#' one exactly at it, and its quantile can be off in either direction. On the
-#' probability scale near `p = 1`, base R's part is proportional to `p` rather
-#' than to the small upper tail, so it can span several jumps at large
-#' `lambda` and the quantile can then be off by more than one. Supplying the
-#' probability as the upper tail with `lower_tail = FALSE`, or as a log with
-#' `log_p = TRUE`, avoids this only if it is computed accurately in that form:
-#' converting a probability already rounded near one (e.g. `1 - p`, `log(p)`)
-#' cannot recover what the rounding lost.
-#' In `f32` the rounding of `p` itself dominates. The allowance is empirical:
-#' outside it, no quantile errors were found in the tested ranges (`lambda` up
-#' to `1e14`), which is not a guarantee beyond them.
-#'
-#' `lambda = 0` is the point mass at zero, and a `lambda` of `Inf` is admitted
-#' as in base R: the probabilities are those of an infinitely distant mass,
-#' and quantiles are `NaN`.
+#' The comparison with `p` in `nv_qpois` allows for rounding, so that a `p`
+#' computed by the distribution function at \eqn{x} gives back \eqn{x}, but
+#' this is not guaranteed: for a `p` within the allowance of a jump of the
+#' distribution function, the quantile can be off in either direction. Near
+#' `p = 1` on the probability scale the allowance is proportional to `p` rather
+#' than to the small upper tail, so at large `lambda` the quantile can be off
+#' by more than one. Supplying the upper tail with `lower_tail = FALSE`, or a
+#' log-probability with `log_p = TRUE`, avoids this only if it is computed
+#' accurately in that form: converting a probability already rounded near one
+#' (e.g. `1 - p`, `log(p)`) cannot recover what the rounding lost.
 #'
 #' @section Numerical limits:
-#' On the XLA CPU backend these functions were tested on, subnormal numbers are
-#' treated as zero (other backends have not been checked). There, a `lambda`
-#' below the smallest normal float (`2^-126` in `f32`, `2^-1022` in `f64`) acts
-#' as `lambda = 0`, and a probability or density that would be subnormal is
-#' returned as zero: `nv_dpois(1, 2^-126)` in `f32` is `0`, where base R gives
-#' `2^-126`. On the log scale such values stay finite.
-#'
-#' Above `2^24` in `f32` and `2^53` in `f64` not every whole number is a
-#' float. `nv_qpois` then returns the smallest float \eqn{x} with
-#' \eqn{P(X \le x) \ge p}, which can be one float above base R's answer (base
-#' R's result can correspond to rounding the mathematical quantile to the
-#' available precision). Where no finite float qualifies, which can happen
-#' only at `lambda` equal to the largest float, `nv_qpois` returns the largest
-#' float, as base R does: a saturating convention, and an exception to that
-#' rule.
+#' The XLA CPU backend treats subnormal numbers as zero (other backends have
+#' not been checked). There, a `lambda` below the smallest normal float
+#' (`2^-126` in `f32`, `2^-1022` in `f64`) acts as `lambda = 0`, and a
+#' probability that would be subnormal is returned as zero:
+#' `nv_dpois(1, 2^-126)` in `f32` is `0`, where base R gives `2^-126`. On the
+#' log scale such values stay finite.
 #'
 #' @section Gradients:
-#' `nv_dpois` and `nv_ppois` are differentiable in `lambda`; for `nv_ppois`
-#' only first derivatives are supported. At `lambda = 0`, where only a
-#' right derivative exists, the implementation returns it for
+#' `nv_dpois` and `nv_ppois` can be differentiated with respect to `lambda`;
+#' for `nv_ppois` only first derivatives are supported. At `lambda = 0`, where
+#' only a right derivative exists, the implementation returns it for
 #' `nv_dpois(0, lambda)` and, by convention, zero for the other probabilities
-#' resolved there directly. With respect to `x`/`q`, which are used only as whole
-#' numbers, autodiff returns zero, as it does for all arguments of `nv_qpois`,
-#' a step function.
+#' resolved there directly. `nv_qpois` is a step function, and autodiff returns
+#' a zero gradient for all of its arguments.
 #'
 #' @templateVar dist pois
 #' @templateVar params `lambda`
+#' @template section_distribution_nonint
 #' @template section_distribution_dtype
 #' @references
 #' `r format_bib("loader2000fast")`
@@ -2252,14 +2242,20 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #' nv_dpois(x, lambda = 4)
 #' nv_dpois(x, lambda = 4, log = TRUE)
 #'
+#' nv_ppois(x)
 #' nv_ppois(x, lambda = 4)
 #' nv_ppois(x, lambda = 4, lower_tail = FALSE)
 #' nv_ppois(x, lambda = 4, log_p = TRUE)
 #'
 #' p <- nv_array(c(0.025, 0.5, 0.975))
+#' nv_qpois(p)
 #' nv_qpois(p, lambda = 4)
 #' nv_qpois(p, lambda = 4, lower_tail = FALSE)
-#' nv_qpois(nv_array(c(-700, -2, -0.1), dtype = "f64"), lambda = 1000, log_p = TRUE)
+#' nv_qpois(
+#'   nv_array(c(-700, -2, -0.1), dtype = "f64"),
+#'   lambda = 1000,
+#'   log_p = TRUE
+#' )
 NULL
 
 #' @rdname nv_poisson

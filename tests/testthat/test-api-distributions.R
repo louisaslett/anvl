@@ -1716,6 +1716,18 @@ describe("nv_dbinom", {
     expect_equal(got, want)
   })
 
+  it("is zero at negative and non-whole x, but rounds an x within a relative 1e-9 of a whole number", {
+    # base R warns about a non-whole x as well. A tiny negative x rounds to
+    # zero, but is tested for its sign first and so is outside the support
+    x <- c(-1, -1e-12, 0.5, 2 + 1e-6, 2 + 1e-12, 1e6 + 1e-4, 1e6 + 1e-6)
+    for (lg in c(FALSE, TRUE)) {
+      expect_equal(
+        as.vector(nv_dbinom(as_f64(x), size = 2e6, prob = 0.5, log = lg)),
+        suppressWarnings(dbinom(x, 2e6, 0.5, log = lg))
+      )
+    }
+  })
+
   it("non-scalar size/prob works", {
     x <- c(0, 3, 7)
     size <- c(5, 10, 20)

@@ -327,8 +327,8 @@ reference:
     contents:
       - nv_normal
       - nv_uniform
-      - nv_poisson
       - nv_binomial
+      - nv_poisson
       - nv_exponential
       - nv_rbinom
       - nv_sample
