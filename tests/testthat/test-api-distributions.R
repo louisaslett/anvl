@@ -2308,9 +2308,9 @@ expect_equal_elementwise <- function(object, expected, tolerance = 1e-13, info =
 }
 
 describe("nv_dpois", {
-  it("matches base R dpois() with default lambda", {
+  it("matches base R dpois() at lambda = 1", {
     x <- c(0, 1, 2, 3, 4, 5, 6)
-    expect_equal(as.vector(nv_dpois(nv_array(x))), dpois(x, 1), tolerance = 1e-6)
+    expect_equal(as.vector(nv_dpois(nv_array(x), lambda = 1)), dpois(x, 1), tolerance = 1e-6)
   })
 
   it("matches base R dpois() with custom lambda", {
@@ -2346,8 +2346,8 @@ describe("nv_dpois", {
 
   it("log = TRUE stays finite where the probability underflows to 0", {
     x <- nv_array(1000, dtype = "f64")
-    expect_equal(as.vector(nv_dpois(x)), 0)
-    expect_equal(as.vector(nv_dpois(x, log = TRUE)), dpois(1000, 1, log = TRUE), tolerance = 1e-14)
+    expect_equal(as.vector(nv_dpois(x, lambda = 1)), 0)
+    expect_equal(as.vector(nv_dpois(x, lambda = 1, log = TRUE)), dpois(1000, 1, log = TRUE), tolerance = 1e-14)
   })
 
   it("log = TRUE stays accurate where x / lambda over- or underflows", {
@@ -2381,8 +2381,8 @@ describe("nv_dpois", {
 
   it("propagates NaN rather than reading it as outside the support", {
     x <- nv_array(c(NaN, 0))
-    expect_equal(as.vector(nv_dpois(x)), c(NaN, exp(-1)), tolerance = 1e-6)
-    expect_equal(as.vector(nv_dpois(x, log = TRUE)), c(NaN, -1), tolerance = 1e-6)
+    expect_equal(as.vector(nv_dpois(x, lambda = 1)), c(NaN, exp(-1)), tolerance = 1e-6)
+    expect_equal(as.vector(nv_dpois(x, lambda = 1, log = TRUE)), c(NaN, -1), tolerance = 1e-6)
   })
 
   it("matches base R dpois() for zero, infinite, negative and NaN lambda", {
@@ -2514,9 +2514,9 @@ describe("nv_dpois", {
 })
 
 describe("nv_ppois", {
-  it("matches base R ppois() with default lambda", {
+  it("matches base R ppois() at lambda = 1", {
     q <- c(-1, 0, 0.5, 1, 2, 5)
-    expect_equal(as.vector(nv_ppois(nv_array(q))), ppois(q, 1), tolerance = 1e-6)
+    expect_equal(as.vector(nv_ppois(nv_array(q), lambda = 1)), ppois(q, 1), tolerance = 1e-6)
   })
 
   it("matches base R ppois() with custom lambda", {
@@ -2721,9 +2721,9 @@ describe("nv_ppois", {
 })
 
 describe("nv_qpois", {
-  it("matches base R qpois() with default lambda", {
+  it("matches base R qpois() at lambda = 1", {
     p <- c(0.001, 0.025, 0.1, 0.5, 0.9, 0.975, 0.999)
-    expect_equal(as.vector(nv_qpois(nv_array(p))), qpois(p, 1), tolerance = 0)
+    expect_equal(as.vector(nv_qpois(nv_array(p), lambda = 1)), qpois(p, 1), tolerance = 0)
   })
 
   it("matches base R qpois() with custom lambda", {
@@ -3146,9 +3146,9 @@ describe("nv_dpois(), nv_ppois() and nv_qpois()", {
   })
 
   it("name the operand when it is a boolean", {
-    expect_error(nv_qpois(nv_array(TRUE)), "`p` must be a numeric data type")
-    expect_error(nv_ppois(nv_array(TRUE)), "`q` must be a numeric data type")
-    expect_error(nv_dpois(nv_array(TRUE)), "`x` must be a numeric data type")
+    expect_error(nv_qpois(nv_array(TRUE), lambda = 1), "`p` must be a numeric data type")
+    expect_error(nv_ppois(nv_array(TRUE), lambda = 1), "`q` must be a numeric data type")
+    expect_error(nv_dpois(nv_array(TRUE), lambda = 1), "`x` must be a numeric data type")
   })
 
   it("need a 32- or 64-bit float", {

@@ -1666,6 +1666,9 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 #' every whole number is a float, and `nv_qbinom` then returns the smallest float
 #' \eqn{x} with \eqn{P(X \le x) \ge p}.
 #'
+#' @templateVar dist binom
+#' @templateVar params `size` or `prob`
+#' @template section_distribution_nonint
 #' @section Gradients:
 #' `nv_dbinom` can be differentiated with respect to `prob`, including at
 #' `prob` of 0 and 1. Where the density is zero there, as at `prob = 0` for
@@ -1676,9 +1679,6 @@ binom_cdf <- function(k, n, p, lower_tail, log_p, op_dtype) {
 #' [gradient()] cannot differentiate it. `nv_qbinom` is a step function, and
 #' autodiff returns a zero gradient for all of its arguments.
 #'
-#' @templateVar dist binom
-#' @templateVar params `size` or `prob`
-#' @template section_distribution_nonint
 #' @template section_distribution_dtype
 #' @references
 #' `r format_bib("loader2000fast", "didonato1992algorithm", "dekker1971floating")`
@@ -2166,7 +2166,7 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #'   in \eqn{[-\infty, 0]} instead.
 #' @param lambda ([`arrayish`])\cr
 #'   Mean of the distribution. Scalars broadcast; otherwise `lambda` and
-#'   `x`/`q`/`p` must have the same shape. Negative values give `NaN`.
+#'   `x`/`q`/`p` must have the same shape.
 #' @param log,log_p (`logical(1)`)\cr
 #'   If `TRUE`, the densities/probabilities are given as logarithms. For
 #'   `nv_qpois` this describes the input `p`.
@@ -2182,52 +2182,30 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #' a negative `lambda`). Zero and infinite `lambda` follow base R's endpoint
 #' conventions:
 #' * `lambda = 0`: the point mass at zero.
-#' * `lambda = Inf`: the probabilities are those of an infinitely distant mass,
-#'   and quantiles are `NaN`.
+#' * `lambda = Inf`: densities are zero. The lower-tail probability is zero at
+#'   finite `q` and one at `q = Inf`. Quantiles are `NaN`.
 #'
 #' `nv_dpois` uses the saddle point expansion of
-#' `r cite_bib("loader2000fast")`, as base R does. `nv_ppois` follows base R's
-#' [stats::pgamma()]: a series in the tails and an asymptotic expansion where
-#' `q` and `lambda` are large and close. `nv_qpois` finds the smallest whole
-#' number \eqn{x} with \eqn{P(X \le x) \ge p}, or with \eqn{P(X > x) < p} for
-#' `lower_tail = FALSE`, starting from a Cornish-Fisher approximation as base R
-#' does. Above `2^24` in `f32` and `2^53` in `f64` not every whole number is a
-#' float, and `nv_qpois` then returns the smallest float \eqn{x} with
-#' \eqn{P(X \le x) \ge p}. This can be one float above base R's answer, which
-#' can be the exact quantile rounded to the available precision. Where no
-#' finite float qualifies, which can happen only when `lambda` is the largest
-#' float, `nv_qpois` returns the largest float, as base R does.
+#' `r cite_bib("loader2000fast")`, as base R does. `nv_ppois` uses the
+#' incomplete gamma function methods of base R's [stats::pgamma()]: a series in
+#' the tails, and an asymptotic expansion where `q` and `lambda` are large and
+#' close. `nv_qpois` finds the smallest \eqn{x}
+#' with \eqn{P(X \le x) \ge p}, starting from a Cornish-Fisher approximation as
+#' base R does. Above `2^24` in `f32` and `2^53` in `f64` not every whole number
+#' is a float, and `nv_qpois` then returns the smallest float \eqn{x} with
+#' \eqn{P(X \le x) \ge p}.
 #'
-#' The comparison with `p` in `nv_qpois` allows for rounding, so that a `p`
-#' computed by the distribution function at \eqn{x} gives back \eqn{x}, but
-#' this is not guaranteed: for a `p` within the allowance of a jump of the
-#' distribution function, the quantile can be off in either direction. Near
-#' `p = 1` on the probability scale the allowance is proportional to `p` rather
-#' than to the small upper tail, so at large `lambda` the quantile can be off
-#' by more than one. Supplying the upper tail with `lower_tail = FALSE`, or a
-#' log-probability with `log_p = TRUE`, avoids this only if it is computed
-#' accurately in that form: converting a probability already rounded near one
-#' (e.g. `1 - p`, `log(p)`) cannot recover what the rounding lost.
-#'
-#' @section Numerical limits:
-#' The XLA CPU backend treats subnormal numbers as zero (other backends have
-#' not been checked). There, a `lambda` below the smallest normal float
-#' (`2^-126` in `f32`, `2^-1022` in `f64`) acts as `lambda = 0`, and a
-#' probability that would be subnormal is returned as zero:
-#' `nv_dpois(1, 2^-126)` in `f32` is `0`, where base R gives `2^-126`. On the
-#' log scale such values stay finite.
-#'
+#' @templateVar dist pois
+#' @templateVar params `lambda`
+#' @template section_distribution_nonint
 #' @section Gradients:
 #' `nv_dpois` and `nv_ppois` can be differentiated with respect to `lambda`;
 #' for `nv_ppois` only first derivatives are supported. At `lambda = 0`, where
 #' only a right derivative exists, the implementation returns it for
 #' `nv_dpois(0, lambda)` and, by convention, zero for the other probabilities
-#' resolved there directly. `nv_qpois` is a step function, and autodiff returns
-#' a zero gradient for all of its arguments.
+#' at `lambda = 0`. `nv_qpois` is a step function, and autodiff returns a zero
+#' gradient for all of its arguments.
 #'
-#' @templateVar dist pois
-#' @templateVar params `lambda`
-#' @template section_distribution_nonint
 #' @template section_distribution_dtype
 #' @references
 #' `r format_bib("loader2000fast")`
@@ -2238,17 +2216,14 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
 #'
 #' @examplesIf pjrt::plugins_downloaded()
 #' x <- nv_array(c(0, 1, 2, 5, 10))
-#' nv_dpois(x)
 #' nv_dpois(x, lambda = 4)
 #' nv_dpois(x, lambda = 4, log = TRUE)
 #'
-#' nv_ppois(x)
 #' nv_ppois(x, lambda = 4)
 #' nv_ppois(x, lambda = 4, lower_tail = FALSE)
 #' nv_ppois(x, lambda = 4, log_p = TRUE)
 #'
 #' p <- nv_array(c(0.025, 0.5, 0.975))
-#' nv_qpois(p)
 #' nv_qpois(p, lambda = 4)
 #' nv_qpois(p, lambda = 4, lower_tail = FALSE)
 #' nv_qpois(
@@ -2261,7 +2236,7 @@ NULL
 #' @rdname nv_poisson
 #' @export
 nv_dpois <- jit(
-  function(x, lambda = 1, log = FALSE) {
+  function(x, lambda, log = FALSE) {
     assert_flag(log)
     args <- promote_distribution_args(x = x, lambda = lambda)
     x <- args$x
@@ -2305,7 +2280,7 @@ nv_dpois <- jit(
 #' @rdname nv_poisson
 #' @export
 nv_ppois <- jit(
-  function(q, lambda = 1, lower_tail = TRUE, log_p = FALSE) {
+  function(q, lambda, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
     args <- promote_distribution_args(q = q, lambda = lambda)
@@ -2347,7 +2322,7 @@ nv_ppois <- jit(
 #' @rdname nv_poisson
 #' @export
 nv_qpois <- jit(
-  function(p, lambda = 1, lower_tail = TRUE, log_p = FALSE) {
+  function(p, lambda, lower_tail = TRUE, log_p = FALSE) {
     assert_flag(lower_tail)
     assert_flag(log_p)
     args <- promote_distribution_args(p = p, lambda = lambda)

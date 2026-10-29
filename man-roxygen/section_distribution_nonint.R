@@ -6,10 +6,7 @@
 #'   \eqn{|x - \mathrm{round}(x)| \le 10^{-9} \max(|x|, 1)}{|x - round(x)| <= 1e-9 * max(|x|, 1)},
 #'   as that whole number. Any other `x` has probability zero.
 #' * `nv_p<%= dist %>()` rounds `q` down, except that a `q` within `1e-7` below
-#'   a whole number counts as that number. In `f64` this is computed as base R
-#'   does, as \eqn{\lfloor q + 10^{-7} \rfloor}{floor(q + 1e-7)}, so for a large
-#'   `q` the sum can round up to the next whole number from slightly further
-#'   below it.
+#'   a whole number counts as that number.
 #' * A negative `x` or `q` is below the support even where it is within the
 #'   tolerance of zero: such an `x` has probability zero, and such a `q` has
 #'   \eqn{P(X \le q) = 0}.

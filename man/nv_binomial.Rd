@@ -72,18 +72,6 @@ approximation as base R does. Above \code{2^24} in \code{f32} and \code{2^53} in
 every whole number is a float, and \code{nv_qbinom} then returns the smallest float
 \eqn{x} with \eqn{P(X \le x) \ge p}.
 }
-\section{Gradients}{
-
-\code{nv_dbinom} can be differentiated with respect to \code{prob}, including at
-\code{prob} of 0 and 1. Where the density is zero there, as at \code{prob = 0} for
-\code{x > 0}, the log-density is \code{-Inf} and has no derivative: it diverges. With
-\code{log = TRUE} the gradient returned there is zero, which is a convention of
-this implementation, not the mathematical derivative.
-\code{nv_pbinom} iterates until convergence in a \code{\link[=nv_while]{nv_while()}} loop, so
-\code{\link[=gradient]{gradient()}} cannot differentiate it. \code{nv_qbinom} is a step function, and
-autodiff returns a zero gradient for all of its arguments.
-}
-
 \section{Non-Integer Values}{
 
 \code{x} and \code{q} are counts, but any value is accepted, and one that is not a
@@ -94,10 +82,7 @@ number, that is with
 \eqn{|x - \mathrm{round}(x)| \le 10^{-9} \max(|x|, 1)}{|x - round(x)| <= 1e-9 * max(|x|, 1)},
 as that whole number. Any other \code{x} has probability zero.
 \item \code{nv_pbinom()} rounds \code{q} down, except that a \code{q} within \code{1e-7} below
-a whole number counts as that number. In \code{f64} this is computed as base R
-does, as \eqn{\lfloor q + 10^{-7} \rfloor}{floor(q + 1e-7)}, so for a large
-\code{q} the sum can round up to the next whole number from slightly further
-below it.
+a whole number counts as that number.
 \item A negative \code{x} or \code{q} is below the support even where it is within the
 tolerance of zero: such an \code{x} has probability zero, and such a \code{q} has
 \eqn{P(X \le q) = 0}.
@@ -106,6 +91,18 @@ tolerance of zero: such an \code{x} has probability zero, and such a \code{q} ha
 Finite quantiles from \code{nv_qbinom()} are always whole numbers. Since
 \code{x} and \code{q} are used only as whole numbers, their gradient is zero wherever
 a gradient can be taken.
+}
+
+\section{Gradients}{
+
+\code{nv_dbinom} can be differentiated with respect to \code{prob}, including at
+\code{prob} of 0 and 1. Where the density is zero there, as at \code{prob = 0} for
+\code{x > 0}, the log-density is \code{-Inf} and has no derivative: it diverges. With
+\code{log = TRUE} the gradient returned there is zero, which is a convention of
+this implementation, not the mathematical derivative.
+\code{nv_pbinom} iterates until convergence in a \code{\link[=nv_while]{nv_while()}} loop, so
+\code{\link[=gradient]{gradient()}} cannot differentiate it. \code{nv_qbinom} is a step function, and
+autodiff returns a zero gradient for all of its arguments.
 }
 
 \section{Data Types}{

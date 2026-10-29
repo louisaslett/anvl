@@ -7,11 +7,11 @@
 \alias{nv_qpois}
 \title{The Poisson Distribution}
 \usage{
-nv_dpois(x, lambda = 1, log = FALSE)
+nv_dpois(x, lambda, log = FALSE)
 
-nv_ppois(q, lambda = 1, lower_tail = TRUE, log_p = FALSE)
+nv_ppois(q, lambda, lower_tail = TRUE, log_p = FALSE)
 
-nv_qpois(p, lambda = 1, lower_tail = TRUE, log_p = FALSE)
+nv_qpois(p, lambda, lower_tail = TRUE, log_p = FALSE)
 }
 \arguments{
 \item{x, q}{(\code{\link{arrayish}})\cr
@@ -21,7 +21,7 @@ Non-Integer Values for values that are not whole numbers.}
 
 \item{lambda}{(\code{\link{arrayish}})\cr
 Mean of the distribution. Scalars broadcast; otherwise \code{lambda} and
-\code{x}/\code{q}/\code{p} must have the same shape. Negative values give \code{NaN}.}
+\code{x}/\code{q}/\code{p} must have the same shape.}
 
 \item{log, log_p}{(\code{logical(1)})\cr
 If \code{TRUE}, the densities/probabilities are given as logarithms. For
@@ -56,54 +56,20 @@ a negative \code{lambda}). Zero and infinite \code{lambda} follow base R's endpo
 conventions:
 \itemize{
 \item \code{lambda = 0}: the point mass at zero.
-\item \code{lambda = Inf}: the probabilities are those of an infinitely distant mass,
-and quantiles are \code{NaN}.
+\item \code{lambda = Inf}: densities are zero. The lower-tail probability is zero at
+finite \code{q} and one at \code{q = Inf}. Quantiles are \code{NaN}.
 }
 
 \code{nv_dpois} uses the saddle point expansion of
-Loader (2000), as base R does. \code{nv_ppois} follows base R's
-\code{\link[stats:pgamma]{stats::pgamma()}}: a series in the tails and an asymptotic expansion where
-\code{q} and \code{lambda} are large and close. \code{nv_qpois} finds the smallest whole
-number \eqn{x} with \eqn{P(X \le x) \ge p}, or with \eqn{P(X > x) < p} for
-\code{lower_tail = FALSE}, starting from a Cornish-Fisher approximation as base R
-does. Above \code{2^24} in \code{f32} and \code{2^53} in \code{f64} not every whole number is a
-float, and \code{nv_qpois} then returns the smallest float \eqn{x} with
-\eqn{P(X \le x) \ge p}. This can be one float above base R's answer, which
-can be the exact quantile rounded to the available precision. Where no
-finite float qualifies, which can happen only when \code{lambda} is the largest
-float, \code{nv_qpois} returns the largest float, as base R does.
-
-The comparison with \code{p} in \code{nv_qpois} allows for rounding, so that a \code{p}
-computed by the distribution function at \eqn{x} gives back \eqn{x}, but
-this is not guaranteed: for a \code{p} within the allowance of a jump of the
-distribution function, the quantile can be off in either direction. Near
-\code{p = 1} on the probability scale the allowance is proportional to \code{p} rather
-than to the small upper tail, so at large \code{lambda} the quantile can be off
-by more than one. Supplying the upper tail with \code{lower_tail = FALSE}, or a
-log-probability with \code{log_p = TRUE}, avoids this only if it is computed
-accurately in that form: converting a probability already rounded near one
-(e.g. \code{1 - p}, \code{log(p)}) cannot recover what the rounding lost.
+Loader (2000), as base R does. \code{nv_ppois} uses the
+incomplete gamma function methods of base R's \code{\link[stats:pgamma]{stats::pgamma()}}: a series in
+the tails, and an asymptotic expansion where \code{q} and \code{lambda} are large and
+close. \code{nv_qpois} finds the smallest \eqn{x}
+with \eqn{P(X \le x) \ge p}, starting from a Cornish-Fisher approximation as
+base R does. Above \code{2^24} in \code{f32} and \code{2^53} in \code{f64} not every whole number
+is a float, and \code{nv_qpois} then returns the smallest float \eqn{x} with
+\eqn{P(X \le x) \ge p}.
 }
-\section{Numerical limits}{
-
-The XLA CPU backend treats subnormal numbers as zero (other backends have
-not been checked). There, a \code{lambda} below the smallest normal float
-(\code{2^-126} in \code{f32}, \code{2^-1022} in \code{f64}) acts as \code{lambda = 0}, and a
-probability that would be subnormal is returned as zero:
-\code{nv_dpois(1, 2^-126)} in \code{f32} is \code{0}, where base R gives \code{2^-126}. On the
-log scale such values stay finite.
-}
-
-\section{Gradients}{
-
-\code{nv_dpois} and \code{nv_ppois} can be differentiated with respect to \code{lambda};
-for \code{nv_ppois} only first derivatives are supported. At \code{lambda = 0}, where
-only a right derivative exists, the implementation returns it for
-\code{nv_dpois(0, lambda)} and, by convention, zero for the other probabilities
-resolved there directly. \code{nv_qpois} is a step function, and autodiff returns
-a zero gradient for all of its arguments.
-}
-
 \section{Non-Integer Values}{
 
 \code{x} and \code{q} are counts, but any value is accepted, and one that is not a
@@ -114,10 +80,7 @@ number, that is with
 \eqn{|x - \mathrm{round}(x)| \le 10^{-9} \max(|x|, 1)}{|x - round(x)| <= 1e-9 * max(|x|, 1)},
 as that whole number. Any other \code{x} has probability zero.
 \item \code{nv_ppois()} rounds \code{q} down, except that a \code{q} within \code{1e-7} below
-a whole number counts as that number. In \code{f64} this is computed as base R
-does, as \eqn{\lfloor q + 10^{-7} \rfloor}{floor(q + 1e-7)}, so for a large
-\code{q} the sum can round up to the next whole number from slightly further
-below it.
+a whole number counts as that number.
 \item A negative \code{x} or \code{q} is below the support even where it is within the
 tolerance of zero: such an \code{x} has probability zero, and such a \code{q} has
 \eqn{P(X \le q) = 0}.
@@ -126,6 +89,16 @@ tolerance of zero: such an \code{x} has probability zero, and such a \code{q} ha
 Finite quantiles from \code{nv_qpois()} are always whole numbers. Since
 \code{x} and \code{q} are used only as whole numbers, their gradient is zero wherever
 a gradient can be taken.
+}
+
+\section{Gradients}{
+
+\code{nv_dpois} and \code{nv_ppois} can be differentiated with respect to \code{lambda};
+for \code{nv_ppois} only first derivatives are supported. At \code{lambda = 0}, where
+only a right derivative exists, the implementation returns it for
+\code{nv_dpois(0, lambda)} and, by convention, zero for the other probabilities
+at \code{lambda = 0}. \code{nv_qpois} is a step function, and autodiff returns a zero
+gradient for all of its arguments.
 }
 
 \section{Data Types}{
@@ -145,17 +118,14 @@ promoted to it, so a wider one (e.g. \code{f64} for an \code{f32} \code{x}) is a
 \examples{
 \dontshow{if (pjrt::plugins_downloaded()) withAutoprint(\{ # examplesIf}
 x <- nv_array(c(0, 1, 2, 5, 10))
-nv_dpois(x)
 nv_dpois(x, lambda = 4)
 nv_dpois(x, lambda = 4, log = TRUE)
 
-nv_ppois(x)
 nv_ppois(x, lambda = 4)
 nv_ppois(x, lambda = 4, lower_tail = FALSE)
 nv_ppois(x, lambda = 4, log_p = TRUE)
 
 p <- nv_array(c(0.025, 0.5, 0.975))
-nv_qpois(p)
 nv_qpois(p, lambda = 4)
 nv_qpois(p, lambda = 4, lower_tail = FALSE)
 nv_qpois(
