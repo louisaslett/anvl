@@ -899,13 +899,27 @@ sub_exact_prod <- function(c, a, b) {
 # Returns x unchanged, with no gradient flowing back through it (anvl currently
 # has no stop gradient primitive).
 #
-# Use where the derivative along this path should be zero, or when attaching
-# a derivative explicitly:
+# Used where the derivative along this path should be zero, or where f(x) should
+# be computed by one formula but differentiated by another, because autodiff
+# through f is inaccurate or overflows. Compute the value on a detached input,
+# f(stop_gradient(x)), and if there is some g(x) that has the same derivative
+# as f, attach it with
 #
-#   y + (x - stop_gradient(x)) * dydx
+#   f(stop_gradient(x)) + (g(x) - stop_gradient(g(x)))
 #
-# The added term is zero, but contributes dydx to the gradient with respect
-# to x.
+# The added term is zero, but its derivatives is g's (hence f's), to every
+# order. So only g's derivative is used, never its value. For example,
+# `log_ratio()` uses:
+#
+#   f = log(x / y)         accurate value, but derivative can overflow
+#   g = log(x) - log(y)    inaccurate value when x is near y, clean derivative
+#
+# Only if there is no such g, attach f's derivative at the detached input:
+#
+#   f(stop_gradient(x)) + (x - stop_gradient(x)) * f'(stop_gradient(x))
+#
+# This gives the right first derivative, _but_ second and higher derivatives
+# come out as zero. Note that f' must be passed the detached input.
 stop_gradient <- function(x) {
   float_dtype <- dtype(x)
   int_dtype <- if (float_dtype == "f32") "i32" else "i64"
@@ -2312,7 +2326,9 @@ nv_ppois <- jit(
     # The summation is not differentiable, so the exact derivative wrt `lambda`,
     # -/+ p(k) (over the probability on the log scale), is attached by adding
     # zero times it. It is zeroed where it is not finite, which would make the
-    # zero NaN.
+    # zero NaN. Only the first derivative is right this way (see
+    # `stop_gradient()`): no differentiable function has this derivative but
+    # the distribution function itself.
     grad <- nv_exp(if (log_p) raw$log_density - raw$value else raw$log_density)
     grad <- nv_ifelse(nv_is_finite(grad), if (lower_tail) -grad else grad, 0)
     value <- raw$value + (lambda_reg - stop_gradient(lambda_reg)) * grad
