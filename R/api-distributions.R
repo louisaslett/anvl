@@ -1912,16 +1912,6 @@ nv_qbinom <- jit(
 # for x >= 1. In practice, the callers of `ppois_raw()` (the only caller of this
 # helper) replace zero lambda beforehand.
 dpois_log_raw <- function(x, lambda) {
-}
-
-# Broadcast a scalar operand (the first of args) against a non-scalar lambda,
-# but leave a scalar lambda scalar, so that work on lambda alone is done once
-# rather than for every element.
-broadcast_operand <- function(args) {
-  if (!length(shape(args[[1L]])) && length(shape(args$lambda))) {
-    args[[1L]] <- nv_broadcast_to(args[[1L]], shape(args$lambda))
-  }
-  args
   saddle <- stirlerr(x) + bd0(x, lambda)
   nv_ifelse(x == 0, -lambda, -saddle - 0.5 * nv_log(x) - 0.5 * base::log(2 * pi))
 }
@@ -2284,7 +2274,6 @@ nv_dpois <- jit(
   function(x, lambda = 1, log = FALSE) {
     assert_flag(log)
     args <- promote_distribution_args(x = x, lambda = lambda)
-    args <- broadcast_operand(args)
     x <- args$x
     lambda <- args$lambda
     assert_rng_float_dtype(dtype(x), arg = "x")
@@ -2330,7 +2319,6 @@ nv_ppois <- jit(
     assert_flag(lower_tail)
     assert_flag(log_p)
     args <- promote_distribution_args(q = q, lambda = lambda)
-    args <- broadcast_operand(args)
     q <- args$q
     lambda <- args$lambda
     op_dtype <- assert_rng_float_dtype(dtype(q), arg = "q")
@@ -2373,7 +2361,6 @@ nv_qpois <- jit(
     assert_flag(lower_tail)
     assert_flag(log_p)
     args <- promote_distribution_args(p = p, lambda = lambda)
-    args <- broadcast_operand(args)
     op_dtype <- assert_rng_float_dtype(dtype(args$p), arg = "p")
     # A step function has a zero gradient, and the search below is a while
     # loop, which has none at all
