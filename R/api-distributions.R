@@ -1039,8 +1039,8 @@ stirlerr_table <- c(
 # truncated where it is accurate to working precision for |v| < 0.1. The
 # coefficients 1 / (2j + 3) are highest power of v^2 first.
 #
-# A caller that knows x - np more accurately than x minus the rounded np passes
-# it as `d`: the binomial forms it from n and p with `sub_exact_prod()`. Near
+# A caller that knows x - np more accurately than x minus the rounded np should
+# pass `d` (eg the binomial forms it from n and p with `sub_exact_prod()`). Near
 # the mean the derivative of bd0 is proportional to d, so with the rounded
 # difference it would be lost wherever np rounds to x.
 bd0_f64_coefs <- 1 / c(17, 15, 13, 11, 9, 7, 5, 3)
@@ -1901,20 +1901,17 @@ nv_qbinom <- jit(
 
 ## Poisson distribution helpers -------------------------------------------------
 
-# Log of the Poisson probability of a whole x >= 0 at a finite lambda >= 0. By
-# Loader's saddle point expansion
+# Log Poisson probability for a whole number x >= 0 and finite lambda >= 0.
+# For x >= 1, use Loader's saddle point expansion:
 #   log p(x) = -stirlerr(x) - bd0(x, lambda) - log(2 pi x) / 2
-# for x >= 1, and exactly -lambda at x = 0. At x = 0 the expansion is still
-# evaluated, at x = 1 and the same lambda, so that a scalar lambda need not be
-# replaced per element and stays scalar. That value is finite for every finite
-# lambda > 0 but infinite at lambda = 0, where it is discarded by the selection
-# (and its only caller, `ppois_raw()`, replaces lambda = 0 beforehand). Used
-# without gradient.
+# At x = 0, return the exact value -lambda instead.
+# The expansion is NaN at x = 0, which the select discards. This helper is used
+# without automatic differentiation, so the unused branch needs no safe input.
+#
+# At lambda = 0, the expansion gives -Inf, which is the correct log probability
+# for x >= 1. In practice, the callers of `ppois_raw()` (the only caller of this
+# helper) replace zero lambda beforehand.
 dpois_log_raw <- function(x, lambda) {
-  at_zero <- x == 0
-  x_pos <- nv_ifelse(at_zero, 1, x)
-  saddle <- stirlerr(x_pos) + bd0(x_pos, lambda)
-  nv_ifelse(at_zero, -lambda, -saddle - 0.5 * nv_log(x_pos) - 0.5 * base::log(2 * pi))
 }
 
 # Broadcast a scalar operand (the first of args) against a non-scalar lambda,
@@ -1925,6 +1922,8 @@ broadcast_operand <- function(args) {
     args[[1L]] <- nv_broadcast_to(args[[1L]], shape(args$lambda))
   }
   args
+  saddle <- stirlerr(x) + bd0(x, lambda)
+  nv_ifelse(x == 0, -lambda, -saddle - 0.5 * nv_log(x) - 0.5 * base::log(2 * pi))
 }
 
 # Sum of the series
