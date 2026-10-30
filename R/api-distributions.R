@@ -2231,7 +2231,7 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32, grad = FALSE) {
       out$grad_factor <- nv_ifelse(use_series, series$grad_factor, 1)
     } else {
       out$grad <- nv_exp(log_density)
-      out$grad_factor <- 1
+      out$grad_factor <- nv_scalar_like(lambda, 1)
     }
   }
   out
