@@ -2055,8 +2055,10 @@ ppois_asymp_b <- c(
 
 # P(X <= k) (or P(X > k)) for whole k with lambda close to k, both large, as R's
 # `ppois_asymp()`: a normal approximation in the signed root of the deviance,
-# corrected by an expansion in 1/k.
-ppois_asymp <- function(k, lambda, lower_tail, log_p, is_f32) {
+# corrected by an expansion in 1/k. Returns the probability as `value`. With
+# `grad = TRUE` and `log_p = TRUE` it also returns `grad`, the gradient of that
+# log probability wrt lambda (ignoring sign): dpois(k) / probability.
+ppois_asymp <- function(k, lambda, lower_tail, log_p, is_f32, grad = FALSE) {
   dfm <- lambda - k
   # Near the top of the range the reciprocal of k that XLA divides by would be
   # subnormal, so both are scaled down first (see `bd0()`)
@@ -2087,15 +2089,36 @@ ppois_asymp <- function(k, lambda, lower_tail, log_p, is_f32) {
 
   np <- nv_pnorm(s2pt, lower_tail = !lower_tail, log_p = log_p)
   log_dnorm <- -0.5 * s2pt * s2pt - 0.5 * base::log(2 * pi)
-  if (log_p) {
-    # `nv_pnorm(log_p = TRUE)` takes log1p(-erfc) above one half, which XLA's
-    # CPU f64 `log1p()` gets wrong by up to ~120 ulp for probabilities in about
-    # (0.586, 0.64). Fixed upstream in openxla/xla#46765, so deliberately not
-    # worked around.
-    np + nv_log1p(f * nv_exp(log_dnorm - np))
-  } else {
-    np + f * nv_exp(log_dnorm)
+  if (!log_p) {
+    return(list(value = np + f * nv_exp(log_dnorm)))
   }
+  # `nv_pnorm(log_p = TRUE)` takes log1p(-erfc) above one half, which XLA's
+  # CPU f64 `log1p()` gets wrong by up to ~120 ulp for probabilities in about
+  # (0.586, 0.64). Fixed upstream in openxla/xla#46765, so deliberately not
+  # worked around.
+  value <- np + nv_log1p(f * nv_exp(log_dnorm - np))
+  if (!grad) {
+    return(list(value = value))
+  }
+
+  # The gradient, dpois(k) / tail, for the small tail only (z > 0); the caller
+  # does the other. Both are tiny here, ~exp(-z^2 / 2), and subtracting their
+  # logs would lose ~z^2 ulps, so write both via the normal curve and cancel
+  # the tiny parts on paper. With m = phi(z) / Phi(-z):
+  #   tail = Phi(-z) (1 + f m)
+  #   dpois(k) = phi(z) exp(-stirlerr(k)) / sqrt(k)  (s^2 / 2 is bd0(k, lambda))
+  #   dpois(k) / tail = m exp(-stirlerr(k)) / (sqrt(k) (1 + f m))
+  # where m = sqrt(2 / pi) / erfcx(z / sqrt(2)) is a moderate number.
+  z <- if (lower_tail) s2pt else -s2pt
+  z_small <- nv_ifelse(z > 0, z, 1) * base::sqrt(0.5)
+  m <- base::sqrt(2 / pi) / erfcx(z_small, if (is_f32) 8 else 20, if (is_f32) 6L else 8L)
+  # stirlerr(k) minus its lookup table: k is always large here, and the lookup
+  # would stop XLA vectorising this code on CPU
+  coefs <- if (is_f32) stirlerr_series[4:7] else stirlerr_series
+  k_series <- nv_pmax(k, 16)
+  stirlerr_k <- horner(1 / (k_series * k_series), coefs) / k_series
+  grad <- m * nv_exp(-stirlerr_k) / (nv_sqrt(k) * (1 + f * m))
+  list(value = value, grad = grad)
 }
 
 # The Poisson distribution function at a whole k >= 0 and finite lambda > 0,
@@ -2105,10 +2128,13 @@ ppois_asymp <- function(k, lambda, lower_tail, log_p, is_f32) {
 #   - otherwise k and lambda are close and large: the asymptotic expansion.
 # Each series gives one tail directly and the other as its complement, which is
 # taken on the log scale to keep full accuracy either side. Returns the
-# probability, the log of p(k), from which the gradient follows, and which
-# elements took a series (whose error `nv_qpois()` allows for).
+# probability, log dpois(k), and which elements took a series (whose error
+# `nv_qpois()` allows for). With `grad = TRUE` it also returns the gradient's
+# size wrt lambda: dpois(k), or on the log scale dpois(k) / probability. It
+# comes as two factors, `grad` and `grad_factor`, so each stays finite when
+# their product overflows.
 # Due to while loop in series, no gradient support.
-ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
+ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32, grad = FALSE) {
   upper <- (lambda <= k) & (lambda < 0.8 * (k + 51))
   lower <- (k < lambda) & (k + 1 < 0.8 * (lambda + 50))
   use_series <- upper | lower
@@ -2150,22 +2176,65 @@ ppois_raw <- function(k, lambda, lower_tail, log_p, is_f32) {
     } else {
       nv_ifelse(direct, nv_exp(log_tail), -nv_expm1(log_tail))
     }
-    from_series
+    out <- list(value = from_series)
+    if (grad && log_p) {
+      # The gradient, dpois(k) / tail, without logs. The tail the series sums
+      # is dpois(k) times the sum (plus one for the lower), so the gradient is
+      # just 1 / sum; subtracting logs would lose |log tail| ulps. If the upper
+      # sum underflowed it equals lambda / (k + 1), whose reciprocal can
+      # overflow, so it's kept as 1 / lambda times k + 1. The other tail is at
+      # least about a half, where subtracting logs is fine.
+      out$grad <- nv_ifelse(
+        direct,
+        1 / nv_ifelse(underflowed, lambda, nv_ifelse(upper, sum, 1 + sum)),
+        nv_exp(log_density - from_series)
+      )
+      out$grad_factor <- nv_ifelse(direct & underflowed, k + 1, 1)
+    }
+    out
   }
-  from_series <- series_branch()
+  series <- series_branch()
   # The series' elements are given k = lambda. Where lambda is tiny that can
   # overflow inside the expansion, but only on elements that are then not
   # selected, and the expansion is taken without gradient.
-  asymp <- skip_unless(nv_any(!use_series), nv_fill_like(k, 0), function() {
+  asymp_grad <- grad && log_p
+  asymp_init <- list(value = nv_fill_like(k, 0))
+  if (asymp_grad) {
+    asymp_init$grad <- nv_fill_like(k, 0)
+  }
+  asymp <- skip_unless(nv_any(!use_series), asymp_init, function() {
     ppois_asymp(
       nv_ifelse(use_series, lambda, k),
       lambda,
       lower_tail,
       log_p,
-      is_f32
+      is_f32,
+      grad = asymp_grad
     )
   })
-  list(value = nv_ifelse(use_series, from_series, asymp), log_density = log_density, use_series = use_series)
+  out <- list(
+    value = nv_ifelse(use_series, series$value, asymp$value),
+    log_density = log_density,
+    use_series = use_series
+  )
+  if (grad) {
+    if (log_p) {
+      # The expansion's gradient is for the small tail only. The other tail is
+      # at least about a half, where subtracting logs is fine, and a little more
+      # accurate (log dpois(k) comes from bd0(), which beats the expansion's)
+      small_tail <- if (lower_tail) lambda > k else lambda < k
+      out$grad <- nv_ifelse(
+        use_series,
+        series$grad,
+        nv_ifelse(small_tail, asymp$grad, nv_exp(log_density - out$value))
+      )
+      out$grad_factor <- nv_ifelse(use_series, series$grad_factor, 1)
+    } else {
+      out$grad <- nv_exp(log_density)
+      out$grad_factor <- 1
+    }
+  }
+  out
 }
 
 #' @title The Poisson Distribution
@@ -2321,17 +2390,23 @@ nv_ppois <- jit(
     # Guarded on lambda's own conditions, so a scalar lambda stays scalar; the
     # elements it replaces are among those resolved directly below
     lambda_reg <- nv_ifelse((lambda > 0) & (lambda != Inf), lambda, 1)
-    raw <- ppois_raw(k, stop_gradient(lambda_reg), lower_tail, log_p, is_f32)
+    raw <- ppois_raw(k, stop_gradient(lambda_reg), lower_tail, log_p, is_f32, grad = TRUE)
 
     # The summation is not differentiable, so the exact derivative wrt `lambda`,
-    # -/+ p(k) (over the probability on the log scale), is attached by adding
-    # zero times it. It is zeroed where it is not finite, which would make the
-    # zero NaN. Only the first derivative is right this way (see
+    # -/+ dpois(k) (divided by the probability on the log scale), is attached
+    # by adding zero times it. Only the first derivative is right this way (see
     # `stop_gradient()`): no differentiable function has this derivative but
     # the distribution function itself.
-    grad <- nv_exp(if (log_p) raw$log_density - raw$value else raw$log_density)
-    grad <- nv_ifelse(nv_is_finite(grad), if (lower_tail) -grad else grad, 0)
-    value <- raw$value + (lambda_reg - stop_gradient(lambda_reg)) * grad
+    # The derivative can overflow on the log scale (it's about (k + 1) / lambda
+    # for a tiny lambda), and 0 * Inf would make the value NaN. So the zero is
+    # multiplied by its two finite factors one at a time: the value stays exact,
+    # and only the gradient, their product, overflows. A non-finite factor
+    # gives a zero gradient.
+    finite <- nv_is_finite(raw$grad) & nv_is_finite(raw$grad_factor)
+    grad <- nv_ifelse(finite, raw$grad, 0)
+    delta <- lambda_reg - stop_gradient(lambda_reg)
+    delta <- if (lower_tail) -delta else delta
+    value <- raw$value + (delta * nv_ifelse(finite, raw$grad_factor, 0)) * grad
 
     res <- nv_ifelse(below, dt0, nv_ifelse(at_one, dt1, nv_ifelse(lambda == Inf, dt0, value)))
     nv_ifelse(valid, res, NaN)

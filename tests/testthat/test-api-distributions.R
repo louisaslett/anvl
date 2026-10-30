@@ -2707,6 +2707,57 @@ describe("nv_ppois", {
     }
   })
 
+  it("gradient on the log scale stays accurate deep in either tail", {
+    # On the log scale the gradient is dpois(k) / tail. Subtracting logs to get
+    # it loses |log tail| ulps: errors of percents in f32 at lambda = 4,
+    # q = 1e6, and in f64 at q = 1e15. The reference sums tail / dpois(k):
+    tail_sum <- function(k, lambda, upper) {
+      term <- 1
+      s <- 0
+      for (j in seq_len(200)) {
+        term <- term * if (upper) lambda / (k + j) else pmax(k - j + 1, 0) / lambda
+        s <- s + term
+      }
+      s
+    }
+    f <- function(q, lambda, lower_tail) nv_sum(nv_ppois(q, lambda, lower_tail = lower_tail, log_p = TRUE))
+    grad <- jit(gradient(f, wrt = "lambda"), static = "lower_tail")
+    at <- function(q, lambda, dt, lower) {
+      as.vector(grad(nv_array(q, dtype = dt), nv_array(rep(lambda, length(q)), dtype = dt), lower_tail = lower)$lambda)
+    }
+
+    # Where the tail comes from the upper or lower series
+    q <- c(1e4, 1e6, 3.6e7)
+    expect_equal(at(q, 4, "f32", FALSE), 1 / tail_sum(q, 4, TRUE), tolerance = 1e-6)
+    q <- c(1e12, 1e15)
+    expect_equal(at(q, 4, "f64", FALSE), 1 / tail_sum(q, 4, TRUE), tolerance = 1e-14)
+    q <- c(1, 10, 100)
+    expect_equal(at(q, 1000, "f32", TRUE), -1 / (1 + tail_sum(q, 1000, FALSE)), tolerance = 1e-6)
+    expect_equal(at(q, 1000, "f64", TRUE), -1 / (1 + tail_sum(q, 1000, FALSE)), tolerance = 1e-15)
+
+    # Where it comes from the asymptotic expansion. Base R's logs are a fine
+    # f32 reference: they lose ~|log tail| f64 ulps, far below one f32 ulp
+    over_tail <- function(q, lambda, lower) {
+      exp(dpois(q, lambda, log = TRUE) - ppois(q, lambda, lower.tail = lower, log.p = TRUE))
+    }
+    q <- c(1.1e6, 1.2e6)
+    expect_equal(at(q, 1e6, "f32", FALSE), over_tail(q, 1e6, FALSE), tolerance = 1e-6)
+    q <- c(8.5e5, 9e5)
+    expect_equal(at(q, 1e6, "f32", TRUE), -over_tail(q, 1e6, TRUE), tolerance = 1e-6)
+
+    # With a tiny lambda the gradient, about (k + 1) / lambda, should overflow
+    # to Inf, and the value must not turn NaN
+    for (dt in c("f32", "f64")) {
+      lambda <- as.vector(nv_array(1e-30, dtype = dt))
+      q <- if (dt == "f32") c(1e8, 1e10) else c(1e100, 1e279)
+      want <- (q + 1) / lambda
+      want[want > if (dt == "f32") 2^128 * (1 - 2^-25) else .Machine$double.xmax] <- Inf
+      expect_equal(at(q, lambda, dt, FALSE), want, tolerance = 1e-6)
+      value <- as.vector(nv_ppois(nv_array(q, dtype = dt), lambda, lower_tail = FALSE, log_p = TRUE))
+      expect_false(anyNA(value))
+    }
+  })
+
   it("gradients stay finite where the probability is resolved directly", {
     q <- c(-Inf, -1, 0.5, 0, Inf, 3, 3)
     lambda <- c(2, 2, 2, 0, 2, Inf, 1e300)
